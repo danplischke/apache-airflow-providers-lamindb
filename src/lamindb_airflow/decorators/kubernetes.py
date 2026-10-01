@@ -22,7 +22,7 @@ def _lamindb_k8s_decorated_operator_class() -> type:
         # BaseOperatorMeta expects the most-derived class to define __init__
         def __init__(self, **kwargs: Any) -> None:
             super().__init__(**kwargs)
-            if self.auto_flow:
+            if self.auto_flow and self.track:
                 wire_flow_tasks(self, venv=True, lamindb_instance=self.lamindb_instance)
 
     return LaminDBK8sDecoratedOperator
@@ -36,8 +36,9 @@ def lamindb_k8s_task(
     """``@task.lamindb_k8s``: run the function as a LaminDB step in a Kubernetes pod.
 
     Accepts every ``@task.kubernetes`` argument, plus ``lamindb_instance`` (instance
-    slug to connect to) and ``auto_flow`` (wire virtualenv flow operators on the
-    worker if the DAG has none yet; default ``True``). The image must have ``lamindb`` installed and credentials for
+    slug to connect to), ``auto_flow`` (wire virtualenv flow operators on the
+    worker if the DAG has none yet; default ``True``) and ``track`` (``False``: only
+    connect to the instance, record nothing). The image must have ``lamindb`` installed and credentials for
     the instance, e.g. ``LAMIN_API_KEY`` from a Kubernetes secret. The worker needs no
     lamindb. Requires ``pip install "lamindb-airflow[cncf.kubernetes]"``.
     """

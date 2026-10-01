@@ -55,6 +55,24 @@ def test_auto_flow_opt_out() -> None:
     assert set(dag.task_ids) == {"a", "b", "c"}
 
 
+def test_untracked_steps_add_no_flow_tasks() -> None:
+    with DAG("d", schedule=None) as dag:
+        LaminDBStepOperator(task_id="a", python_callable=noop, track=False)
+        task.lamindb(noop, task_id="b", track=False)()
+        task.lamindb_venv(noop, task_id="c", track=False)()
+
+    assert set(dag.task_ids) == {"a", "b", "c"}
+
+
+def test_untracked_step_does_not_decide_flow_task_kind() -> None:
+    with DAG("d", schedule=None) as dag:
+        task.lamindb_venv(noop, task_id="a", track=False)()
+        LaminDBStepOperator(task_id="b", python_callable=noop)
+
+    assert type(dag.get_task(INIT)) is LaminDBFlowInitOperator
+    assert dag.get_task(INIT).downstream_task_ids == {"b", FINISH}
+
+
 def test_flow_tasks_land_in_root_task_group() -> None:
     with DAG("d", schedule=None) as dag, TaskGroup("group"):
         LaminDBStepOperator(task_id="a", python_callable=noop)

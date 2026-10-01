@@ -94,3 +94,10 @@ def run_as_step(fn: Callable[..., Any], flow_run: Run, *args: Any, **kwargs: Any
     """Run ``fn`` as a step of ``flow_run`` in this process."""
     with flow_run_context(flow_run):
         return as_lamindb_step(fn)(*args, **kwargs)
+
+
+def run_untracked(fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+    """Run ``fn`` in this process without recording a run, bypassing ``@ln.step`` / ``@ln.flow``."""
+    # @ln.step() raises without a global run and @ln.flow() would record one
+    unwrapped = fn.__wrapped__ if is_lamindb_tracked(fn) else fn  # type: ignore[attr-defined]
+    return runtime.run_untracked(unwrapped, args, kwargs)

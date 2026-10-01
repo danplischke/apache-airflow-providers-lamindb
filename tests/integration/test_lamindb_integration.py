@@ -235,3 +235,40 @@ def test_remote_sources_run_in_fresh_interpreter(dag_module, run_id, tmp_path):
     finish_config = {"reference": reference, "success": True, "instance": instance}
     run_script(flow_script("finish_flow_run", finish_config), tmp_path)
     assert ln.Run.get(uid=flow_uid).status == "completed"
+
+
+def test_untracked_steps_use_instance_and_record_nothing(dag_module, run_id, tmp_path):
+    """``track=False``: no flow run needed, nothing recorded, ``@ln.step()`` bypassed."""
+    import lamindb as ln
+
+    from lamindb_airflow import LaminDBStepOperator
+    from lamindb_airflow.utils.remote import build_remote_step_source, worker_instance_slug
+
+    runs_before = ln.Run.filter().count()
+
+    # no flow init ran for this DAG run; transform is @ln.step()-decorated, which would raise untracked
+    step = LaminDBStepOperator(
+        task_id="transform", python_callable=dag_module.transform, op_args=[{"count": 3}], track=False
+    )
+    assert step.execute(make_context(dag_module, run_id, "transform")) == {"count": 6}
+    assert ln.context.run is None
+
+    user_source = textwrap.dedent(
+        """
+        def count_runs() -> int:
+            import lamindb as ln
+
+            return ln.Run.filter().count()
+        """
+    )
+    script = build_remote_step_source(
+        user_source=user_source,
+        callable_name="count_runs",
+        config={"instance": worker_instance_slug()},
+        runtime_function="run_untracked",
+    )
+    script += '\nimport json\nprint("RESULT=" + json.dumps(count_runs()))\n'
+    # the fresh interpreter is connected to the same instance and sees no new run
+    assert json.loads(run_script(script, tmp_path).split("RESULT=")[1]) == runs_before
+
+    assert ln.Run.filter().count() == runs_before

@@ -38,6 +38,22 @@ def test_remote_step_source_runs_user_function_as_step(fake_lamindb: MagicMock) 
     assert kwargs["initiated_by_run"] is flow_run
 
 
+def test_remote_untracked_source_only_connects(fake_lamindb: MagicMock) -> None:
+    source = build_remote_step_source(
+        user_source="def extract(count=10):\n    return {'count': count}\n",
+        callable_name="extract",
+        config={"instance": "owner/name"},
+        runtime_function="run_untracked",
+    )
+    namespace: dict = {}
+    exec(source, namespace)
+
+    assert namespace["extract"](count=4) == {"count": 4}
+    fake_lamindb.connect.assert_called_once_with("owner/name")
+    fake_lamindb.track.assert_not_called()
+    fake_lamindb.Run.filter.assert_not_called()
+
+
 def test_remote_step_source_does_not_leak_runtime_names(fake_lamindb: MagicMock) -> None:
     """The runtime lives in its own module, so it cannot clash with user names."""
     source = build_remote_step_source(

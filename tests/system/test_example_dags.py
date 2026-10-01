@@ -88,3 +88,13 @@ def test_venv_only_dag_run(dags):
     assert set(steps) == {"venv_extract", "venv_double"}
     assert all(step.status == "completed" for step in steps.values())
     assert steps["venv_double"].params == {"data": {"count": 4}}
+
+
+def test_untracked_dag_run_records_nothing(dags):
+    import lamindb as ln
+
+    assert set(dags.dag_untracked.task_ids) == {"count_runs", "venv_count_runs"}  # no flow tasks
+    runs_before = ln.Run.filter().count()
+    dr = dags.dag_untracked.test()
+    assert str(dr.state) == "success"  # the venv task also checks it saw the worker's instance
+    assert ln.Run.filter().count() == runs_before

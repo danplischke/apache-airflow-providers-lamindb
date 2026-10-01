@@ -46,7 +46,8 @@ def lamindb_task(
 ):
     """``@task.lamindb``: run the function as a LaminDB step in the worker process.
 
-    Needs lamindb on the worker; see ``@task.lamindb_venv`` otherwise.
+    Accepts ``auto_flow`` and ``track`` like ``LaminDBStepOperator``. Needs lamindb on
+    the worker; see ``@task.lamindb_venv`` otherwise.
     """
     return task_decorator_factory(
         python_callable=python_callable,

@@ -141,3 +141,11 @@ def test_run_step_without_flow_run_raises(fake_lamindb: MagicMock) -> None:
     with pytest.raises(LookupError, match="No LaminDB flow run"):
         runtime.run_step(lambda: None, (), {}, "my_dag/run_1", "")
     fake_lamindb.track.assert_not_called()
+
+
+def test_run_untracked_connects_and_records_nothing(fake_lamindb: MagicMock) -> None:
+    assert runtime.run_untracked(lambda x, y=1: x + y, (2,), {"y": 3}, instance="owner/name") == 5
+    fake_lamindb.connect.assert_called_once_with("owner/name")
+    fake_lamindb.track.assert_not_called()
+    fake_lamindb.Run.filter.assert_not_called()
+    assert fake_lamindb.context.run is None

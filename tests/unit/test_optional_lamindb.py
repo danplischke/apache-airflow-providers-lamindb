@@ -60,12 +60,13 @@ def test_venv_operator_works_without_lamindb_on_worker(no_lamindb: None, make_co
     assert "def lamindb_airflow_flow_task(lamindb_airflow_config):" in captured["source"]
 
 
-def test_venv_step_works_without_lamindb_on_worker(no_lamindb: None, make_context) -> None:
+@pytest.mark.parametrize("track", [True, False])
+def test_venv_step_works_without_lamindb_on_worker(no_lamindb: None, make_context, track: bool) -> None:
     from airflow.sdk import dag, task
 
     @dag
     def test_dag():
-        @task.lamindb_venv
+        @task.lamindb_venv(track=track)
         def step():
             return 1
 

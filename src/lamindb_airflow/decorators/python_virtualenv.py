@@ -32,7 +32,7 @@ class LaminDBVenvDecoratedOperator(RemoteLaminDBStepMixin, _PythonVirtualenvDeco
     def __init__(self, *, lamindb_version: str | None = None, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         add_lamindb_requirement(self.requirements, lamindb_version)
-        if self.auto_flow:
+        if self.auto_flow and self.track:
             wire_flow_tasks(
                 self,
                 venv=True,
@@ -58,6 +58,9 @@ def lamindb_venv_task(
     - ``auto_flow``: wire ``init >> step >> finish`` with the DAG's flow operators,
       adding virtualenv ones (same Python, index and lamindb settings) if the DAG
       has none yet. Default ``True``; mapped steps are never auto-wired.
+    - ``track``: record the function as a step run. ``False`` only connects to the
+      instance before calling it: no flow run needed, nothing recorded, no
+      auto-wiring. Default ``True``.
 
     The worker needs no lamindb.
     """

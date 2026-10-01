@@ -58,3 +58,22 @@ with DAG("lamindb_example_venv_only") as dag_venv_only:
         return {"count": data["count"] * 2}
 
     venv_double(venv_extract(count=4))
+
+
+# track=False: the tasks use the instance, but no flow run is needed and nothing is recorded.
+with DAG("lamindb_example_untracked") as dag_untracked:
+
+    @task.lamindb(track=False)
+    def count_runs() -> int:
+        return ln.Run.filter().count()
+
+    @task.lamindb_venv(track=False, system_site_packages=True)
+    def venv_count_runs(expected: int) -> int:
+        import lamindb as ln
+
+        assert ln.context.run is None, "untracked venv step has a run context"
+        count = ln.Run.filter().count()
+        assert count == expected, f"venv sees {count} runs, worker saw {expected}"
+        return count
+
+    venv_count_runs(count_runs())

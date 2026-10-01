@@ -32,6 +32,18 @@ def test_step_operator_without_flow_run_raises(fake_lamindb: MagicMock, make_con
         op.execute(make_context())
 
 
+def test_untracked_step_operator_needs_no_flow_run_and_records_nothing(fake_lamindb: MagicMock, make_context) -> None:
+    def add(x: int, *, y: int) -> int:
+        return x + y
+
+    op = LaminDBStepOperator(task_id="step", python_callable=add, op_args=[1], op_kwargs={"y": 2}, track=False)
+
+    assert op.execute(make_context()) == 3  # fake_lamindb.flow_run is None
+    fake_lamindb.step.assert_not_called()
+    fake_lamindb.track.assert_not_called()
+    fake_lamindb.Run.filter.assert_not_called()
+
+
 def test_step_operator_templates_args() -> None:
     assert set(LaminDBStepOperator.template_fields) >= {"op_args", "op_kwargs"}
 

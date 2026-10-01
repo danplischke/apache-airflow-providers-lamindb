@@ -96,7 +96,7 @@ How it works:
 
 Auto-wiring caveats:
 
-- The first LaminDB step decides the kind of flow tasks: in-process for
+- The first tracked LaminDB step decides the kind of flow tasks: in-process for
   `LaminDBStepOperator` / `@task.lamindb`, virtualenv for `@task.lamindb_venv` (copying
   its Python version, index, lamindb pin and env settings) and `@task.lamindb_k8s`.
 - Mapped steps (`.expand()`) are not auto-wired. Declare the flow operators and wire
@@ -105,6 +105,32 @@ Auto-wiring caveats:
   declare them first, or pass `auto_flow=False` to the steps.
 - Finish waits for LaminDB steps only; wire other tasks upstream of it if the flow run
   should cover them.
+
+### Untracked tasks
+
+Pass `track=False` to use the instance from a task without recording anything:
+
+```python
+@task.lamindb(track=False)
+def count_artifacts() -> int:
+    return ln.Artifact.filter().count()
+
+
+@task.lamindb_venv(track=False, requirements=["pandas"])
+def row_count(key: str) -> int:
+    import lamindb as ln
+
+    return len(ln.Artifact.get(key=key).load())
+```
+
+- No flow run is needed or created. Untracked tasks are never auto-wired, so a DAG with
+  only untracked tasks gets no flow init/finish tasks.
+- In-process, the function is called directly; lamindb must be installed on the worker.
+  A callable decorated with `@ln.step()` / `@ln.flow()` runs undecorated: `@ln.step()`
+  would fail without a flow run and `@ln.flow()` would record one.
+- The virtualenv and pod variants still add the lamindb requirement and connect to
+  `lamindb_instance` before calling the function.
+- Artifacts saved from an untracked task have no run; lamindb warns about that.
 
 ## Operators and decorators
 
@@ -118,7 +144,8 @@ Auto-wiring caveats:
 | `@task.lamindb_venv(...)` – like `@task.virtualenv`; the function runs as a step in the virtualenv | no |
 | `@task.lamindb_k8s(image=..., ...)` – like `@task.kubernetes`; the image needs lamindb and credentials | no |
 
-All step operators accept `auto_flow`. The virtualenv and pod variants also accept
+All step operators accept `auto_flow` and `track` (see [Untracked tasks](#untracked-tasks)).
+The virtualenv and pod variants also accept
 `lamindb_instance`, the instance slug to connect to (default: the worker's instance if
 lamindb is set up there, else `LAMIN_CURRENT_INSTANCE`). The virtualenv variants accept
 `lamindb_version`: `lamindb==<version>` is added to `requirements` unless you list
