@@ -7,8 +7,8 @@ from typing import Any
 
 from airflow.sdk.bases.decorator import task_decorator_factory
 
-from lamindb_airflow.operators.flow import wire_flow_tasks
-from lamindb_airflow.utils.remote import RemoteLaminDBStepMixin
+from airflow.providers.lamindb.operators.flow import wire_flow_tasks
+from airflow.providers.lamindb.utils.remote import RemoteLaminDBStepMixin
 
 
 def _lamindb_k8s_decorated_operator_class() -> type:
@@ -22,7 +22,7 @@ def _lamindb_k8s_decorated_operator_class() -> type:
         # BaseOperatorMeta expects the most-derived class to define __init__
         def __init__(self, **kwargs: Any) -> None:
             super().__init__(**kwargs)
-            if self.auto_flow and self.track:
+            if self.auto_flow:
                 wire_flow_tasks(self, venv=True, lamindb_instance=self.lamindb_instance)
 
     return LaminDBK8sDecoratedOperator
@@ -37,8 +37,8 @@ def lamindb_k8s_task(
 
     Accepts every ``@task.kubernetes`` argument, plus ``lamindb_instance`` (instance
     slug to connect to), ``auto_flow`` (wire virtualenv flow operators on the
-    worker if the DAG has none yet; default ``True``) and ``track`` (``False``: only
-    connect to the instance, record nothing). The image must have ``lamindb`` installed and credentials for
+    worker if the DAG has none yet; default ``True``) and ``track`` (record the call
+    in LaminDB; with ``False`` it runs exactly as under ``@task.kubernetes``). The image must have ``lamindb`` installed and credentials for
     the instance, e.g. ``LAMIN_API_KEY`` from a Kubernetes secret. The worker needs no
     lamindb. Requires ``pip install "lamindb-airflow[cncf.kubernetes]"``.
     """

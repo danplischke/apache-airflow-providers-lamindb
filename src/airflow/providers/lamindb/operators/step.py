@@ -7,7 +7,7 @@ from typing import Any
 
 from airflow.sdk import BaseOperator
 
-from lamindb_airflow.operators.flow import wire_flow_tasks
+from airflow.providers.lamindb.operators.flow import wire_flow_tasks
 
 
 class LaminDBStepOperator(BaseOperator):
@@ -21,9 +21,9 @@ class LaminDBStepOperator(BaseOperator):
     :param auto_flow: wire ``init >> step >> finish`` with the DAG's flow operators,
         adding in-process ones if the DAG has none yet. Pass ``False`` to wire the
         flow operators yourself. Mapped steps (``.expand()``) are never auto-wired.
-    :param track: record the callable as a step run. ``False`` calls it without
-        recording anything: no flow run needed, no auto-wiring, and an
-        ``@ln.step()`` / ``@ln.flow()`` decorator on the callable is bypassed.
+    :param track: record the call in LaminDB. Pass ``False`` to run ``python_callable``
+        as a plain Python task: no step run, no flow wiring, no lamindb needed. A
+        callable decorated with ``@ln.step()`` is unwrapped and called directly.
     """
 
     template_fields = ("op_args", "op_kwargs")
@@ -43,14 +43,14 @@ class LaminDBStepOperator(BaseOperator):
         self.op_args = list(op_args or [])
         self.op_kwargs = dict(op_kwargs or {})
         self.track = track
-        if auto_flow and track:
+        if track and auto_flow:
             wire_flow_tasks(self, venv=False)
 
     def execute(self, context: Any) -> Any:
-        from lamindb_airflow.utils.context import require_flow_run, require_lamindb, run_as_step, run_untracked
+        from airflow.providers.lamindb.utils.context import require_flow_run, require_lamindb, run_as_step, untracked
 
-        require_lamindb()
         if not self.track:
-            return run_untracked(self.python_callable, *self.op_args, **self.op_kwargs)
+            return untracked(self.python_callable)(*self.op_args, **self.op_kwargs)
+        require_lamindb()
         flow_run = require_flow_run(context)
         return run_as_step(self.python_callable, flow_run, *self.op_args, **self.op_kwargs)

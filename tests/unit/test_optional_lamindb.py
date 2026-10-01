@@ -9,8 +9,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from lamindb_airflow.operators.flow import LaminDBFlowInitOperator, LaminDBVenvFlowInitOperator
-from lamindb_airflow.utils import remote
+from airflow.providers.lamindb.operators.flow import LaminDBFlowInitOperator, LaminDBVenvFlowInitOperator
+from airflow.providers.lamindb.utils import remote
 
 
 @pytest.fixture
@@ -28,9 +28,9 @@ def test_import_does_not_need_lamindb() -> None:
     code = (
         "import sys\n"
         "sys.modules['lamindb'] = sys.modules['lamindb_setup'] = None\n"
-        "import lamindb_airflow, lamindb_airflow.get_provider_info\n"
-        "import lamindb_airflow.decorators.python, lamindb_airflow.decorators.python_virtualenv\n"
-        "import lamindb_airflow.decorators.kubernetes\n"
+        "import airflow.providers.lamindb, airflow.providers.lamindb.get_provider_info\n"
+        "import airflow.providers.lamindb.decorators.python, airflow.providers.lamindb.decorators.python_virtualenv\n"
+        "import airflow.providers.lamindb.decorators.kubernetes\n"
     )
     subprocess.run([sys.executable, "-c", code], check=True)
 
@@ -60,13 +60,12 @@ def test_venv_operator_works_without_lamindb_on_worker(no_lamindb: None, make_co
     assert "def lamindb_airflow_flow_task(lamindb_airflow_config):" in captured["source"]
 
 
-@pytest.mark.parametrize("track", [True, False])
-def test_venv_step_works_without_lamindb_on_worker(no_lamindb: None, make_context, track: bool) -> None:
+def test_venv_step_works_without_lamindb_on_worker(no_lamindb: None, make_context) -> None:
     from airflow.sdk import dag, task
 
     @dag
     def test_dag():
-        @task.lamindb_venv(track=track)
+        @task.lamindb_venv
         def step():
             return 1
 

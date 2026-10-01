@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from airflow.providers.standard.operators.python import PythonVirtualenvOperator
 
-from lamindb_airflow.operators.flow import (
+from airflow.providers.lamindb.operators.flow import (
     LaminDBFlowFinishOperator,
     LaminDBFlowInitOperator,
     LaminDBVenvFlowFinishOperator,
@@ -93,7 +93,7 @@ def _run_in_fake_venv(op, context, fake_lamindb):
 
     with (
         patch.object(PythonVirtualenvOperator, "execute", fake_venv_execute),
-        patch("lamindb_airflow.operators.flow.worker_instance_slug", return_value="owner/worker"),
+        patch("airflow.providers.lamindb.operators.flow.worker_instance_slug", return_value="owner/worker"),
     ):
         return op.execute(context)
 

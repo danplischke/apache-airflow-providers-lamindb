@@ -7,7 +7,7 @@ from typing import Any
 
 from airflow.sdk.bases.decorator import DecoratedOperator, task_decorator_factory
 
-from lamindb_airflow.operators.step import LaminDBStepOperator
+from airflow.providers.lamindb.operators.step import LaminDBStepOperator
 
 
 class LaminDBDecoratedOperator(DecoratedOperator, LaminDBStepOperator):  # type: ignore[misc]
@@ -46,8 +46,8 @@ def lamindb_task(
 ):
     """``@task.lamindb``: run the function as a LaminDB step in the worker process.
 
-    Accepts ``auto_flow`` and ``track`` like ``LaminDBStepOperator``. Needs lamindb on
-    the worker; see ``@task.lamindb_venv`` otherwise.
+    Needs lamindb on the worker; see ``@task.lamindb_venv`` otherwise. Pass
+    ``track=False`` to run it as a plain ``@task`` (no step run, no flow wiring).
     """
     return task_decorator_factory(
         python_callable=python_callable,

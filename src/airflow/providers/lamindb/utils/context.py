@@ -8,8 +8,8 @@ from typing import TYPE_CHECKING, Any
 
 from airflow.exceptions import AirflowException
 
-from lamindb_airflow.utils import runtime
-from lamindb_airflow.utils.dag_run import context_flow_run_reference, dag_and_run_id, flow_run_params
+from airflow.providers.lamindb.utils import runtime
+from airflow.providers.lamindb.utils.dag_run import context_flow_run_reference, dag_and_run_id, flow_run_params
 
 if TYPE_CHECKING:
     from lamindb import Run
@@ -83,6 +83,11 @@ def is_lamindb_tracked(fn: Callable[..., Any]) -> bool:
     )
 
 
+def untracked(fn: Callable[..., Any]) -> Callable[..., Any]:
+    """Return ``fn`` without its ``@ln.step`` / ``@ln.flow`` wrapper, if it has one."""
+    return fn.__wrapped__ if is_lamindb_tracked(fn) else fn  # type: ignore[attr-defined]
+
+
 def as_lamindb_step(fn: Callable[..., Any]) -> Callable[..., Any]:
     """Return ``fn`` as a LaminDB step, wrapping with ``ln.step()`` unless already tracked."""
     import lamindb as ln
@@ -94,10 +99,3 @@ def run_as_step(fn: Callable[..., Any], flow_run: Run, *args: Any, **kwargs: Any
     """Run ``fn`` as a step of ``flow_run`` in this process."""
     with flow_run_context(flow_run):
         return as_lamindb_step(fn)(*args, **kwargs)
-
-
-def run_untracked(fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
-    """Run ``fn`` in this process without recording a run, bypassing ``@ln.step`` / ``@ln.flow``."""
-    # @ln.step() raises without a global run and @ln.flow() would record one
-    unwrapped = fn.__wrapped__ if is_lamindb_tracked(fn) else fn  # type: ignore[attr-defined]
-    return runtime.run_untracked(unwrapped, args, kwargs)

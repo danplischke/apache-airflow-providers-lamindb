@@ -20,7 +20,7 @@ def __getattr__(name: str) -> Any:
     # Lazy: Airflow imports this package for get_provider_info while its own
     # configuration is still initialising, so importing operators here is circular.
     if name in __all__:
-        from lamindb_airflow import operators
+        from airflow.providers.lamindb import operators
 
         return getattr(operators, name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

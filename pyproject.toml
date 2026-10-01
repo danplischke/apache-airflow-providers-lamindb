@@ -51,10 +51,10 @@ dev = [
 "Bug Tracker" = "https://github.com/danplischke/apache-airflow-providers-lamindb/issues"
 
 [project.entry-points."apache_airflow_provider"]
-provider_info = "lamindb_airflow.get_provider_info:get_provider_info"
+provider_info = "airflow.providers.lamindb.get_provider_info:get_provider_info"
 
 [tool.flit.module]
-name = "lamindb_airflow"
+name = "airflow.providers.lamindb"
 
 [tool.flit.sdist]
 include = [

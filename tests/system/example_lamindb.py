@@ -3,8 +3,8 @@
 import lamindb as ln
 from airflow.sdk import DAG, task
 
-from lamindb_airflow.operators.flow import LaminDBFlowFinishOperator, LaminDBFlowInitOperator
-from lamindb_airflow.operators.step import LaminDBStepOperator
+from airflow.providers.lamindb.operators.flow import LaminDBFlowFinishOperator, LaminDBFlowInitOperator
+from airflow.providers.lamindb.operators.step import LaminDBStepOperator
 
 
 def extract(count: int = 10) -> dict:
@@ -60,20 +60,15 @@ with DAG("lamindb_example_venv_only") as dag_venv_only:
     venv_double(venv_extract(count=4))
 
 
-# track=False: the tasks use the instance, but no flow run is needed and nothing is recorded.
+# track=False: plain Airflow tasks. No flow run is needed and nothing is recorded.
 with DAG("lamindb_example_untracked") as dag_untracked:
 
     @task.lamindb(track=False)
     def count_runs() -> int:
         return ln.Run.filter().count()
 
-    @task.lamindb_venv(track=False, system_site_packages=True)
-    def venv_count_runs(expected: int) -> int:
-        import lamindb as ln
+    @task.lamindb_venv(track=False)
+    def venv_double_untracked(value: int) -> int:
+        return value * 2
 
-        assert ln.context.run is None, "untracked venv step has a run context"
-        count = ln.Run.filter().count()
-        assert count == expected, f"venv sees {count} runs, worker saw {expected}"
-        return count
-
-    venv_count_runs(count_runs())
+    venv_double_untracked(count_runs())

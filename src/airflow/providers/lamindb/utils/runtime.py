@@ -148,9 +148,3 @@ def run_step(fn, args, kwargs, flow_run_reference, source_code, step_reference=N
     finish_run(run, True)
     ln.context._run = None
     return result
-
-
-def run_untracked(fn, args, kwargs, instance=None):
-    """Run ``fn`` connected to ``instance``, without recording a run."""
-    connect(instance)
-    return fn(*args, **kwargs)

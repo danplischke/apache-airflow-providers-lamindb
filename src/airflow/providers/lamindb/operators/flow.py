@@ -7,13 +7,17 @@ from typing import Any
 from airflow.providers.standard.operators.python import PythonVirtualenvOperator
 from airflow.sdk import BaseOperator, TriggerRule
 
-from lamindb_airflow.utils.dag_run import (
+from airflow.providers.lamindb.utils.dag_run import (
     context_flow_run_reference,
     dag_and_run_id,
     dag_run_failed,
     flow_run_params,
 )
-from lamindb_airflow.utils.remote import add_lamindb_requirement, build_remote_flow_source, worker_instance_slug
+from airflow.providers.lamindb.utils.remote import (
+    add_lamindb_requirement,
+    build_remote_flow_source,
+    worker_instance_slug,
+)
 
 # Airflow's BaseOperatorMeta only wraps __init__ of BaseOperator subclasses and expects
 # the most-derived class to define one, so each operator repeats its own __init__
@@ -39,7 +43,7 @@ class LaminDBFlowInitOperator(BaseOperator):
             self.as_setup()
 
     def execute(self, context: Any) -> str:
-        from lamindb_airflow.utils.context import require_lamindb, start_flow_run
+        from airflow.providers.lamindb.utils.context import require_lamindb, start_flow_run
 
         require_lamindb()
         return start_flow_run(context).uid
@@ -65,8 +69,8 @@ class LaminDBFlowFinishOperator(BaseOperator):
             self.as_teardown()
 
     def execute(self, context: Any) -> str:
-        from lamindb_airflow.utils.context import require_flow_run, require_lamindb
-        from lamindb_airflow.utils.runtime import finish_run
+        from airflow.providers.lamindb.utils.context import require_flow_run, require_lamindb
+        from airflow.providers.lamindb.utils.runtime import finish_run
 
         require_lamindb()
         flow_run = require_flow_run(context)
@@ -80,7 +84,7 @@ def lamindb_airflow_flow_task(lamindb_airflow_config: dict[str, Any]) -> str:
 
 
 class _LaminDBVenvFlowOperator(PythonVirtualenvOperator):
-    """Run a :mod:`lamindb_airflow.utils.runtime` function inside a virtualenv.
+    """Run a :mod:`airflow.providers.lamindb.utils.runtime` function inside a virtualenv.
 
     Accepts every ``PythonVirtualenvOperator`` argument except ``python_callable``,
     ``op_args`` and ``op_kwargs``. ``lamindb`` is added to ``requirements`` (see

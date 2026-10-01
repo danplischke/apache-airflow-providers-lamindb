@@ -8,8 +8,12 @@ from typing import Any
 from airflow.providers.standard.decorators.python_virtualenv import _PythonVirtualenvDecoratedOperator
 from airflow.sdk.bases.decorator import task_decorator_factory
 
-from lamindb_airflow.operators.flow import wire_flow_tasks
-from lamindb_airflow.utils.remote import RemoteLaminDBStepMixin, add_lamindb_requirement, is_lamindb_requirement
+from airflow.providers.lamindb.operators.flow import wire_flow_tasks
+from airflow.providers.lamindb.utils.remote import (
+    RemoteLaminDBStepMixin,
+    add_lamindb_requirement,
+    is_lamindb_requirement,
+)
 
 # virtualenv settings the auto-wired flow operators copy from the first step
 _SHARED_VENV_ARGS = (
@@ -31,8 +35,9 @@ class LaminDBVenvDecoratedOperator(RemoteLaminDBStepMixin, _PythonVirtualenvDeco
 
     def __init__(self, *, lamindb_version: str | None = None, **kwargs: Any) -> None:
         super().__init__(**kwargs)
-        add_lamindb_requirement(self.requirements, lamindb_version)
-        if self.auto_flow and self.track:
+        if self.track:
+            add_lamindb_requirement(self.requirements, lamindb_version)
+        if self.auto_flow:
             wire_flow_tasks(
                 self,
                 venv=True,
@@ -58,9 +63,9 @@ def lamindb_venv_task(
     - ``auto_flow``: wire ``init >> step >> finish`` with the DAG's flow operators,
       adding virtualenv ones (same Python, index and lamindb settings) if the DAG
       has none yet. Default ``True``; mapped steps are never auto-wired.
-    - ``track``: record the function as a step run. ``False`` only connects to the
-      instance before calling it: no flow run needed, nothing recorded, no
-      auto-wiring. Default ``True``.
+    - ``track``: record the call in LaminDB. Default ``True``; with ``False`` the
+      function runs exactly as under ``@task.virtualenv``, and lamindb is not added
+      to ``requirements``.
 
     The worker needs no lamindb.
     """

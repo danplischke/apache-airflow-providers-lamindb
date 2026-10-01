@@ -2,7 +2,7 @@
 
 Airflow's virtualenv and Kubernetes operators ship the callable's *source text* to
 the remote interpreter and call it by name. We keep that mechanism: the shipped
-script embeds :mod:`lamindb_airflow.utils.runtime` as source and calls into it.
+script embeds :mod:`airflow.providers.lamindb.utils.runtime` as source and calls into it.
 Only ``lamindb`` has to be installed remotely; nothing is pickled by reference.
 """
 
@@ -14,8 +14,8 @@ import re
 from importlib.metadata import PackageNotFoundError, version
 from typing import Any
 
-from lamindb_airflow.utils import runtime
-from lamindb_airflow.utils.dag_run import context_flow_run_reference, dag_source, task_instance_url
+from airflow.providers.lamindb.utils import runtime
+from airflow.providers.lamindb.utils.dag_run import context_flow_run_reference, dag_source, task_instance_url
 
 _LAMINDB_REQUIREMENT = re.compile(r"^\s*lamindb\s*($|[\[<>=!~;@\s])", re.IGNORECASE)
 
@@ -32,14 +32,11 @@ def _lamindb_airflow_runtime():
 """
 
 
-def build_remote_step_source(
-    *, user_source: str, callable_name: str, config: dict[str, str | None], runtime_function: str = "run_step"
-) -> str:
+def build_remote_step_source(*, user_source: str, callable_name: str, config: dict[str, str | None]) -> str:
     """Append a wrapper to ``user_source`` and rebind ``callable_name`` to it.
 
     The operator's script template then calls the wrapper, which runs the user
-    function via ``runtime.<runtime_function>`` (:func:`runtime.run_step` or
-    :func:`runtime.run_untracked`) with ``config`` as keyword arguments.
+    function via :func:`runtime.run_step` with ``config`` as keyword arguments.
     """
     return (
         user_source.rstrip()
@@ -48,7 +45,7 @@ def build_remote_step_source(
         + f"""
 
 def _lamindb_airflow_step(*args, **kwargs):
-    return _lamindb_airflow_runtime().{runtime_function}(_lamindb_airflow_user_fn, args, kwargs, **{config!r})
+    return _lamindb_airflow_runtime().run_step(_lamindb_airflow_user_fn, args, kwargs, **{config!r})
 
 
 _lamindb_airflow_user_fn = {callable_name}
@@ -103,16 +100,16 @@ def worker_instance_slug() -> str | None:
 
 
 class RemoteLaminDBStepMixin:
-    """Bind a virtualenv/pod step to the flow run (untracked: to the instance) by rewriting the shipped source.
+    """Bind a virtualenv/pod step to the flow run by rewriting the shipped source.
 
     :param lamindb_instance: instance slug (``owner/name``) to connect to remotely.
         Defaults to the worker's instance if lamindb is set up there, else to
         lamindb's own default in the remote environment (``LAMIN_CURRENT_INSTANCE``).
     :param auto_flow: wire ``init >> step >> finish`` with the DAG's flow operators,
         adding virtualenv ones if the DAG has none yet. The concrete operator does
-        the wiring once fully initialised, unless ``track`` is ``False``.
-    :param track: record the function as a step run. ``False`` only connects to the
-        instance before calling it: no flow run needed, nothing recorded.
+        the wiring once fully initialised. Ignored when ``track`` is ``False``.
+    :param track: record the call in LaminDB. Pass ``False`` to ship the function
+        unchanged, as the plain virtualenv/pod operator would.
     """
 
     _lamindb_remote: dict[str, str | None] | None = None
@@ -122,20 +119,18 @@ class RemoteLaminDBStepMixin:
     ) -> None:
         super().__init__(**kwargs)
         self.lamindb_instance = lamindb_instance
-        self.auto_flow = auto_flow
         self.track = track
+        self.auto_flow = auto_flow and track
 
     def execute(self, context: Any) -> Any:
-        instance = self.lamindb_instance or worker_instance_slug()
-        if self.track:
-            self._lamindb_remote = {
-                "flow_run_reference": context_flow_run_reference(context),
-                "source_code": dag_source(context["dag"]),
-                "step_reference": task_instance_url(context),
-                "instance": instance,
-            }
-        else:
-            self._lamindb_remote = {"instance": instance}
+        if not self.track:
+            return super().execute(context)  # type: ignore[misc]
+        self._lamindb_remote = {
+            "flow_run_reference": context_flow_run_reference(context),
+            "source_code": dag_source(context["dag"]),
+            "step_reference": task_instance_url(context),
+            "instance": self.lamindb_instance or worker_instance_slug(),
+        }
         try:
             return super().execute(context)  # type: ignore[misc]
         finally:
@@ -149,5 +144,4 @@ class RemoteLaminDBStepMixin:
             user_source=user_source,
             callable_name=self.python_callable.__name__,  # type: ignore[attr-defined]
             config=self._lamindb_remote,
-            runtime_function="run_step" if self.track else "run_untracked",
         )
