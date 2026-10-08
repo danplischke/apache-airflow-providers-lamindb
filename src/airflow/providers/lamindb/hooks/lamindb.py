@@ -28,6 +28,14 @@ MAX_PAGE_SIZE = 200
 """Maximum number of records the LaminHub REST API returns per request."""
 
 _RETRY_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
+# a write that may have reached the server is not retried; these errors mean it did not
+_WRITE_RETRY_STATUS_CODES = frozenset({429})
+_WRITE_RETRY_ERRORS = (httpx.ConnectError, httpx.ConnectTimeout)
+_RETRY_POLICY: dict[bool, tuple[type[Exception] | tuple[type[Exception], ...], frozenset[int]]] = {
+    True: (httpx.TransportError, _RETRY_STATUS_CODES),
+    False: (_WRITE_RETRY_ERRORS, _WRITE_RETRY_STATUS_CODES),
+}
+"""Errors and status codes retried for idempotent requests (``True``) and writes (``False``)."""
 _TOKEN_REFRESH_MARGIN = 60.0
 _DEFAULT_TOKEN_LIFETIME = 600.0
 _MAX_RETRY_DELAY = 60.0
@@ -87,10 +95,31 @@ def parse_instance_slug(slug: str) -> tuple[str, str]:
     return owner, name
 
 
+def _registry_url(instance: LaminDBInstance, registry: Registry) -> str:
+    return f"{instance.api_url}/instances/{instance.id}/modules/{registry.module}/{registry.model}"
+
+
+def _written_rows(data: Any, registry: Registry) -> list[dict[str, Any]]:
+    """The rows a write endpoint returns: a list of rows, a single row, or nothing."""
+    if data is None:
+        return []
+    rows = [data] if isinstance(data, dict) else data
+    if not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows):
+        raise LaminDBApiError(f"Unexpected response when writing {registry.name}: {data!r:.200}")
+    return rows
+
+
 def chunk_ids(ids: Iterable[int]) -> list[list[int]]:
     """Split ``ids`` into sorted, de-duplicated chunks that fit an ``in`` filter of one page."""
     unique = sorted(set(ids))
     return [unique[i : i + MAX_PAGE_SIZE] for i in range(0, len(unique), MAX_PAGE_SIZE)]
+
+
+def normalize_registry_name(registry: str) -> tuple[str, str]:
+    """``(module, model)`` of a registry name in lower case, with ``core`` as the default module."""
+    module, _, model = registry.strip().rpartition(".")
+    module = (module or "core").lower()
+    return ("core" if module == "lamindb" else module), model.lower()
 
 
 def resolve_registry(schema: Mapping[str, Any], registry: str | Registry) -> Registry:
@@ -101,11 +130,7 @@ def resolve_registry(schema: Mapping[str, Any], registry: str | Registry) -> Reg
     """
     if isinstance(registry, Registry):
         return registry
-    module, _, model = registry.strip().rpartition(".")
-    module = (module or "core").lower()
-    model = model.lower()
-    if module == "lamindb":
-        module = "core"
+    module, model = normalize_registry_name(registry)
     if (module, model) == (DBWRITE_REGISTRY.module, DBWRITE_REGISTRY.model):
         return DBWRITE_REGISTRY
     models = schema.get(module)
@@ -279,8 +304,10 @@ class LaminDBHook(BaseHook):
         params: Mapping[str, Any] | None = None,
         json: Any = None,
         authenticate: bool = True,
+        idempotent: bool = True,
     ) -> Any:
         client = self.get_conn()
+        retry_errors, retry_status_codes = _RETRY_POLICY[idempotent]
         attempt = 0
         reauthenticated = False
         while True:
@@ -290,7 +317,7 @@ class LaminDBHook(BaseHook):
             try:
                 response = client.request(method, url, params=params, json=json, headers=headers)
             except httpx.TransportError as err:
-                if attempt >= self.retries:
+                if not isinstance(err, retry_errors) or attempt >= self.retries:
                     raise LaminDBApiError(f"LaminHub API request {method} {url} failed: {err}") from err
                 time.sleep(self._backoff(attempt))
                 attempt += 1
@@ -299,7 +326,7 @@ class LaminDBHook(BaseHook):
                 self._access_token = None
                 reauthenticated = True
                 continue
-            if response.status_code in _RETRY_STATUS_CODES and attempt < self.retries:
+            if response.status_code in retry_status_codes and attempt < self.retries:
                 time.sleep(self._backoff(attempt, response))
                 attempt += 1
                 continue
@@ -313,8 +340,10 @@ class LaminDBHook(BaseHook):
         params: Mapping[str, Any] | None = None,
         json: Any = None,
         authenticate: bool = True,
+        idempotent: bool = True,
     ) -> Any:
         client = self.get_async_conn()
+        retry_errors, retry_status_codes = _RETRY_POLICY[idempotent]
         attempt = 0
         reauthenticated = False
         while True:
@@ -324,7 +353,7 @@ class LaminDBHook(BaseHook):
             try:
                 response = await client.request(method, url, params=params, json=json, headers=headers)
             except httpx.TransportError as err:
-                if attempt >= self.retries:
+                if not isinstance(err, retry_errors) or attempt >= self.retries:
                     raise LaminDBApiError(f"LaminHub API request {method} {url} failed: {err}") from err
                 await asyncio.sleep(self._backoff(attempt))
                 attempt += 1
@@ -333,7 +362,7 @@ class LaminDBHook(BaseHook):
                 self._access_token = None
                 reauthenticated = True
                 continue
-            if response.status_code in _RETRY_STATUS_CODES and attempt < self.retries:
+            if response.status_code in retry_status_codes and attempt < self.retries:
                 await asyncio.sleep(self._backoff(attempt, response))
                 attempt += 1
                 continue
@@ -403,7 +432,7 @@ class LaminDBHook(BaseHook):
         search: str | None,
         branch_ids: Sequence[int] | None,
     ) -> tuple[str, dict[str, Any], dict[str, Any]]:
-        url = f"{instance.api_url}/instances/{instance.id}/modules/{registry.module}/{registry.model}"
+        url = _registry_url(instance, registry)
         params = {"limit": limit, "offset": offset, "include_foreign_keys": include_foreign_keys}
         body: dict[str, Any] = {"order_by": normalize_order_by(order_by)}
         if normalized := normalize_filter(filter):
@@ -566,6 +595,29 @@ class LaminDBHook(BaseHook):
         """Return ``{id: user}`` for the given user ids."""
         return self.get_records_by_ids("core.user", ids)
 
+    def insert_records(
+        self, registry: str | Registry, records: Sequence[Mapping[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """
+        Insert records into a registry and return the created rows.
+
+        Needs write access to the instance. Fields are column names, e.g. ``{"name": "treated"}`` or
+        ``{"type_id": 3}``. Inserts are not retried after errors that may have reached LaminHub, so a
+        failed request never creates a record twice.
+        """
+        reg = self.get_registry(registry)
+        url = _registry_url(self.get_instance(), reg)
+        return _written_rows(self._send("PUT", url, json=list(records), idempotent=False), reg)
+
+    def update_record(
+        self, registry: str | Registry, uid: str, values: Mapping[str, Any]
+    ) -> dict[str, Any] | None:
+        """Update fields of the record with ``uid`` and return the updated row (if LaminHub returns it)."""
+        reg = self.get_registry(registry)
+        url = f"{_registry_url(self.get_instance(), reg)}/{uid}"
+        rows = _written_rows(self._send("PATCH", url, json=dict(values)), reg)
+        return rows[0] if rows else None
+
     def test_connection(self) -> tuple[bool, str]:
         """Test the connection by resolving the instance and reading its database write log."""
         try:
@@ -679,3 +731,20 @@ class LaminDBHook(BaseHook):
     async def aget_users(self, ids: Iterable[int]) -> dict[int, dict[str, Any]]:
         """Async version of :meth:`get_users`."""
         return await self.aget_records_by_ids("core.user", ids)
+
+    async def ainsert_records(
+        self, registry: str | Registry, records: Sequence[Mapping[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """Async version of :meth:`insert_records`."""
+        reg = await self.aget_registry(registry)
+        url = _registry_url(await self.aget_instance(), reg)
+        return _written_rows(await self._asend("PUT", url, json=list(records), idempotent=False), reg)
+
+    async def aupdate_record(
+        self, registry: str | Registry, uid: str, values: Mapping[str, Any]
+    ) -> dict[str, Any] | None:
+        """Async version of :meth:`update_record`."""
+        reg = await self.aget_registry(registry)
+        url = f"{_registry_url(await self.aget_instance(), reg)}/{uid}"
+        rows = _written_rows(await self._asend("PATCH", url, json=dict(values)), reg)
+        return rows[0] if rows else None
