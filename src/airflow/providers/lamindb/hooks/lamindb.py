@@ -87,6 +87,12 @@ def parse_instance_slug(slug: str) -> tuple[str, str]:
     return owner, name
 
 
+def chunk_ids(ids: Iterable[int]) -> list[list[int]]:
+    """Split ``ids`` into sorted, de-duplicated chunks that fit an ``in`` filter of one page."""
+    unique = sorted(set(ids))
+    return [unique[i : i + MAX_PAGE_SIZE] for i in range(0, len(unique), MAX_PAGE_SIZE)]
+
+
 def resolve_registry(schema: Mapping[str, Any], registry: str | Registry) -> Registry:
     """
     Resolve ``module.model`` (for example ``core.artifact`` or ``bionty.Gene``) using an instance schema.
@@ -426,11 +432,6 @@ class LaminDBHook(BaseHook):
             return {"id": {"eq": branch}}
         return {"name": {"eq": branch}}
 
-    @staticmethod
-    def _chunks(ids: Iterable[int]) -> list[list[int]]:
-        unique = sorted(set(ids))
-        return [unique[i : i + MAX_PAGE_SIZE] for i in range(0, len(unique), MAX_PAGE_SIZE)]
-
     # -- synchronous API ---------------------------------------------------------------------------
 
     def get_instance_slug(self) -> str:
@@ -522,7 +523,7 @@ class LaminDBHook(BaseHook):
     ) -> dict[int, dict[str, Any]]:
         """Fetch records by id, optionally restricted by an additional filter. Returns ``{id: record}``."""
         records: dict[int, dict[str, Any]] = {}
-        for chunk in self._chunks(ids):
+        for chunk in chunk_ids(ids):
             combined = combine_filters({"id": {"in": chunk}}, filter)
             for record in self.query_records(registry, combined, limit=len(chunk)):
                 records[record["id"]] = record
@@ -643,7 +644,7 @@ class LaminDBHook(BaseHook):
     ) -> dict[int, dict[str, Any]]:
         """Async version of :meth:`get_records_by_ids`."""
         records: dict[int, dict[str, Any]] = {}
-        for chunk in self._chunks(ids):
+        for chunk in chunk_ids(ids):
             combined = combine_filters({"id": {"in": chunk}}, filter)
             for record in await self.aquery_records(registry, combined, limit=len(chunk)):
                 records[record["id"]] = record

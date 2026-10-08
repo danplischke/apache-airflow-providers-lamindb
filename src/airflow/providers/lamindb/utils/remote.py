@@ -12,7 +12,7 @@ import inspect
 import logging
 import re
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any
@@ -20,7 +20,7 @@ from typing import Any
 from packaging.version import InvalidVersion, Version
 
 from airflow.exceptions import AirflowException, AirflowNotFoundException
-from airflow.providers.lamindb.hooks.lamindb import LaminDBHook
+from airflow.providers.lamindb.hooks.lamindb import LaminDBHook, parse_instance_slug
 from airflow.providers.lamindb.utils import runtime
 from airflow.providers.lamindb.utils.dag_run import context_flow_run_reference, dag_source, task_instance_url
 
@@ -28,6 +28,7 @@ log = logging.getLogger(__name__)
 
 _LAMINDB_REQUIREMENT = re.compile(r"^\s*lamindb(?P<core>[-_.]core)?\s*($|[\[<>=!~;@\s])", re.IGNORECASE)
 _REQUIREMENT_NAME = re.compile(r"^\s*([A-Za-z0-9][A-Za-z0-9._-]*)")
+_REQUIREMENT_COMMENT = re.compile(r"(^|\s)#.*$")
 
 LAMINDB_CORE_MIN_VERSION = Version("2.6.1")
 """First lamindb release that is also published as ``lamindb-core``."""
@@ -84,14 +85,26 @@ def {function_name}(lamindb_airflow_config):
     )
 
 
-def _requirement_name(requirement: Any) -> str | None:
-    match = _REQUIREMENT_NAME.match(str(requirement))
+def _requirement_lines(requirements: Iterable[Any]) -> Iterator[str]:
+    """Yield each requirement, also from multi-line elements such as a rendered requirements file.
+
+    Skips blank lines, comments and pip options such as ``-r other.txt``, whose contents can't be seen.
+    """
+    for requirement in requirements:
+        for line in str(requirement).splitlines():
+            line = _REQUIREMENT_COMMENT.sub("", line).strip()
+            if line and not line.startswith("-"):
+                yield line
+
+
+def _requirement_name(requirement: str) -> str | None:
+    match = _REQUIREMENT_NAME.match(requirement)
     return re.sub(r"[-_.]+", "-", match.group(1)).lower() if match else None
 
 
-def is_lamindb_requirement(requirement: Any) -> bool:
-    """True for ``lamindb`` and ``lamindb-core`` requirements."""
-    return bool(_LAMINDB_REQUIREMENT.match(str(requirement)))
+def lamindb_requirement_lines(requirements: Iterable[Any]) -> list[str]:
+    """The ``lamindb`` and ``lamindb-core`` requirements among ``requirements``."""
+    return [line for line in _requirement_lines(requirements) if _LAMINDB_REQUIREMENT.match(line)]
 
 
 def lamindb_requirements(lamindb_version: str | None = None) -> list[str]:
@@ -114,11 +127,14 @@ def add_lamindb_requirement(requirements: list[str], lamindb_version: str | None
     """Append lamindb to ``requirements`` unless the full ``lamindb`` is listed already.
 
     A listed ``lamindb-core`` is kept and only completed with the packages it does not declare.
+    Multi-line elements (a rendered requirements file) are searched line by line; a nested
+    ``-r other.txt`` is not, so list lamindb directly or pass ``lamindb_version`` then.
     """
-    lamindb = [m for r in requirements if (m := _LAMINDB_REQUIREMENT.match(str(r)))]
+    lines = list(_requirement_lines(requirements))
+    lamindb = [m for line in lines if (m := _LAMINDB_REQUIREMENT.match(line))]
     if any(not m.group("core") for m in lamindb):
         return
-    listed = {_requirement_name(r) for r in requirements}
+    listed = {_requirement_name(line) for line in lines}
     to_add = list(LAMINDB_CORE_COMPANIONS) if lamindb else lamindb_requirements(lamindb_version)
     requirements.extend(r for r in to_add if _requirement_name(r) not in listed)
 
@@ -136,34 +152,37 @@ class RemoteLaminDB:
     conn_id: str | None
     instance: str | None
     api_key: str | None = field(default=None, repr=False)
+    _hook: LaminDBHook | None = field(default=None, repr=False, compare=False)
 
     @classmethod
     def resolve(cls, conn_id: str | None, instance: str | None) -> RemoteLaminDB:
         if conn_id is None:
-            return cls(conn_id=None, instance=instance)
+            return cls(conn_id=None, instance="/".join(parse_instance_slug(instance)) if instance else None)
         hook = LaminDBHook(lamindb_conn_id=conn_id, instance=instance)
         try:
-            return cls(conn_id=conn_id, instance=hook.get_instance_slug(), api_key=hook.get_api_key())
+            return cls(
+                conn_id=conn_id, instance=hook.get_instance_slug(), api_key=hook.get_api_key(), _hook=hook
+            )
         except AirflowNotFoundException as e:
             raise AirflowNotFoundException(
-                f"{e}. Create a 'lamindb' connection with the Lamin API key and the instance, or pass "
-                "lamindb_conn_id=None to use lamindb's own configuration in the virtualenv or pod."
+                f"{e}. Create the {conn_id!r} connection of type 'lamindb' with the Lamin API key and the "
+                "instance, or pass lamindb_conn_id=None if the virtualenv or pod brings its own lamindb "
+                "credentials (LAMIN_API_KEY, LAMIN_CURRENT_INSTANCE, ~/.lamin)."
             ) from e
 
     def instance_lamindb_version(self) -> str | None:
         """The instance's lamindb version according to LaminHub, or None if unknown."""
-        if self.conn_id is None:
+        if self._hook is None:
             return None
-        hook = LaminDBHook(lamindb_conn_id=self.conn_id, instance=self.instance)
         try:
-            return hook.get_instance().lamindb_version
+            return self._hook.get_instance().lamindb_version
         except Exception as e:
             log.warning(
                 "Could not look up the lamindb version of %s, installing the latest: %s", self.instance, e
             )
             return None
         finally:
-            hook.close()
+            self._hook.close()
 
 
 def ensure_lamindb_requirement(operator: Any, remote: RemoteLaminDB, lamindb_version: str | None) -> None:
@@ -173,7 +192,7 @@ def ensure_lamindb_requirement(operator: Any, remote: RemoteLaminDB, lamindb_ver
     else unpinned. The remote side must speak the instance's schema version.
     """
     requirements = list(operator.requirements)
-    if not any(is_lamindb_requirement(r) for r in requirements):
+    if not lamindb_requirement_lines(requirements):
         lamindb_version = lamindb_version or remote.instance_lamindb_version()
     add_lamindb_requirement(requirements, lamindb_version)
     operator.requirements = requirements
@@ -222,7 +241,8 @@ class RemoteLaminDBStepMixin:
     """Bind a virtualenv/pod step to the flow run by rewriting the shipped source.
 
     :param lamindb_conn_id: Airflow connection of type ``lamindb`` with the Lamin API key and the
-        instance. ``None`` uses lamindb's own configuration in the virtualenv or pod instead.
+        instance; the step fails if it does not exist. ``None`` uses lamindb's own configuration in
+        the virtualenv or pod instead.
     :param lamindb_instance: instance slug (``owner/name``) to connect to remotely; overrides the
         connection's instance.
     :param auto_flow: wire ``init >> step >> finish`` with the DAG's flow operators,

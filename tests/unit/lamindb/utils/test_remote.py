@@ -2,17 +2,19 @@ from __future__ import annotations
 
 import json
 import os
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 import respx
+from airflow.exceptions import AirflowNotFoundException
 
-from airflow.providers.lamindb.hooks.lamindb import DEFAULT_HUB_API_URL
+from airflow.providers.lamindb.hooks.lamindb import DEFAULT_HUB_API_URL, LaminDBHook
 from airflow.providers.lamindb.utils.remote import (
     RemoteLaminDB,
     add_lamindb_requirement,
     build_remote_flow_source,
     build_remote_step_source,
+    lamindb_requirement_lines,
     lamindb_requirements,
     lamindb_virtualenv_env,
 )
@@ -84,11 +86,24 @@ CORE_COMPANIONS = ["numpy", "pandas>=2.0.0", "pandera>=0.24.0"]
         (["lamindb_core", "Pandas"], ["lamindb_core", "Pandas", "numpy", "pandera>=0.24.0"]),
         (["lamindb_setup"], ["lamindb_setup", "lamindb-core==9.9", *CORE_COMPANIONS]),
         (["lamindb-airflow"], ["lamindb-airflow", "lamindb-core==9.9", *CORE_COMPANIONS]),
+        # a rendered requirements file is one multi-line element
+        (["pandas\nlamindb==1.3.0"], ["pandas\nlamindb==1.3.0"]),
+        (["# comment\n\n  lamindb  # pinned below"], ["# comment\n\n  lamindb  # pinned below"]),
+        (
+            ["pandas\nlamindb-core==2.7.0"],
+            ["pandas\nlamindb-core==2.7.0", "numpy", "pandera>=0.24.0"],
+        ),
+        (["-r base.txt\npandas"], ["-r base.txt\npandas", "lamindb-core==9.9", "numpy", "pandera>=0.24.0"]),
     ],
 )
 def test_add_lamindb_requirement(requirements: list[str], expected: list[str]) -> None:
     add_lamindb_requirement(requirements, "9.9")
     assert requirements == expected
+
+
+def test_lamindb_requirement_lines() -> None:
+    requirements = ["pandas\nlamindb[bionty]==1.3.0  # pinned\n-r lamindb.txt", "lamindb-core"]
+    assert lamindb_requirement_lines(requirements) == ["lamindb[bionty]==1.3.0", "lamindb-core"]
 
 
 @pytest.mark.parametrize(
@@ -123,13 +138,33 @@ def test_remote_lamindb_without_connection() -> None:
     assert RemoteLaminDB(conn_id=None, instance="owner/name").instance_lamindb_version() is None
 
 
-def test_instance_lamindb_version_from_laminhub(connection) -> None:
+@pytest.mark.parametrize("instance", ["owner/name/", " owner/name ", "/owner/name"])
+def test_remote_lamindb_without_connection_normalises_the_instance(instance: str) -> None:
+    assert RemoteLaminDB.resolve(None, instance).instance == "owner/name"
+
+
+def test_remote_lamindb_without_connection_rejects_invalid_instances() -> None:
+    with pytest.raises(ValueError, match="expected the form 'owner/name'"):
+        RemoteLaminDB.resolve(None, "owner")
+
+
+def test_missing_connection_is_an_error(monkeypatch) -> None:
+    monkeypatch.delenv("AIRFLOW_CONN_LAMINDB_DEFAULT", raising=False)
+    with pytest.raises(AirflowNotFoundException, match=r"'lamindb_default' connection.*lamindb_conn_id=None"):
+        RemoteLaminDB.resolve("lamindb_default", None)
+
+
+def test_instance_lamindb_version_reuses_the_resolved_connection(connection) -> None:
     settings_url = f"{DEFAULT_HUB_API_URL}/instances/owner/name/settings"
     settings = {"id": "abc", "api_url": "https://api.example.com", "lamindb_version": "2.9.0"}
-    with respx.mock() as router:
+    with (
+        respx.mock() as router,
+        patch.object(LaminDBHook, "get_connection", wraps=LaminDBHook.get_connection) as get_connection,
+    ):
         router.post(f"{DEFAULT_HUB_API_URL}/account/jwt").respond(json={"accessToken": "token"})
         router.get(settings_url).respond(json=settings)
         assert RemoteLaminDB.resolve("lamindb_test", None).instance_lamindb_version() == "2.9.0"
+    get_connection.assert_called_once()
 
 
 def test_instance_lamindb_version_falls_back_to_latest(connection, caplog) -> None:

@@ -5,7 +5,13 @@ from collections.abc import AsyncIterator, Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
 from airflow.providers.lamindb.exceptions import LaminDBApiError
-from airflow.providers.lamindb.hooks.lamindb import LaminDBHook, LaminDBInstance, Registry
+from airflow.providers.lamindb.hooks.lamindb import (
+    MAX_PAGE_SIZE,
+    LaminDBHook,
+    LaminDBInstance,
+    Registry,
+    chunk_ids,
+)
 from airflow.providers.lamindb.triggers.base import LaminDBDbWriteEventTrigger
 from airflow.providers.lamindb.utils.dbwrite import (
     RECORD_EVENTS,
@@ -403,24 +409,27 @@ class LaminDBArtifactEventTrigger(LaminDBRecordEventTrigger):
         self, hook: LaminDBHook, candidates: list[_Candidate]
     ) -> dict[int, list[int]]:
         """Return the ids of upload-completion writes per artifact id."""
-        ids = sorted({w["sqlrecord_id"] for w, kind in candidates if kind == "created"})
+        ids = {w["sqlrecord_id"] for w, kind in candidates if kind == "created"}
         completions: dict[int, list[int]] = {}
-        for start in range(0, len(ids), 200):
-            chunk = ids[start : start + 200]
-            writes = await hook.aquery_dbwrites(
-                {
-                    "and": [
-                        {"table_name": {"eq": self._resolved_registry.table_name}},
-                        {"event_type": {"eq": "UPDATE"}},
-                        {"sqlrecord_id": {"in": chunk}},
-                        {'data["_aux"]': {"isnull": False}},
-                    ]
-                },
-                limit=10 * len(chunk),
-            )
-            for write in writes:
-                if is_upload_completion(write):
-                    completions.setdefault(write["sqlrecord_id"], []).append(write["id"])
+        for chunk in chunk_ids(ids):
+            aux_filter = {
+                "and": [
+                    {"table_name": {"eq": self._resolved_registry.table_name}},
+                    {"event_type": {"eq": "UPDATE"}},
+                    {"sqlrecord_id": {"in": chunk}},
+                    {'data["_aux"]': {"isnull": False}},
+                ]
+            }
+            # every _aux update of the chunk: a capped page could miss another artifact's completion
+            after_id = None
+            while True:
+                writes = await hook.aquery_dbwrites(aux_filter, after_id=after_id, limit=MAX_PAGE_SIZE)
+                for write in writes:
+                    if is_upload_completion(write):
+                        completions.setdefault(write["sqlrecord_id"], []).append(write["id"])
+                if len(writes) < MAX_PAGE_SIZE:
+                    break
+                after_id = writes[-1]["id"]
         return completions
 
 

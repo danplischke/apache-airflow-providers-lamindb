@@ -3,7 +3,9 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import time
+from collections import deque
 from collections.abc import AsyncIterator, Iterable, Mapping
 from typing import TYPE_CHECKING, Any
 
@@ -19,16 +21,27 @@ _MIN_COMMIT_DELAY = 5.0
 """Minimum seconds between yielding events and committing the cursor past them."""
 _MAX_ERROR_BACKOFF = 600.0
 
+log = logging.getLogger(__name__)
+
 
 def _state_accessors(store: Any) -> list[Any]:
-    """Return one accessor per watched asset from an ``AssetStateStoreAccessors`` (or a single accessor)."""
+    """Return one accessor per watched asset from an ``AssetStateStoreAccessors`` (or a single accessor).
+
+    Airflow has no public API that lists the accessors of several watched assets, so this reads
+    ``_by_name``/``_by_uri``; ``test_base.py`` checks them against the installed Airflow.
+    """
     if store is None:
         return []
     by_name = getattr(store, "_by_name", None)
     by_uri = getattr(store, "_by_uri", None)
     if isinstance(by_name, dict) and isinstance(by_uri, dict):
         return [*by_name.values(), *by_uri.values()]
-    return [store]
+    if callable(getattr(store, "aget", None)) and callable(getattr(store, "aset", None)):
+        return [store]
+    log.warning(
+        "Unsupported asset state store %s; the cursor is kept in memory only", type(store).__qualname__
+    )
+    return []
 
 
 class _CursorStore:
@@ -174,7 +187,8 @@ class LaminDBDbWriteEventTrigger(BaseEventTrigger):
                 "Use this trigger in an AssetWatcher to resume after triggerer restarts."
             )
         cursor: int | None = None
-        pending: tuple[int, float] | None = None
+        # (cursor, yielded_at), oldest first
+        pending: deque[tuple[int, float]] = deque()
         is_setup = False
         failures = 0
         try:
@@ -186,9 +200,7 @@ class LaminDBDbWriteEventTrigger(BaseEventTrigger):
                         is_setup = True
                     if cursor is None:
                         cursor = await self._initial_cursor(hook, cursor_store, instance)
-                    if pending is not None and time.monotonic() - pending[1] >= _MIN_COMMIT_DELAY:
-                        await cursor_store.save(pending[0], instance.id)
-                        pending = None
+                    await self._commit_pending(cursor_store, pending, instance.id)
                     for _ in range(self.max_batches_per_poll):
                         writes = await hook.aquery_dbwrites(
                             self._dbwrite_filter(), after_id=cursor, limit=self.batch_size
@@ -198,7 +210,7 @@ class LaminDBDbWriteEventTrigger(BaseEventTrigger):
                         for event in await self._events_for(hook, instance, writes):
                             yield event
                         cursor = max(int(write["id"]) for write in writes)
-                        pending = (cursor, time.monotonic())
+                        pending.append((cursor, time.monotonic()))
                         if len(writes) < self.batch_size:
                             break
                     failures = 0
@@ -215,6 +227,18 @@ class LaminDBDbWriteEventTrigger(BaseEventTrigger):
                 await asyncio.sleep(delay)
         finally:
             await hook.aclose()
+
+    @staticmethod
+    async def _commit_pending(
+        cursor_store: _CursorStore, pending: deque[tuple[int, float]], instance_id: str
+    ) -> None:
+        """Commit the newest pending cursor whose events were yielded at least _MIN_COMMIT_DELAY ago."""
+        now = time.monotonic()
+        ready = None
+        while pending and now - pending[0][1] >= _MIN_COMMIT_DELAY:
+            ready = pending.popleft()[0]
+        if ready is not None:
+            await cursor_store.save(ready, instance_id)
 
     # -- helpers for subclasses ----------------------------------------------------------------------
 

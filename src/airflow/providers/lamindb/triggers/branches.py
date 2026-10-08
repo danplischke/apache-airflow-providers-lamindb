@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Iterable, Sequence
 from fnmatch import fnmatchcase
 from typing import TYPE_CHECKING, Any
 
 from airflow.providers.lamindb.exceptions import LaminDBApiError
-from airflow.providers.lamindb.hooks.lamindb import LaminDBHook, LaminDBInstance
+from airflow.providers.lamindb.hooks.lamindb import MAX_PAGE_SIZE, LaminDBHook, LaminDBInstance
 from airflow.providers.lamindb.triggers.base import LaminDBDbWriteEventTrigger
 from airflow.providers.lamindb.utils.dbwrite import previous_values, resolve_status_transitions
 from airflow.providers.lamindb.utils.lamindb import (
@@ -108,22 +108,10 @@ class LaminDBBranchStatusEventTrigger(LaminDBDbWriteEventTrigger):
         writes = [w for w in writes if _STATUS_FIELD in previous_values(w)]
         if not writes:
             return []
-        branch_ids = sorted({w["sqlrecord_id"] for w in writes})
+        branch_ids = {w["sqlrecord_id"] for w in writes}
         # the write log only stores previous values: the new status is the previous value of the next
         # status change after this batch or, if there is none, the current status
-        later_writes = await hook.aquery_dbwrites(
-            {
-                "and": [
-                    *self._dbwrite_filter()["and"],
-                    {"sqlrecord_id": {"in": branch_ids}},
-                ]
-            },
-            after_id=max(w["id"] for w in writes),
-            limit=1000,
-        )
-        later_codes: dict[int, int] = {}
-        for write in later_writes:
-            later_codes.setdefault(write["sqlrecord_id"], previous_values(write)[_STATUS_FIELD])
+        later_codes = await self._later_status_codes(hook, branch_ids, after_id=max(w["id"] for w in writes))
         branches = await hook.aget_records_by_ids("core.branch", branch_ids)
         current_codes = {branch_id: branch.get(_STATUS_FIELD, 0) for branch_id, branch in branches.items()}
 
@@ -157,6 +145,28 @@ class LaminDBBranchStatusEventTrigger(LaminDBDbWriteEventTrigger):
             )
             for write, from_status, to_status, branch in transitions
         ]
+
+    async def _later_status_codes(
+        self, hook: LaminDBHook, branch_ids: Iterable[int], *, after_id: int
+    ) -> dict[int, int]:
+        """The previous status of each branch's first status change after ``after_id``, if any."""
+        later_codes: dict[int, int] = {}
+        unresolved = set(branch_ids)
+        # only unresolved branches are queried, so every full page resolves at least one of them
+        while unresolved:
+            page = await hook.aquery_dbwrites(
+                {"and": [*self._dbwrite_filter()["and"], {"sqlrecord_id": {"in": sorted(unresolved)}}]},
+                after_id=after_id,
+                limit=MAX_PAGE_SIZE,
+            )
+            for write in page:
+                if write["sqlrecord_id"] in unresolved:
+                    later_codes[write["sqlrecord_id"]] = previous_values(write)[_STATUS_FIELD]
+                    unresolved.discard(write["sqlrecord_id"])
+            if len(page) < MAX_PAGE_SIZE:
+                break
+            after_id = page[-1]["id"]
+        return later_codes
 
 
 class LaminDBBranchBlockEventTrigger(LaminDBDbWriteEventTrigger):

@@ -97,6 +97,24 @@ class TestBranchStatusEventTrigger:
         events = await events_for(LaminDBBranchStatusEventTrigger(**kwargs), hook)
         assert [e["dbwrite"]["id"] for e in events] == expected
 
+    async def test_next_status_change_far_after_the_batch(self):
+        """Status writes of other branches between a branch's changes do not hide its next change."""
+        churn = [status_write(i, 11, i % 2) for i in range(3, 1503)]  # branch 11: standalone <-> draft
+        writes = [
+            status_write(1, 10, 1),  # draft -> review
+            status_write(2, 11, 0),
+            *churn,
+            status_write(1503, 10, 2),  # review -> merged (current status)
+        ]
+        records = {"core.branch": {10: branch(10, "a", -1), 11: branch(11, "b", 0)}}
+        hook = FakeHook(writes=writes, records=records)
+
+        events = await events_for(LaminDBBranchStatusEventTrigger(branch_name="a"), hook, up_to=2)
+
+        assert [(e["from_status"], e["to_status"]) for e in events] == [("draft", "review")]
+        # each query only asks for branches still unresolved, so it takes one query per branch at most
+        assert len(hook.dbwrite_queries) == 2
+
     async def test_skips_deleted_branches_and_noops(self):
         hook = FakeHook(
             writes=[status_write(1, 10, 1), status_write(2, 11, 2)],

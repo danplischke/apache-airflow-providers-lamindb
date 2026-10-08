@@ -52,6 +52,13 @@ def lamindb_k8s_task(
     exactly as under ``@task.kubernetes``). The image must have lamindb installed and
     credentials for the instance, e.g. ``LAMIN_API_KEY`` from a Kubernetes secret. The
     worker needs no lamindb. Requires ``pip install "lamindb-airflow[cncf.kubernetes]"``.
+
+    The step needs the ``lamindb_default`` connection (or the one named by
+    ``lamindb_conn_id``) and fails if it is missing. Pass ``lamindb_conn_id=None`` to
+    use only the pod's own lamindb configuration, together with ``lamindb_instance`` to
+    pin the instance. The auto-wired flow operators get the same ``lamindb_conn_id``, so
+    with ``None`` they use the worker's lamindb configuration (``LAMIN_API_KEY``,
+    ``LAMIN_CURRENT_INSTANCE``, ``~/.lamin``) in their virtualenv.
     """
     try:
         operator_class = _lamindb_k8s_decorated_operator_class()

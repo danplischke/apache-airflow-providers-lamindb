@@ -32,8 +32,4 @@ def __getattr__(name: str) -> Any:
         from airflow.providers.lamindb import operators
 
         return getattr(operators, name)
-    if name in ("LaminDBVenvFlowInitOperator", "LaminDBVenvFlowFinishOperator"):
-        from airflow.providers.lamindb.operators.flow import deprecated_alias
-
-        return deprecated_alias(name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

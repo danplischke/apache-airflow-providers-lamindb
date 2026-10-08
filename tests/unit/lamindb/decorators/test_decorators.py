@@ -115,6 +115,17 @@ def test_step_on_another_instance_than_the_flow_run_fails_early(
     fake_lamindb.track.assert_not_called()
 
 
+def test_step_instance_is_compared_normalised(fake_lamindb: MagicMock, make_context) -> None:
+    fake_lamindb.flow_run = MagicMock(uid="flowuid")
+    op = _single_task(task.lamindb_venv(lamindb_conn_id=None, lamindb_instance=" owner/name/ "), step)
+    context = make_context()
+    context["ti"].xcom_pull.return_value = "owner/name"
+
+    result, _ = _execute_in_fake_venv(op, context)
+    assert result == 1
+    fake_lamindb.connect.assert_called_once_with("owner/name")
+
+
 def test_step_without_connection_uses_lamindb_configuration(fake_lamindb: MagicMock, make_context) -> None:
     fake_lamindb.flow_run = MagicMock(uid="flowuid")
     op = _single_task(task.lamindb_venv(lamindb_conn_id=None), step)
@@ -180,3 +191,43 @@ def test_task_lamindb_k8s_gets_only_the_instance_from_the_connection(
 
     assert "'instance': 'owner/name'" in seen["source"]
     assert "api-key" not in repr(seen)  # the pod's credentials come from a Kubernetes secret
+
+
+def test_task_lamindb_k8s_without_connection_uses_the_pod_configuration(
+    fake_lamindb: MagicMock, make_context, monkeypatch
+) -> None:
+    pytest.importorskip("airflow.providers.cncf.kubernetes")
+    monkeypatch.delenv("AIRFLOW_CONN_LAMINDB_DEFAULT", raising=False)
+
+    @dag
+    def test_dag():
+        task.lamindb_k8s(image="python:3.12", lamindb_conn_id=None)(step)()
+
+    built = test_dag()
+    op = built.get_task("step")
+    assert built.get_task("lamindb_flow_init").lamindb_conn_id is None
+    assert built.get_task("lamindb_flow_finish").lamindb_conn_id is None
+    context = make_context()
+    context["ti"].xcom_pull.return_value = None
+    seen = {}
+
+    def fake_pod_execute(self, context):
+        seen["source"] = self.get_python_source()
+
+    with (
+        patch.object(remote, "dag_source", return_value="# dag source"),
+        patch.object(type(op).__mro__[2], "execute", fake_pod_execute),
+    ):
+        op.execute(context)
+
+    assert "'instance': None" in seen["source"]
+
+
+def test_task_lamindb_k8s_fails_without_the_default_connection(make_context, monkeypatch) -> None:
+    pytest.importorskip("airflow.providers.cncf.kubernetes")
+    from airflow.exceptions import AirflowNotFoundException
+
+    monkeypatch.delenv("AIRFLOW_CONN_LAMINDB_DEFAULT", raising=False)
+    op = _single_task(task.lamindb_k8s(image="python:3.12"), step)
+    with pytest.raises(AirflowNotFoundException, match=r"'lamindb_default' connection.*lamindb_conn_id=None"):
+        op.execute(make_context())

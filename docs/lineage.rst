@@ -85,9 +85,6 @@ steps, to configure them:
     :start-after: [START howto_operator_lamindb_flow]
     :end-before: [END howto_operator_lamindb_flow]
 
-Their previous names ``LaminDBVenvFlowInitOperator`` and ``LaminDBVenvFlowFinishOperator`` still work
-but emit an ``AirflowProviderDeprecationWarning``.
-
 Auto-wiring
 -----------
 
@@ -123,11 +120,14 @@ The lineage operators and decorators accept these arguments, also through a DAG'
     The :doc:`connection <connections/lamindb>` with the Lamin API key and the instance. Virtualenvs get
     the API key as ``LAMIN_API_KEY`` and a temporary, empty ``LAMIN_SETTINGS_DIR``, so lamindb never reads
     the worker's ``~/.lamin``. Both are set only while the task runs and are never rendered; explicit
-    ``env_vars`` of a task take precedence. Pods only get the instance.
+    ``env_vars`` of a task take precedence. Pods only get the instance. A task fails if its connection
+    does not exist; there is no fallback to lamindb's own configuration.
 
     ``None`` uses lamindb's own configuration (``LAMIN_API_KEY``, ``~/.lamin``) instead, for example for
-    instances that aren't hosted on LaminHub. Then also pass ``lamindb_instance`` or set
-    ``LAMIN_CURRENT_INSTANCE``: the virtualenv runs outside your project directory.
+    instances that aren't hosted on LaminHub, or for ``@task.lamindb_k8s`` steps whose pods bring their
+    own credentials. Then also pass ``lamindb_instance`` or set ``LAMIN_CURRENT_INSTANCE``: the virtualenv
+    runs outside your project directory. Auto-wired flow operators get the step's ``lamindb_conn_id``,
+    so with ``None`` they use the worker's lamindb configuration in their virtualenv.
 
 ``lamindb_instance``
     The instance slug ``owner/name``; overrides the connection's.

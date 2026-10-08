@@ -61,6 +61,15 @@ async def collect(trigger) -> list[dict[str, Any]]:
     return events
 
 
+async def _run_until_stopped(trigger):
+    stream = trigger.run()
+    try:
+        while True:
+            yield (await stream.__anext__()).payload
+    except StopPolling:
+        return
+
+
 def stored(cursor: int, instance_id: str = INSTANCE.id) -> dict[str, Any]:
     return {"dbwrite_id": cursor, "instance_id": instance_id}
 
@@ -141,6 +150,35 @@ class TestPolling:
 
         assert store.writes == []
 
+    async def test_cursor_is_committed_under_steady_writes(self, fake_hook_factory, sleeps, monkeypatch):
+        monkeypatch.setattr(base, "_MIN_COMMIT_DELAY", 5.0)
+        clock = {"now": 0.0}
+        monkeypatch.setattr(base.time, "monotonic", lambda: clock["now"])
+        yielded_at: dict[int, float] = {}
+        saved_at: list[tuple[int, float]] = []
+
+        class TimedStore(FakeStateStore):
+            async def aset(self, key, value):
+                saved_at.append((value["dbwrite_id"], clock["now"]))
+                await super().aset(key, value)
+
+        trigger = EchoTrigger(poll_interval=2)
+        trigger.asset_state_store = TimedStore({trigger.state_key: stored(0)})
+        hook = fake_hook_factory(trigger, FakeHook(writes=[dbwrite(1, "INSERT", "t", 1)]))
+
+        def next_cycle(write_id: int) -> None:
+            clock["now"] += 2
+            hook.writes.append(dbwrite(write_id, "INSERT", "t", write_id))
+
+        sleeps["callbacks"].extend(lambda i=i: next_cycle(i) for i in range(2, 8))
+
+        async for event in _run_until_stopped(trigger):
+            yielded_at[event["dbwrite"]["id"]] = clock["now"]
+
+        assert [cursor for cursor, _ in saved_at] == [1, 2, 3, 4]
+        # never past events yielded less than _MIN_COMMIT_DELAY ago (at least once)
+        assert all(saved - yielded_at[cursor] >= 5.0 for cursor, saved in saved_at)
+
     async def test_drains_in_batches(self, fake_hook_factory, sleeps):
         trigger = EchoTrigger(batch_size=2, max_batches_per_poll=2)
         trigger.asset_state_store = FakeStateStore({trigger.state_key: stored(0)})
@@ -194,6 +232,19 @@ class TestCursorStore:
         assert await cursor_store.load(INSTANCE.id) == 3
         await cursor_store.save(9, INSTANCE.id)
         assert first.data["k"] == second.data["k"] == third.data["k"] == stored(9)
+
+    async def test_real_airflow_accessors_with_multiple_assets(self):
+        from airflow.sdk import Asset
+        from airflow.sdk.execution_time.context import AssetStateStoreAccessors
+
+        store = AssetStateStoreAccessors(
+            inlets=[Asset("a"), Asset("b")], outlets=[Asset(name="c", uri="s3://c")]
+        )
+        assert len(_CursorStore(store, "k")._accessors) == 3
+
+    async def test_unsupported_store_disables_persistence(self, caplog):
+        assert not _CursorStore(object(), "k").is_persistent
+        assert "Unsupported asset state store object" in caplog.text
 
     async def test_invalid_values_are_ignored(self):
         cursor_store = _CursorStore(

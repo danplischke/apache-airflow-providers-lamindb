@@ -12,7 +12,7 @@ from airflow.providers.lamindb.utils.remote import (
     RemoteLaminDB,
     RemoteLaminDBStepMixin,
     ensure_lamindb_requirement,
-    is_lamindb_requirement,
+    lamindb_requirement_lines,
     lamindb_virtualenv_env,
 )
 from airflow.providers.standard.decorators.python_virtualenv import _PythonVirtualenvDecoratedOperator
@@ -53,7 +53,7 @@ class LaminDBVenvDecoratedOperator(RemoteLaminDBStepMixin, _PythonVirtualenvDeco
                 lamindb_conn_id=self.lamindb_conn_id,
                 lamindb_instance=self.lamindb_instance,
                 lamindb_version=self.lamindb_version,
-                requirements=[r for r in self.requirements if is_lamindb_requirement(r)],
+                requirements=lamindb_requirement_lines(self.requirements),
                 **{name: getattr(self, name) for name in _SHARED_VENV_ARGS if hasattr(self, name)},
             )
 

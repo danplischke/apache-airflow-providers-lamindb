@@ -5,10 +5,8 @@ Both run lamindb inside a virtualenv, so the worker needs no lamindb.
 
 from __future__ import annotations
 
-import warnings
 from typing import TYPE_CHECKING, Any
 
-from airflow.exceptions import AirflowProviderDeprecationWarning
 from airflow.providers.lamindb.hooks.lamindb import LaminDBHook
 from airflow.providers.lamindb.utils.dag_run import (
     context_flow_run_reference,
@@ -192,29 +190,6 @@ class LaminDBFlowFinishOperator(_LaminDBFlowOperator):
             "reference": context_flow_run_reference(context),
             "success": not dag_run_failed(context, self.task_id, self.log),
         }
-
-
-DEPRECATED_NAMES = {
-    "LaminDBVenvFlowInitOperator": "LaminDBFlowInitOperator",
-    "LaminDBVenvFlowFinishOperator": "LaminDBFlowFinishOperator",
-}
-
-
-def deprecated_alias(name: str) -> type[_LaminDBFlowOperator]:
-    """Resolve a deprecated operator name; call it from a module ``__getattr__``."""
-    new_name = DEPRECATED_NAMES[name]
-    warnings.warn(
-        f"{name} is deprecated; use {new_name} instead.",
-        AirflowProviderDeprecationWarning,
-        stacklevel=2,  # the import in user code; see test_deprecated_import_warns_at_the_import
-    )
-    return globals()[new_name]
-
-
-def __getattr__(name: str) -> Any:
-    if name in DEPRECATED_NAMES:
-        return deprecated_alias(name)
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def wire_flow_tasks(step: BaseOperator, **flow_kwargs: Any) -> None:

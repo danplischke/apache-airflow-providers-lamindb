@@ -294,6 +294,36 @@ class TestArtifactEventTrigger:
             ("updated", 1, 3),
         ]
 
+    async def test_long_aux_history_does_not_hide_other_completions(self):
+        # artifact 1 was replaced many times: each replace() clears _aux, its completion sets it again
+        history = [
+            dbwrite(i, "UPDATE", ARTIFACT, 1, data={"_aux": '{"so": 1}' if i % 2 else "null"})
+            for i in range(1, 26)
+        ]
+        writes = [
+            *history,
+            dbwrite(26, "INSERT", ARTIFACT, 2),  # uploaded already when polled, completion follows
+            dbwrite(27, "UPDATE", ARTIFACT, 2, data={"_aux": '{"so": 1}'}),
+        ]
+        hook = FakeHook(writes=writes, records={"core.artifact": {1: artifact(1), 2: artifact(2)}})
+
+        events = await events_for(LaminDBArtifactEventTrigger(events=["created"]), hook)
+
+        assert [e for e in summary(events) if e[1] == 2] == [("created", 2, 27)]
+
+    async def test_upload_completions_of_many_artifacts(self):
+        count = 250  # more than one id chunk
+        writes = [dbwrite(i, "INSERT", ARTIFACT, i) for i in range(1, count + 1)]
+        writes += [
+            dbwrite(count + i, "UPDATE", ARTIFACT, i, data={"_aux": '{"so": 1}'}) for i in range(1, count + 1)
+        ]
+        records = {"core.artifact": {i: artifact(i) for i in range(1, count + 1)}}
+        hook = FakeHook(writes=writes, records=records)
+
+        events = await events_for(LaminDBArtifactEventTrigger(events=["created"]), hook)
+
+        assert summary(events) == [("created", i, count + i) for i in range(1, count + 1)]
+
     async def test_skips_updates_during_upload_and_failed_uploads(self):
         writes = [
             dbwrite(1, "UPDATE", ARTIFACT, 1, data={"hash": "old"}),

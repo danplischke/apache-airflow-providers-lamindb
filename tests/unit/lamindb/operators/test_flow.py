@@ -4,7 +4,7 @@ import os
 from unittest.mock import MagicMock, patch
 
 import pytest
-from airflow.exceptions import AirflowNotFoundException, AirflowProviderDeprecationWarning
+from airflow.exceptions import AirflowNotFoundException
 from airflow.providers.standard.operators.python import PythonVirtualenvOperator
 
 from airflow.providers.lamindb.operators.flow import (
@@ -155,6 +155,7 @@ def test_missing_connection_explains_how_to_opt_out(make_context, monkeypatch) -
         ({"lamindb_version": "2.4.2"}, ["lamindb==2.4.2"], False),
         ({"requirements": ["lamindb>=2"]}, ["lamindb>=2"], False),
         ({"requirements": ["lamindb-core==2.8.0"]}, ["lamindb-core==2.8.0", *CORE[1:]], False),
+        ({"requirements": "pandas\nlamindb==2.8.0"}, ["pandas\nlamindb==2.8.0"], False),
     ],
 )
 def test_lamindb_version_lookup_only_when_needed(
@@ -170,38 +171,8 @@ def test_lamindb_version_lookup_only_when_needed(
 
 
 @pytest.mark.parametrize("module", ["airflow.providers.lamindb", "airflow.providers.lamindb.operators"])
-@pytest.mark.parametrize(
-    ("old", "new"),
-    [
-        ("LaminDBVenvFlowInitOperator", LaminDBFlowInitOperator),
-        ("LaminDBVenvFlowFinishOperator", LaminDBFlowFinishOperator),
-    ],
-)
-def test_deprecated_names_warn(module: str, old: str, new: type) -> None:
+def test_removed_venv_names_do_not_import(module: str) -> None:
     import importlib
 
-    with pytest.warns(AirflowProviderDeprecationWarning, match=f"{old} is deprecated; use {new.__name__}"):
-        assert getattr(importlib.import_module(module), old) is new
-
-
-def _warned_at(record) -> set[str]:
-    return {w.filename for w in record if w.category is AirflowProviderDeprecationWarning}
-
-
-def test_deprecated_import_warns_at_the_import() -> None:
-    with pytest.warns(AirflowProviderDeprecationWarning) as from_package:
-        from airflow.providers.lamindb import LaminDBVenvFlowFinishOperator
-    with pytest.warns(AirflowProviderDeprecationWarning) as from_operators:
-        from airflow.providers.lamindb.operators import LaminDBVenvFlowInitOperator as init_from_operators
-    with pytest.warns(AirflowProviderDeprecationWarning) as from_flow:
-        from airflow.providers.lamindb.operators.flow import LaminDBVenvFlowInitOperator
-    assert LaminDBVenvFlowInitOperator is init_from_operators is LaminDBFlowInitOperator
-    assert LaminDBVenvFlowFinishOperator is LaminDBFlowFinishOperator
-    assert _warned_at(from_package) == _warned_at(from_operators) == _warned_at(from_flow) == {__file__}
-
-
-def test_unknown_names_still_raise() -> None:
-    import airflow.providers.lamindb.operators as operators
-
     with pytest.raises(AttributeError):
-        _ = operators.LaminDBStepOperator
+        _ = importlib.import_module(module).LaminDBVenvFlowInitOperator
