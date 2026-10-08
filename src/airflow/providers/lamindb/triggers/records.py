@@ -11,8 +11,10 @@ from airflow.providers.lamindb.hooks.lamindb import (
     LaminDBInstance,
     Registry,
     chunk_ids,
+    normalize_registry_name,
 )
 from airflow.providers.lamindb.triggers.base import LaminDBDbWriteEventTrigger
+from airflow.providers.lamindb.triggers.cursors import RecordCursorStore, is_cursor_record
 from airflow.providers.lamindb.utils.dbwrite import (
     RECORD_EVENTS,
     RecordEvent,
@@ -33,6 +35,7 @@ from airflow.providers.lamindb.utils.lamindb import (
     artifact_filter,
     is_internal_artifact,
     normalize_str_list,
+    resolve_branch_id,
     storage_ongoing,
 )
 from airflow.triggers.base import BaseTrigger, TriggerEvent
@@ -51,18 +54,6 @@ def _normalize_events(events: str | Iterable[str]) -> list[RecordEvent]:
     if invalid or not values:
         raise ValueError(f"Invalid events {values}; expected a non-empty subset of {list(RECORD_EVENTS)}")
     return [event for event in RECORD_EVENTS if event in values]
-
-
-async def resolve_branch_id(hook: LaminDBHook, branch: str | int) -> int:
-    """Resolve a branch name (or id) to its id."""
-    if isinstance(branch, int):
-        return branch
-    if branch in SPECIAL_BRANCH_IDS:
-        return SPECIAL_BRANCH_IDS[branch]
-    record = await hook.aget_branch(branch)
-    if record is None:
-        raise ValueError(f"Branch {branch!r} does not exist on {hook.instance_slug or 'the instance'}")
-    return int(record["id"])
 
 
 def branch_scope_filter(branch: str | int | None) -> dict[str, Any] | None:
@@ -109,6 +100,12 @@ class LaminDBRecordEventTrigger(LaminDBDbWriteEventTrigger):
         deletes against the deleted row, which only supports direct fields.
     :param changed_fields: Only report updates that change at least one of these fields, e.g.
         ``[ArtifactField.KEY]``.
+
+    Records that hold trigger cursors (see ``cursor_store``) are never reported. They are
+    recognized by the ``registry`` and ``reference_type`` of this trigger's own
+    :class:`~airflow.providers.lamindb.triggers.cursors.RecordCursorStore` (by default ``core.record``
+    and ``airflow_trigger_cursor``), so give triggers that store cursors in the registry they watch the
+    same settings.
     """
 
     def __init__(
@@ -132,8 +129,23 @@ class LaminDBRecordEventTrigger(LaminDBDbWriteEventTrigger):
                 "'deleted' events only support filters on direct fields of the record "
                 "(no relation or JSON paths), because deleted records can't be queried anymore."
             )
+        if (
+            isinstance(self.cursor_store, RecordCursorStore)
+            and self.cursor_store.reference_type is None
+            and normalize_registry_name(self.cursor_store.registry) == normalize_registry_name(self.registry)
+        ):
+            raise ValueError(
+                "This trigger stores its cursor in the registry it watches, so it needs a "
+                "reference_type to recognize its own saves instead of reacting to them."
+            )
         self._registry: Registry | None = None
         self._branch_id: int | None = None
+        # how cursor records look: this trigger's own record cursor store, or the defaults
+        self._cursor_settings = (
+            self.cursor_store if isinstance(self.cursor_store, RecordCursorStore) else RecordCursorStore()
+        )
+        self._cursor_record_ids: set[int] = set()
+        self._watches_cursor_records = False
 
     def _trigger_kwargs(self) -> dict[str, Any]:
         return {
@@ -164,6 +176,10 @@ class LaminDBRecordEventTrigger(LaminDBDbWriteEventTrigger):
             self._branch_id = None
         else:
             self._branch_id = await resolve_branch_id(hook, self.branch)
+        cursor_registry = await hook.aget_registry(self._cursor_settings.registry)
+        self._watches_cursor_records = (
+            self._cursor_settings.reference_type is not None and cursor_registry.name == self._registry.name
+        )
 
     def _created_update_conditions(self) -> list[dict[str, Any]]:
         """Conditions on ``UPDATE`` writes that can turn into ``created`` events."""
@@ -223,6 +239,30 @@ class LaminDBRecordEventTrigger(LaminDBDbWriteEventTrigger):
             return bool(set(changed_fields(write)) & set(self.changed_fields))
         return True
 
+    async def _should_commit(self, hook: LaminDBHook, writes: list[dict[str, Any]]) -> bool:
+        if not self._watches_cursor_records:
+            return True
+        # Saving the cursor after a batch of cursor writes would itself be a cursor write, so two
+        # such triggers would keep reacting to each other's saves.
+        unknown = {w["sqlrecord_id"] for w in writes} - self._cursor_record_ids
+        if not unknown:
+            return False
+        cursor_records = await hook.aget_records_by_ids(
+            self._resolved_registry,
+            unknown,
+            filter={"reference_type": {"eq": self._cursor_settings.reference_type}},
+        )
+        self._cursor_record_ids |= cursor_records.keys()
+        return bool(unknown - cursor_records.keys())
+
+    def _is_cursor_write(self, write: dict[str, Any], record: dict[str, Any] | None) -> bool:
+        if not self._watches_cursor_records:
+            return False
+        if write["sqlrecord_id"] in self._cursor_record_ids:
+            return True
+        row = record if record is not None else previous_values(write)
+        return is_cursor_record(row, self._cursor_settings.reference_type)
+
     def _matches_deleted_row(self, row: dict[str, Any]) -> bool:
         try:
             return matches_filter(self._record_filter(), row)
@@ -244,6 +284,9 @@ class LaminDBRecordEventTrigger(LaminDBDbWriteEventTrigger):
 
         ids = {w["sqlrecord_id"] for w, kind in candidates if w["event_type"] != "DELETE"}
         records = await hook.aget_records_by_ids(registry, ids, filter=self._record_filter()) if ids else {}
+        candidates = [
+            (w, k) for w, k in candidates if not self._is_cursor_write(w, records.get(w["sqlrecord_id"]))
+        ]
         candidates = [(w, k) for w, k in await self._refine(hook, candidates, records) if self._keep(w, k)]
         await self._load_users(hook, [w for w, _ in candidates])
 

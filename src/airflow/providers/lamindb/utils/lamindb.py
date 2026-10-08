@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterable
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from airflow.providers.lamindb.utils.enums import plain_value
 from airflow.providers.lamindb.utils.filters import FilterLike, combine_filters
+
+if TYPE_CHECKING:
+    from airflow.providers.lamindb.hooks.lamindb import LaminDBHook
 
 BranchStatus = Literal["standalone", "draft", "review", "merged", "closed"]
 
@@ -103,3 +106,25 @@ def artifact_filter(
         if include_internal or kinds is not None
         else {"or": [{"kind": {"isnull": True}}, {"kind": {"notin": list(INTERNAL_ARTIFACT_KINDS)}}]},
     )
+
+
+async def resolve_branch_id(hook: LaminDBHook, branch: str | int) -> int:
+    """Resolve a branch name (or id) to its id."""
+    if isinstance(branch, int):
+        return branch
+    if branch in SPECIAL_BRANCH_IDS:
+        return SPECIAL_BRANCH_IDS[branch]
+    record = await hook.aget_branch(branch)
+    if record is None:
+        raise ValueError(f"Branch {branch!r} does not exist on {hook.instance_slug or 'the instance'}")
+    return int(record["id"])
+
+
+async def resolve_space_id(hook: LaminDBHook, space: str | int) -> int:
+    """Resolve a space name (or id) to its id."""
+    if isinstance(space, int):
+        return space
+    rows = await hook.aquery_records("core.space", {"name": {"eq": space}}, limit=1)
+    if not rows:
+        raise ValueError(f"Space {space!r} does not exist on {hook.instance_slug or 'the instance'}")
+    return int(rows[0]["id"])

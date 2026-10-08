@@ -67,6 +67,9 @@ REST API directly. Every method also has an async variant with an ``a`` prefix, 
 * ``get_branch(name_or_id)``
 * ``query_dbwrites(filter, after_id=...)``: the database write log
 * ``get_instance()`` and ``get_schema()``
+* ``insert_records(registry, records)`` and ``update_record(registry, uid, values)``: write records; the
+  API key needs write access to the instance. Inserts are not retried after errors that may have reached
+  LaminHub, so a failed request never creates a record twice.
 
 .. literalinclude:: ../tests/system/lamindb/example_lamindb_sensors.py
     :language: python

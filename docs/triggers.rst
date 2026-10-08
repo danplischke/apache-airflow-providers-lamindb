@@ -19,11 +19,12 @@ of the changed fields. From this, the triggers derive semantic events such as "a
 
 * **Only hosted instances.** The database write log is a LaminHub feature. Instances that are not
   managed by LaminHub are not supported.
-* **Resuming after restarts.** The cursor is stored in the watched asset's *asset state store*,
-  which Airflow 3.3 added for event-driven scheduling. A restarted triggerer resumes where it left
-  off. On the very first start, a trigger only reports changes from then on.
-* **At-least-once delivery.** The cursor is committed one poll cycle (at least 5 seconds) after the
-  events were handed to Airflow, so events are not lost if the triggerer crashes. After a crash an
+* **Resuming after restarts.** The cursor is stored (see `Where the cursor is stored`_), so a restarted
+  triggerer resumes where it left off. It's only saved when the trigger processed new writes that
+  match its filter, at most once per poll. On the very first start, a trigger only reports changes
+  from then on.
+* **At-least-once delivery.** The cursor is committed one poll cycle (at least the store's
+  ``commit_delay``, by default 5 seconds) after the events were handed to Airflow, so events are not lost if the triggerer crashes. After a crash an
   event may be delivered twice. Each payload contains the ``dbwrite`` entry, whose ``id``/``uid``
   identify the change, so DAGs can deduplicate if needed.
 * **Batching.** Every change is a separate trigger event (and asset event). Airflow may combine
@@ -50,6 +51,92 @@ All event triggers accept:
     Seconds between polls (default 30).
 ``batch_size`` / ``max_batches_per_poll``
     Paging of the write log (defaults 200 and 10).
+``cursor_store``
+    Where and how the cursor is stored: ``AssetCursorStore()`` (default) or ``RecordCursorStore()``;
+    see `Where the cursor is stored`_.
+
+Where the cursor is stored
+--------------------------
+
+Pass a trigger a cursor store from :mod:`airflow.providers.lamindb.triggers.cursors` as ``cursor_store``.
+Both take ``commit_delay``: the minimum seconds between handing events to Airflow and committing the
+cursor past them (default 5). Longer delays save the cursor less often, but redeliver more events after
+a crash.
+
+``AssetCursorStore()`` (default)
+    In the watched asset's *asset state store*, which Airflow 3.3 added for event-driven scheduling.
+    The cursor lives in Airflow's metadata database next to the asset events, so restoring that
+    database also restores matching cursors. A trigger outside an ``AssetWatcher`` has no asset state
+    store and keeps its cursor in memory only.
+
+``RecordCursorStore()``
+    In a record of the watched instance, one per trigger. By default it's a ``core.record`` on ``main``,
+    named after the trigger's state key and grouped under the record type ``Airflow trigger cursors``.
+    The cursor is in the record's ``extra_data``, and the description says which trigger it belongs to.
+    Use it for triggers outside an ``AssetWatcher``, or to keep cursors when Airflow's metadata
+    database is reset. Keep in mind:
+
+    * The connection's API key needs write access to the instance, in the cursor records' space. The
+      record type and record are created on the first save.
+    * Each save is a database write, so it appears in the instance's history and write log. Triggers
+      for artifacts, branches and other registries never see it. ``LaminDBRecordEventTrigger`` skips
+      cursor records in the registry it watches: it doesn't report them, and it doesn't save its cursor
+      after a batch of only cursor writes, so triggers never react to each other's saves.
+    * The cursor outlives Airflow's metadata database. After restoring an older backup of that
+      database, the trigger resumes from the newer cursor, and the asset events in between are not
+      delivered again.
+    * To reset the cursor, delete the record (or move it to the trash) and restart the triggerer. The
+      trigger then starts again from the latest write.
+
+Configure the cursor record with the arguments of
+:class:`~airflow.providers.lamindb.triggers.cursors.RecordCursorStore`, all keyword-only and optional:
+
+``registry`` (default ``core.record``)
+    Registry of the cursor records. It needs the fields ``name``, ``branch``, ``space`` and the
+    ``field`` below, plus ``reference_type`` and ``type``/``is_type`` unless those are turned off.
+``field`` (default ``extra_data``)
+    JSON field that holds the cursor, ``{"dbwrite_id": ..., "instance_id": ...}``.
+``record_type`` (default ``Airflow trigger cursors``)
+    Name of the record type that groups the cursor records. ``None`` for no type, for registries
+    without types.
+``reference_type`` (default ``airflow_trigger_cursor``)
+    Marker that identifies cursor records. ``None`` for no marker; then record triggers on
+    ``registry`` report the cursor records like any other record. A record trigger that watches
+    ``registry`` itself needs a marker to recognize its own saves, so it rejects ``None``.
+``branch`` (default ``main``)
+    Branch of the cursor records and their type, by name or id.
+``space`` (default ``None``: LaminHub's default space)
+    Space of the cursor records and their type, by name or id, for example a restricted space that only
+    the Airflow API key can write to.
+``name`` (default ``None``: the trigger's state key)
+    Name of the cursor record. A fixed name must be unique per trigger, or triggers overwrite each
+    other's cursors.
+``description`` (default ``None``: describes the trigger)
+    Description of the cursor record.
+
+.. code-block:: python
+
+    from airflow.providers.lamindb.triggers.cursors import RecordCursorStore
+
+    LaminDBArtifactEventTrigger(
+        key_prefix="raw/",
+        cursor_store=RecordCursorStore(space="Airflow", name="raw-artifacts-watcher", commit_delay=30),
+    )
+
+A trigger serializes its cursor store as a dict with a ``type`` key (``asset`` or ``record``) and the
+settings, and accepts that dict as ``cursor_store`` too.
+
+A record trigger recognizes cursor records by the ``registry`` and ``reference_type`` of its *own*
+``RecordCursorStore``, and by the defaults if it stores its cursor in the asset state store.
+Cursor records with other settings are ordinary records to it:
+
+* A record trigger with the asset state store reports them as events (but never writes to LaminDB).
+* Two record triggers with a ``RecordCursorStore`` that watch the same registry, and store their
+  cursors there with different ``reference_type`` markers, report each other's saves and save again
+  in response, every poll. Give them the same ``registry`` and ``reference_type``.
+
+Changing ``branch``, ``space``, ``name``, ``registry`` or the markers points the trigger at another
+record, so its cursor starts over from the latest write. The old record stays until you delete it.
 
 Every event payload contains ``instance``, ``instance_id``, ``changed_by`` (``id``, ``handle`` and
 ``name`` of the LaminDB user) and ``dbwrite``: the write log entry with ``id``, ``uid``,

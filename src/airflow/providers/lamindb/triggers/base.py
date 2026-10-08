@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-import logging
 import time
 from collections import deque
 from collections.abc import AsyncIterator, Iterable, Mapping
@@ -11,66 +10,14 @@ from typing import TYPE_CHECKING, Any
 
 from airflow.providers.lamindb.exceptions import LaminDBApiError
 from airflow.providers.lamindb.hooks.lamindb import MAX_PAGE_SIZE, LaminDBHook, LaminDBInstance
+from airflow.providers.lamindb.triggers.cursors import CursorBackend, CursorStore
 from airflow.providers.lamindb.utils.dbwrite import dbwrite_summary
 from airflow.triggers.base import BaseEventTrigger, TriggerEvent
 
 if TYPE_CHECKING:
     from airflow.providers.lamindb.utils.filters import Filter
 
-_MIN_COMMIT_DELAY = 5.0
-"""Minimum seconds between yielding events and committing the cursor past them."""
 _MAX_ERROR_BACKOFF = 600.0
-
-log = logging.getLogger(__name__)
-
-
-def _state_accessors(store: Any) -> list[Any]:
-    """Return one accessor per watched asset from an ``AssetStateStoreAccessors`` (or a single accessor).
-
-    Airflow has no public API that lists the accessors of several watched assets, so this reads
-    ``_by_name``/``_by_uri``; ``test_base.py`` checks them against the installed Airflow.
-    """
-    if store is None:
-        return []
-    by_name = getattr(store, "_by_name", None)
-    by_uri = getattr(store, "_by_uri", None)
-    if isinstance(by_name, dict) and isinstance(by_uri, dict):
-        return [*by_name.values(), *by_uri.values()]
-    if callable(getattr(store, "aget", None)) and callable(getattr(store, "aset", None)):
-        return [store]
-    log.warning(
-        "Unsupported asset state store %s; the cursor is kept in memory only", type(store).__qualname__
-    )
-    return []
-
-
-class _CursorStore:
-    """Persist the id of the last processed database write in the asset state store."""
-
-    def __init__(self, store: Any, key: str) -> None:
-        self.key = key
-        self._accessors = _state_accessors(store)
-
-    @property
-    def is_persistent(self) -> bool:
-        return bool(self._accessors)
-
-    async def load(self, instance_id: str) -> int | None:
-        cursors = []
-        for accessor in self._accessors:
-            value = await accessor.aget(self.key, None)
-            if (
-                isinstance(value, Mapping)
-                and value.get("instance_id") == instance_id
-                and isinstance(value.get("dbwrite_id"), int)
-            ):
-                cursors.append(value["dbwrite_id"])
-        # with several watched assets, resume from the oldest cursor (at-least-once)
-        return min(cursors) if cursors else None
-
-    async def save(self, cursor: int, instance_id: str) -> None:
-        for accessor in self._accessors:
-            await accessor.aset(self.key, {"dbwrite_id": cursor, "instance_id": instance_id})
 
 
 class LaminDBDbWriteEventTrigger(BaseEventTrigger):
@@ -81,18 +28,22 @@ class LaminDBDbWriteEventTrigger(BaseEventTrigger):
     ``hubmodule.dbwrite`` registry ("Changes → Database writes" in the LaminHub UI). Subclasses define
     which writes to poll and how to turn them into trigger events.
 
-    The trigger polls writes with an id greater than its cursor. When used in an
-    :class:`~airflow.sdk.AssetWatcher`, the cursor is stored in the asset state store under
+    The trigger polls writes with an id greater than its cursor, and stores the cursor under
     :attr:`state_key` so that a restarted triggerer resumes where it left off. The cursor is committed
-    one poll cycle after the events were yielded, which gives Airflow time to persist them: events
-    are delivered at least once. On the first start the trigger only reports writes that happen from
-    then on.
+    at least ``commit_delay`` seconds after the events were yielded, which gives Airflow time to persist
+    them: events are delivered at least once. It is only committed when the trigger processed new
+    writes. On the first start the trigger only reports writes that happen from then on.
 
     :param lamindb_conn_id: Airflow connection of type ``lamindb``.
     :param instance: LaminDB instance ``owner/name``; overrides the connection's instance.
     :param poll_interval: Seconds between polls of the write log.
     :param batch_size: Number of writes fetched per request (at most 200).
     :param max_batches_per_poll: Maximum number of batches processed per poll cycle.
+    :param cursor_store: Where and how to store the cursor:
+        :class:`~airflow.providers.lamindb.triggers.cursors.AssetCursorStore` (default) in the asset
+        state store of the :class:`~airflow.sdk.AssetWatcher`'s assets, or
+        :class:`~airflow.providers.lamindb.triggers.cursors.RecordCursorStore` in a record of the
+        watched instance. Both also set the ``commit_delay``.
     """
 
     def __init__(
@@ -103,6 +54,7 @@ class LaminDBDbWriteEventTrigger(BaseEventTrigger):
         poll_interval: float = 30.0,
         batch_size: int = MAX_PAGE_SIZE,
         max_batches_per_poll: int = 10,
+        cursor_store: CursorStore | Mapping[str, Any] | None = None,
     ) -> None:
         super().__init__()
         if poll_interval <= 0:
@@ -116,6 +68,7 @@ class LaminDBDbWriteEventTrigger(BaseEventTrigger):
         self.poll_interval = poll_interval
         self.batch_size = batch_size
         self.max_batches_per_poll = max_batches_per_poll
+        self.cursor_store = CursorStore.coerce(cursor_store)
         self._users: dict[int, dict[str, Any]] = {}
 
     # -- subclass API --------------------------------------------------------------------------------
@@ -137,6 +90,14 @@ class LaminDBDbWriteEventTrigger(BaseEventTrigger):
         """Turn a batch of database writes (ordered by id) into trigger events."""
         raise NotImplementedError
 
+    async def _should_commit(self, hook: LaminDBHook, writes: list[dict[str, Any]]) -> bool:
+        """Whether a processed batch moves the stored cursor; ``False`` for writes of cursor records.
+
+        Called after :meth:`_events_for`. Skipping the commit only costs re-reading the batch after a
+        restart, but stops triggers that store cursors in LaminDB from reacting to each other's saves.
+        """
+        return True
+
     # -- trigger implementation ----------------------------------------------------------------------
 
     def serialize(self) -> tuple[str, dict[str, Any]]:
@@ -149,25 +110,38 @@ class LaminDBDbWriteEventTrigger(BaseEventTrigger):
                 "poll_interval": self.poll_interval,
                 "batch_size": self.batch_size,
                 "max_batches_per_poll": self.max_batches_per_poll,
+                "cursor_store": self.cursor_store.serialize(),
             },
         )
 
     @property
     def state_key(self) -> str:
-        """Asset state store key of the cursor; changes when the trigger's filters change."""
-        identity = {
-            **self._trigger_kwargs(),
-            "lamindb_conn_id": self.lamindb_conn_id,
-            "instance": self.instance,
-        }
-        digest = hashlib.sha256(json.dumps(identity, sort_keys=True, default=str).encode()).hexdigest()
+        """Key of the cursor (and default name of its record); changes when the trigger's filters change."""
+        digest = hashlib.sha256(self._identity().encode()).hexdigest()
         return f"lamindb.{type(self).__name__}.{digest[:16]}"
 
     def _get_hook(self) -> LaminDBHook:
         return LaminDBHook(lamindb_conn_id=self.lamindb_conn_id, instance=self.instance)
 
+    def _identity(self) -> str:
+        """The trigger's arguments that define what it watches, as JSON."""
+        identity = {
+            **self._trigger_kwargs(),
+            "lamindb_conn_id": self.lamindb_conn_id,
+            "instance": self.instance,
+        }
+        return json.dumps(identity, sort_keys=True, default=str)
+
+    def _open_cursor(self, hook: LaminDBHook) -> CursorBackend:
+        return self.cursor_store.open(
+            hook=hook,
+            asset_state_store=self.asset_state_store,
+            key=self.state_key,
+            description=f"Cursor of the Airflow trigger {type(self).__qualname__}: {self._identity()}",
+        )
+
     async def _initial_cursor(
-        self, hook: LaminDBHook, cursor_store: _CursorStore, instance: LaminDBInstance
+        self, hook: LaminDBHook, cursor_store: CursorBackend, instance: LaminDBInstance
     ) -> int:
         stored = await cursor_store.load(instance.id)
         if stored is not None:
@@ -180,11 +154,11 @@ class LaminDBDbWriteEventTrigger(BaseEventTrigger):
 
     async def run(self) -> AsyncIterator[TriggerEvent]:
         hook = self._get_hook()
-        cursor_store = _CursorStore(self.asset_state_store, self.state_key)
+        cursor_store = self._open_cursor(hook)
         if not cursor_store.is_persistent:
             self.log.warning(
-                "No asset state store available; the cursor is kept in memory only. "
-                "Use this trigger in an AssetWatcher to resume after triggerer restarts."
+                "No asset state store available; the cursor is kept in memory only. Use this trigger "
+                "in an AssetWatcher, or pass cursor_store=RecordCursorStore(), to resume after restarts."
             )
         cursor: int | None = None
         # (cursor, yielded_at), oldest first
@@ -210,7 +184,8 @@ class LaminDBDbWriteEventTrigger(BaseEventTrigger):
                         for event in await self._events_for(hook, instance, writes):
                             yield event
                         cursor = max(int(write["id"]) for write in writes)
-                        pending.append((cursor, time.monotonic()))
+                        if await self._should_commit(hook, writes):
+                            pending.append((cursor, time.monotonic()))
                         if len(writes) < self.batch_size:
                             break
                     failures = 0
@@ -228,14 +203,14 @@ class LaminDBDbWriteEventTrigger(BaseEventTrigger):
         finally:
             await hook.aclose()
 
-    @staticmethod
     async def _commit_pending(
-        cursor_store: _CursorStore, pending: deque[tuple[int, float]], instance_id: str
+        self, cursor_store: CursorBackend, pending: deque[tuple[int, float]], instance_id: str
     ) -> None:
-        """Commit the newest pending cursor whose events were yielded at least _MIN_COMMIT_DELAY ago."""
+        """Commit the newest pending cursor whose events were yielded at least ``commit_delay`` ago."""
+        delay = self.cursor_store.commit_delay
         now = time.monotonic()
         ready = None
-        while pending and now - pending[0][1] >= _MIN_COMMIT_DELAY:
+        while pending and now - pending[0][1] >= delay:
             ready = pending.popleft()[0]
         if ready is not None:
             await cursor_store.save(ready, instance_id)

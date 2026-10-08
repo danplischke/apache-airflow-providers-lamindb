@@ -4,6 +4,7 @@ import re
 from collections.abc import Iterable, Mapping
 from typing import Any
 
+from airflow.providers.lamindb.exceptions import LaminDBApiError
 from airflow.providers.lamindb.hooks.lamindb import LaminDBInstance, Registry, resolve_registry
 
 INSTANCE = LaminDBInstance(
@@ -15,8 +16,13 @@ SCHEMA: dict[str, Any] = {
         "artifact": {"table_name": "lamindb_artifact", "fields": {"id": {}, "key": {}, "branch": {}}},
         "branch": {"table_name": "lamindb_branch", "fields": {"id": {}, "name": {}}},
         "branchblock": {"table_name": "lamindb_branchblock", "fields": {"id": {}, "branch": {}}},
+        "record": {
+            "table_name": "lamindb_record",
+            "fields": {"id": {}, "name": {}, "type": {}, "branch": {}},
+        },
         "ulabel": {"table_name": "lamindb_ulabel", "fields": {"id": {}, "name": {}, "branch": {}}},
         "user": {"table_name": "lamindb_user", "fields": {"id": {}, "handle": {}}},
+        "space": {"table_name": "lamindb_space", "fields": {"id": {}, "name": {}}},
     },
     "bionty": {"gene": {"table_name": "bionty_gene", "fields": {"id": {}, "symbol": {}, "branch": {}}}},
 }
@@ -112,6 +118,7 @@ class FakeHook:
         self.dbwrite_queries: list[dict[str, Any]] = []
         self.closed = False
         self.fail_next: list[BaseException] = []
+        self.updates: list[tuple[str, str, dict[str, Any]]] = []
 
     def _maybe_fail(self) -> None:
         if self.fail_next:
@@ -171,6 +178,39 @@ class FakeHook:
 
     async def aget_users(self, ids: Iterable[int]) -> dict[int, dict[str, Any]]:
         return {i: self.users[i] for i in ids if i in self.users}
+
+    def _log_write(self, event_type: str, registry: str, record_id: int, data: dict[str, Any] | None) -> None:
+        """Log a write in the database write log, like LaminHub does for every write."""
+        write_id = max((w["id"] for w in self.writes), default=0) + 1
+        table_name = resolve_registry(SCHEMA, registry).table_name
+        self.writes.append(dbwrite(write_id, event_type, table_name, record_id, data=data))
+
+    async def ainsert_records(
+        self, registry: str | Registry, records: Iterable[Mapping[str, Any]]
+    ) -> list[dict[str, Any]]:
+        name = registry.name if isinstance(registry, Registry) else registry
+        return [self.insert(name, values) for values in records]
+
+    def insert(self, registry: str, values: Mapping[str, Any]) -> dict[str, Any]:
+        """Create a record and log its ``INSERT``; what a user's write looks like to the triggers."""
+        table = self.records.setdefault(registry, {})
+        record_id = max(table, default=0) + 1
+        table[record_id] = record = {"branch_id": 1, **values, "id": record_id, "uid": f"r{record_id}"}
+        self._log_write("INSERT", registry, record_id, None)
+        return dict(record)
+
+    async def aupdate_record(
+        self, registry: str | Registry, uid: str, values: Mapping[str, Any]
+    ) -> dict[str, Any] | None:
+        name = registry.name if isinstance(registry, Registry) else registry
+        record = next((r for r in self.records.get(name, {}).values() if r["uid"] == uid), None)
+        if record is None:
+            raise LaminDBApiError(f"{name} {uid} not found", http_status_code=404)
+        previous = {key: record.get(key) for key in values}
+        record.update(values)
+        self._log_write("UPDATE", name, record["id"], previous)
+        self.updates.append((name, uid, dict(values)))
+        return dict(record)
 
     async def aget_branch(self, branch: str | int) -> dict[str, Any] | None:
         self._maybe_fail()
