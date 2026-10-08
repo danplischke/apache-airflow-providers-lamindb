@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from typing import Any
 
+from airflow.providers.lamindb.hooks.lamindb import LaminDBHook
 from airflow.providers.lamindb.operators.flow import wire_flow_tasks
 from airflow.providers.lamindb.utils.remote import (
+    RemoteLaminDB,
     RemoteLaminDBStepMixin,
-    add_lamindb_requirement,
-    is_lamindb_requirement,
+    ensure_lamindb_requirement,
+    lamindb_requirement_lines,
+    lamindb_virtualenv_env,
 )
 from airflow.providers.standard.decorators.python_virtualenv import _PythonVirtualenvDecoratedOperator
 from airflow.sdk.bases.decorator import task_decorator_factory
@@ -27,23 +31,37 @@ _SHARED_VENV_ARGS = (
 )
 
 
-class LaminDBVenvDecoratedOperator(RemoteLaminDBStepMixin, _PythonVirtualenvDecoratedOperator):  # type: ignore[misc]
+class LaminDBVenvDecoratedOperator(RemoteLaminDBStepMixin, _PythonVirtualenvDecoratedOperator):
     """``@task.lamindb_venv``: LaminDB step inside a virtualenv."""
 
     custom_operator_name = "@task.lamindb_venv"
 
-    def __init__(self, *, lamindb_version: str | None = None, **kwargs: Any) -> None:
-        super().__init__(**kwargs)
-        if self.track:
-            add_lamindb_requirement(self.requirements, lamindb_version)
+    # the lamindb arguments are repeated here so that DAG default_args reach them
+    def __init__(
+        self,
+        *,
+        lamindb_conn_id: str | None = LaminDBHook.default_conn_name,
+        lamindb_instance: str | None = None,
+        lamindb_version: str | None = None,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(lamindb_conn_id=lamindb_conn_id, lamindb_instance=lamindb_instance, **kwargs)
+        self.lamindb_version = lamindb_version
         if self.auto_flow:
             wire_flow_tasks(
                 self,
-                venv=True,
+                lamindb_conn_id=self.lamindb_conn_id,
                 lamindb_instance=self.lamindb_instance,
-                requirements=[r for r in self.requirements if is_lamindb_requirement(r)],
+                lamindb_version=self.lamindb_version,
+                requirements=lamindb_requirement_lines(self.requirements),
                 **{name: getattr(self, name) for name in _SHARED_VENV_ARGS if hasattr(self, name)},
             )
+
+    @contextmanager
+    def _lamindb_environment(self, remote: RemoteLaminDB) -> Iterator[None]:
+        ensure_lamindb_requirement(self, remote, self.lamindb_version)
+        with lamindb_virtualenv_env(self, remote):
+            yield
 
 
 def lamindb_venv_task(
@@ -55,13 +73,16 @@ def lamindb_venv_task(
 
     Accepts every ``@task.virtualenv`` argument, plus:
 
-    - ``lamindb_instance``: instance slug to connect to; defaults to the worker's
-      instance if lamindb is set up there, else lamindb's own default.
-    - ``lamindb_version``: lamindb version added to ``requirements`` unless you list
-      lamindb yourself; defaults to the worker's version if installed, else latest.
+    - ``lamindb_conn_id``: Airflow connection of type ``lamindb`` with the Lamin API key
+      and the instance; default ``lamindb_default``. The virtualenv gets them instead of
+      the worker's ``~/.lamin``. ``None`` uses lamindb's own configuration instead.
+    - ``lamindb_instance``: instance slug to connect to; overrides the connection's.
+    - ``lamindb_version``: version of ``lamindb-core`` added to ``requirements`` unless
+      you list lamindb yourself; defaults to the instance's version on LaminHub (with a
+      connection), else the latest.
     - ``auto_flow``: wire ``init >> step >> finish`` with the DAG's flow operators,
-      adding virtualenv ones (same Python, index and lamindb settings) if the DAG
-      has none yet. Default ``True``; mapped steps are never auto-wired.
+      adding ones with the same Python, index and LaminDB settings if the DAG has none
+      yet. Default ``True``; mapped steps are never auto-wired.
     - ``track``: record the call in LaminDB. Default ``True``; with ``False`` the
       function runs exactly as under ``@task.virtualenv``, and lamindb is not added
       to ``requirements``.

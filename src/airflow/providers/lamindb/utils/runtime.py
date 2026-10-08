@@ -1,9 +1,9 @@
 """LaminDB run bookkeeping shared by the worker and remote interpreters.
 
-This module is imported in-process on the worker and also shipped *as source* to
-virtualenvs and pods, which may have neither Airflow nor this package installed.
-Keep it self-contained: standard library and ``lamindb`` only, imported inside
-functions.
+This module is shipped *as source* to virtualenvs and pods, which may have neither
+Airflow nor this package installed. Keep it self-contained: standard library and
+``lamindb`` only, imported inside functions, so the worker can import it without
+lamindb.
 
 Mapping:
 
@@ -43,7 +43,11 @@ def get_flow_run(reference):
     """Return the flow run tagged with ``reference``, or None if it was never started."""
     import lamindb as ln
 
-    return ln.Run.filter(reference=reference, reference_type=FLOW_RUN_REFERENCE_TYPE).order_by("-created_at").first()
+    return (
+        ln.Run.filter(reference=reference, reference_type=FLOW_RUN_REFERENCE_TYPE)
+        .order_by("-created_at")
+        .first()
+    )
 
 
 def require_flow_run(reference):

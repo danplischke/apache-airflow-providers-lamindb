@@ -244,3 +244,9 @@ cython_debug/
 # project-local lamindb instance pointer
 .lamin/
 
+# Ruff
+.ruff_cache/
+
+# IntelliJ module files and macOS metadata
+*.iml
+.DS_Store
