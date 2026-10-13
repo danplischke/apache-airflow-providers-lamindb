@@ -1,9 +1,7 @@
 """
 Enums for building LaminHub REST filters: registries, filter operators, registry fields and values.
 
-The field enums reflect the core registries of LaminDB 2.11; instances on lamindb 2.8 lack
-``CollectionField.SCHEMA``, ``CollectionField.SCHEMA_ID``, ``SchemaField.SUFFIX`` and
-``SchemaField.VALIDATED_COLLECTIONS``, which lamindb 2.9 added. Use them with
+The field enums reflect the core registries of LaminDB 2.11. Use them with
 [`F`][airflow.providers.lamindb.utils.filters.F], for example ``F(ArtifactField.KEY) == "raw/a.csv"``.
 Plain strings work for every field, including fields of other schema modules such as ``bionty``.
 """

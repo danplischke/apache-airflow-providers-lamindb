@@ -40,9 +40,7 @@ There is a field enum for each core registry: `ArtifactField`, `CollectionField`
 `TransformField`, `RecordField`, `ULabelField`, `FeatureField`, `SchemaField`,
 `ProjectField`, `ReferenceField`, `StorageField`, `BranchField`, `SpaceField` and
 `UserField`. The enums list the fields of LaminDB 2.11; use strings for other fields, for example of
-`bionty` registries: `F("ontology_id")`. Instances on lamindb 2.8 lack four of them, which
-lamindb 2.9 added: `CollectionField.SCHEMA`, `CollectionField.SCHEMA_ID`, `SchemaField.SUFFIX` and
-`SchemaField.VALIDATED_COLLECTIONS`.
+`bionty` registries: `F("ontology_id")`.
 
 `LaminDBRegistry` lists the registries for the `registry` argument, for example
 `LaminDBRegistry.RUN` (`"core.run"`) or `LaminDBRegistry.BIONTY_CELL_TYPE`
