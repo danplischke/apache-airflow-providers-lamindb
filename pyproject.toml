@@ -5,16 +5,22 @@ build-backend = "flit_core.buildapi"
 [project]
 name = "lamindb-airflow"
 version = "0.1.0"
-description = "Apache Airflow 3 provider that maps DAG runs to LaminDB flows and tasks to steps."
+description = "Apache Airflow provider for LaminDB: track DAG runs as flows and tasks as steps, and trigger DAGs on LaminHub events."
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
-authors = [{ name = "Dan Plischke" }]
-keywords = ["airflow-provider", "lamindb", "airflow", "integration"]
+authors = [
+    { name = "Dan Plischke" },
+    { name = "Andreas Poehlmann" },
+]
+keywords = ["airflow-provider", "lamindb", "laminhub", "airflow", "integration"]
 classifiers = [
     "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Environment :: Web Environment",
     "Intended Audience :: Developers",
     "Intended Audience :: Science/Research",
+    "Intended Audience :: System Administrators",
     "Framework :: Apache Airflow",
     "Framework :: Apache Airflow :: Provider",
     "Programming Language :: Python :: 3.10",
@@ -22,31 +28,39 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
+    "Topic :: System :: Monitoring",
 ]
-requires-python = ">=3.10"
+requires-python = ">=3.10,!=3.15"
+
 dependencies = [
-    "apache-airflow>=3.0",
+    # asset_state_store for event triggers was added in Airflow 3.3.0
+    "apache-airflow>=3.3.0",
     "apache-airflow-providers-standard",
+    "httpx>=0.27.0",
 ]
 
 [project.optional-dependencies]
-# Only the in-process operators need lamindb on the worker; the venv/k8s variants install it remotely.
-"lamindb" = [
-    "lamindb",
-]
+# lamindb is never needed on the worker: the virtualenv/pod operators install it remotely.
 "cncf.kubernetes" = [
     "apache-airflow-providers-cncf-kubernetes",
 ]
 
 [dependency-groups]
 dev = [
-    "lamindb-airflow[lamindb,cncf.kubernetes]",
-    "pytest>=7.0",
+    "lamindb-airflow[cncf.kubernetes]",
+    # integration and system tests run lamindb against a throwaway instance
+    "lamindb",
+    "mypy>=1.15",
+    "pytest>=8.3",
+    "pytest-asyncio>=0.25",
     "pytest-cov>=4.0",
-    "ruff>=0.8",
+    "respx>=0.22",
+    "ruff>=0.11",
 ]
 
 [project.urls]
+"Documentation" = "https://github.com/danplischke/apache-airflow-providers-lamindb/tree/main/docs"
+"Changelog" = "https://github.com/danplischke/apache-airflow-providers-lamindb/blob/main/docs/changelog.rst"
 "Source Code" = "https://github.com/danplischke/apache-airflow-providers-lamindb"
 "Bug Tracker" = "https://github.com/danplischke/apache-airflow-providers-lamindb/issues"
 
@@ -56,21 +70,55 @@ provider_info = "airflow.providers.lamindb.get_provider_info:get_provider_info"
 [tool.flit.module]
 name = "airflow.providers.lamindb"
 
+# Explicit sdist contents so the build does not rely on VCS information
 [tool.flit.sdist]
 include = [
     "docs/",
     "provider.yaml",
+    "src/airflow/__init__.py",
+    "src/airflow/providers/__init__.py",
     "tests/",
 ]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "--import-mode=importlib"
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+filterwarnings = [
+    "ignore::DeprecationWarning:airflow.*",
+]
 
 [tool.ruff]
-line-length = 120
+line-length = 110
 target-version = "py310"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "TC", "RUF", "PT", "ASYNC", "C4"]
+ignore = ["RUF012", "TC003"]
 
 [tool.ruff.lint.per-file-ignores]
-# tests exec generated sources the way the virtualenv/pod script does
-"tests/**" = ["S102"]
+# pkgutil-style namespace packages must contain only the __path__ line
+"src/airflow/__init__.py" = ["I002"]
+"src/airflow/providers/__init__.py" = ["I002"]
+# shipped as source to virtualenvs and pods; only stdlib and lamindb imports allowed
+"src/airflow/providers/lamindb/utils/runtime.py" = ["I002"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["airflow.providers.lamindb", "unit"]
+required-imports = ["from __future__ import annotations"]
+
+[tool.ruff.lint.flake8-type-checking]
+exempt-modules = ["typing", "typing_extensions"]
+
+[tool.mypy]
+python_version = "3.10"
+files = ["src"]
+namespace_packages = true
+explicit_package_bases = true
+mypy_path = "src"
+warn_unused_ignores = true
+warn_redundant_casts = true
+check_untyped_defs = true
+ignore_missing_imports = true

@@ -3,5 +3,43 @@
 #
 # Order is important: the last matching pattern has the highest precedence
 
-# These teams will be the default owners for everything
-* @danplischke
+# Shared: packaging, provider metadata, CI, connection and docs index
+* @danplischke @ap--
+
+# Lineage: DAG runs as LaminDB flows, tasks as steps
+/src/airflow/providers/lamindb/operators/ @danplischke
+/src/airflow/providers/lamindb/decorators/ @danplischke
+/src/airflow/providers/lamindb/utils/dag_run.py @danplischke
+/src/airflow/providers/lamindb/utils/remote.py @danplischke
+/src/airflow/providers/lamindb/utils/runtime.py @danplischke
+/tests/unit/lamindb/operators/ @danplischke
+/tests/unit/lamindb/decorators/ @danplischke
+/tests/unit/lamindb/utils/test_remote.py @danplischke
+/tests/unit/lamindb/utils/test_runtime.py @danplischke
+/tests/unit/lamindb/test_optional_lamindb.py @danplischke
+/tests/integration/ @danplischke
+/tests/system/lamindb/example_lamindb_lineage.py @danplischke
+/tests/system/lamindb/test_example_lamindb_lineage.py @danplischke
+/docs/lineage.rst @danplischke
+
+# Event-driven scheduling: LaminHub REST API hook, triggers, sensors and filters
+/src/airflow/providers/lamindb/hooks/ @ap--
+/src/airflow/providers/lamindb/triggers/ @ap--
+/src/airflow/providers/lamindb/sensors/ @ap--
+/src/airflow/providers/lamindb/exceptions.py @ap--
+/src/airflow/providers/lamindb/utils/dbwrite.py @ap--
+/src/airflow/providers/lamindb/utils/enums.py @ap--
+/src/airflow/providers/lamindb/utils/filters.py @ap--
+/src/airflow/providers/lamindb/utils/lamindb.py @ap--
+/tests/unit/lamindb/fakes.py @ap--
+/tests/unit/lamindb/hooks/ @ap--
+/tests/unit/lamindb/triggers/ @ap--
+/tests/unit/lamindb/sensors/ @ap--
+/tests/unit/lamindb/utils/test_dbwrite.py @ap--
+/tests/unit/lamindb/utils/test_enums.py @ap--
+/tests/unit/lamindb/utils/test_filters.py @ap--
+/tests/system/lamindb/example_lamindb_event_scheduling.py @ap--
+/tests/system/lamindb/example_lamindb_sensors.py @ap--
+/docs/triggers.rst @ap--
+/docs/sensors.rst @ap--
+/docs/filters.rst @ap--
