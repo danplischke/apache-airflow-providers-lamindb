@@ -94,7 +94,7 @@ def lamindb_venv_task(
       ``LAMIN_CACHE_DIR``; overrides the connection's ``cache_dir`` extra. Templated.
     - ``auto_flow``: wire ``init >> step >> finish`` with the DAG's flow operators,
       adding ones with the same Python, index and LaminDB settings if the DAG has none
-      yet. Default ``True``; mapped steps are never auto-wired.
+      yet. Default ``False``; mapped steps are never auto-wired.
     - ``track``: record the call in LaminDB. Default ``True``; with ``False`` the
       function runs exactly as under ``@task.virtualenv``, and lamindb is not added
       to ``requirements``.

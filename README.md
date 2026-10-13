@@ -49,26 +49,28 @@ for example a different API key for one task. See [docs/connections/lamindb.rst]
 | task run | step `Run`, `initiated_by_run=` the flow run, `entrypoint=` the function name |
 
 ```python
+from airflow.providers.lamindb import LaminDBFlowFinishOperator, LaminDBFlowInitOperator
 from airflow.sdk import DAG, task
 
 with DAG("my_pipeline") as dag:
+    with LaminDBFlowInitOperator() >> LaminDBFlowFinishOperator():
 
-    @task.lamindb_venv
-    def extract(count: int = 10) -> dict:
-        return {"count": count}
+        @task.lamindb_venv
+        def extract(count: int = 10) -> dict:
+            return {"count": count}
 
-    @task
-    def double(data: dict) -> dict:
-        # a plain Airflow task: not recorded in LaminDB
-        return {"count": data["count"] * 2}
+        @task
+        def double(data: dict) -> dict:
+            # a plain Airflow task: not recorded in LaminDB
+            return {"count": data["count"] * 2}
 
-    @task.lamindb_venv(requirements=["pandas"])
-    def report(data: dict) -> None:
-        import pandas as pd
+        @task.lamindb_venv(requirements=["pandas"])
+        def report(data: dict) -> None:
+            import pandas as pd
 
-        print(pd.Series([data["count"]]).describe())
+            print(pd.Series([data["count"]]).describe())
 
-    report(double(extract(count=3)))
+        report(double(extract(count=3)))
 ```
 
 - `@task.lamindb_venv(...)` works like `@task.virtualenv`; the function runs as a step in a
@@ -76,17 +78,14 @@ with DAG("my_pipeline") as dag:
 - `@task.lamindb_k8s(image=..., ...)` works like `@task.kubernetes`; the image needs
   lamindb and an API key for the instance, for example from a Kubernetes secret.
 - `LaminDBFlowInitOperator` and `LaminDBFlowFinishOperator` open and close the flow run in
-  a virtualenv, as Airflow setup and teardown tasks. Each step adds and wires them on first
-  use; declare them before the steps to configure them:
-
-  ```python
-  from airflow.providers.lamindb import LaminDBFlowFinishOperator, LaminDBFlowInitOperator
-
-  with DAG("my_pipeline") as dag:
-      init = LaminDBFlowInitOperator(retries=3)
-      finish = LaminDBFlowFinishOperator()
-      ...
-  ```
+  a virtualenv, as Airflow setup and teardown tasks. So `with init >> finish:` is Airflow's
+  setup/teardown context: when the block ends, Airflow wires init upstream of the tasks in it
+  that have no upstream, and finish downstream of the ones that have no downstream. Every task
+  in the block, LaminDB step or not, runs inside the flow run. Airflow does not track mapped
+  tasks (`.expand()`) in the context; add them with
+  `with init >> finish as scope: ... scope.add_task(mapped)` if they are a root or leaf.
+  Alternatively, pass `auto_flow=True` to the steps: each one adds the DAG's flow tasks on
+  first use and wires `init >> step >> finish`.
 
 All of them take `lamindb_conn_id` and `lamindb_instance`, the virtualenv ones also
 `lamindb_version`, also through a DAG's `default_args`. Virtualenvs get the connection's API key and an empty, temporary

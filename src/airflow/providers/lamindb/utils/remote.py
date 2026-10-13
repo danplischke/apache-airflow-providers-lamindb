@@ -267,8 +267,8 @@ class RemoteLaminDBStepMixin:
     :param lamindb_instance: instance slug (``owner/name``) to connect to remotely; overrides the
         connection's instance.
     :param auto_flow: wire ``init >> step >> finish`` with the DAG's flow operators,
-        adding virtualenv ones if the DAG has none yet. The concrete operator does
-        the wiring once fully initialised. Ignored when ``track`` is ``False``.
+        adding virtualenv ones if the DAG has none yet. Default ``False``. The concrete
+        operator does the wiring once fully initialised. Ignored when ``track`` is ``False``.
     :param track: record the call in LaminDB. Pass ``False`` to ship the function
         unchanged, as the plain virtualenv/pod operator would.
     """
@@ -282,7 +282,7 @@ class RemoteLaminDBStepMixin:
         *,
         lamindb_conn_id: str | None = LaminDBHook.default_conn_name,
         lamindb_instance: str | None = None,
-        auto_flow: bool = True,
+        auto_flow: bool = False,
         track: bool = True,
         **kwargs: Any,
     ) -> None:

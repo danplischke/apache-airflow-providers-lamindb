@@ -112,9 +112,9 @@ class LaminDBFlowInitOperator(_LaminDBFlowOperator):
     """Start the LaminDB flow run for this DAG run, in a virtualenv.
 
     Creates (or restarts, on retry) a ``Run`` of the DAG file's ``Transform`` and tags
-    it with the DAG run so downstream LaminDB steps can find it. Step decorators add
-    and wire one automatically; declare it yourself (before the steps) to configure
-    it. Returns the flow run uid.
+    it with the DAG run so downstream LaminDB steps can find it. Wrap the steps in
+    ``with init >> finish:`` to wire them, or let steps with ``auto_flow=True`` add
+    and wire one. Returns the flow run uid.
 
     Marked as an Airflow *setup* task by default, pairing with the *teardown*
     ``LaminDBFlowFinishOperator``; pass ``is_setup=False`` to opt out. Accepts
@@ -167,8 +167,7 @@ class LaminDBFlowFinishOperator(_LaminDBFlowOperator):
     Marked as an Airflow *teardown* task by default: it runs after every other task
     (``trigger_rule=all_done_setup_success``) and is ignored when Airflow decides the
     DAG run state, so a failed step still fails the DAG run. Marks the flow run
-    errored if any other task in the DAG run failed. Step decorators wire it
-    downstream of themselves (``init >> steps >> finish``). Pass ``is_teardown=False``
+    errored if any other task in the DAG run failed. Pass ``is_teardown=False``
     together with your own ``trigger_rule`` to opt out. Accepts every
     ``PythonVirtualenvOperator`` argument except ``python_callable``, ``op_args`` and
     ``op_kwargs``.
@@ -210,10 +209,10 @@ class LaminDBFlowFinishOperator(_LaminDBFlowOperator):
 def wire_flow_tasks(step: BaseOperator, **flow_kwargs: Any) -> None:
     """Wire ``init >> step >> finish``, adding the DAG's flow init/finish tasks on first use.
 
-    Called by the step decorators at DAG parse time. Flow operators already in the DAG
-    are reused, so the first LaminDB step decides their virtualenv and LaminDB settings
-    (``flow_kwargs``). Declare the flow operators yourself before the steps to control
-    them.
+    Called at DAG parse time by step decorators with ``auto_flow=True``. Flow operators
+    already in the DAG are reused, so the first LaminDB step decides their virtualenv
+    and LaminDB settings (``flow_kwargs``). Declare the flow operators yourself before
+    the steps to control them.
     """
     dag = step.get_dag()
     # tasks unmapped at run time were wired as a mapped task at parse time, if at all

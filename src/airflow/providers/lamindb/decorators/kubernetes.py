@@ -51,12 +51,13 @@ def lamindb_k8s_task(
 
     Accepts every ``@task.kubernetes`` argument, plus ``lamindb_conn_id`` (Airflow
     connection of type ``lamindb``; the pod only gets its instance, not its API key),
-    ``lamindb_instance`` (instance slug; overrides the connection's; both templated), ``auto_flow`` (wire
-    flow operators, which run in a virtualenv on the worker, if the DAG has none yet;
-    default ``True``) and ``track`` (record the call in LaminDB; with ``False`` it runs
-    exactly as under ``@task.kubernetes``). The image must have lamindb installed and
-    credentials for the instance, e.g. ``LAMIN_API_KEY`` from a Kubernetes secret. The
-    worker needs no lamindb. Requires ``pip install "lamindb-airflow[cncf.kubernetes]"``.
+    ``lamindb_instance`` (instance slug; overrides the connection's; both templated),
+    ``auto_flow`` (wire flow operators, which run in a virtualenv on the worker, if the
+    DAG has none yet; default ``False``) and ``track`` (record the call in LaminDB; with
+    ``False`` it runs exactly as under ``@task.kubernetes``). The image must have lamindb
+    installed and credentials for the instance, e.g. ``LAMIN_API_KEY`` from a Kubernetes
+    secret. The worker needs no lamindb. Requires
+    ``pip install "lamindb-airflow[cncf.kubernetes]"``.
 
     The step needs the ``lamindb_default`` connection (or the one named by
     ``lamindb_conn_id``) and fails if it is missing. Pass ``lamindb_conn_id=None`` to

@@ -76,8 +76,9 @@ when they fail, and Airflow ignores it when deciding the DAG run state, so a fai
 DAG run. Pass ``is_setup=False`` or ``is_teardown=False`` (with your own ``trigger_rule``) to opt out.
 
 Both accept every ``PythonVirtualenvOperator`` argument except ``python_callable``, ``op_args`` and
-``op_kwargs``. The steps add them automatically (see `Auto-wiring`_); declare them yourself, before the
-steps, to configure them:
+``op_kwargs``. Wire them with ``with init >> finish:``, Airflow's setup/teardown context: when the block
+ends, Airflow wires init upstream of the tasks in it that have no upstream, and finish downstream of the
+ones that have no downstream. Every task in the block, LaminDB step or not, runs inside the flow run.
 
 .. literalinclude:: ../tests/system/lamindb/example_lamindb_lineage.py
     :language: python
@@ -85,13 +86,18 @@ steps, to configure them:
     :start-after: [START howto_operator_lamindb_flow]
     :end-before: [END howto_operator_lamindb_flow]
 
+Airflow does not track mapped tasks (``.expand()``) in the context; add them with
+``with init >> finish as scope: ... scope.add_task(mapped)`` if they are a root or leaf.
+
 Auto-wiring
 -----------
 
-Each step adds the DAG's ``lamindb_flow_init`` and ``lamindb_flow_finish`` tasks on first use and wires
-``init >> step >> finish`` (``auto_flow=True``). The flow tasks copy the settings of the first LaminDB
-step: its connection and instance, and for ``@task.lamindb_venv`` also its Python version, index,
-lamindb pin and environment settings.
+Alternatively, pass ``auto_flow=True`` to the steps (default ``False``). Each one then adds the DAG's
+``lamindb_flow_init`` and ``lamindb_flow_finish`` tasks on first use and wires
+``init >> step >> finish``, which adds an edge per step. The flow tasks copy the settings of the first
+LaminDB step: its connection and instance, and for ``@task.lamindb_venv`` also its Python version,
+index, lamindb pin and environment settings. Flow operators declared before the steps are reused
+instead.
 
 .. literalinclude:: ../tests/system/lamindb/example_lamindb_lineage.py
     :language: python
@@ -101,12 +107,10 @@ lamindb pin and environment settings.
 
 Caveats:
 
-* Mapped steps (``.expand()``) are not auto-wired. Declare the flow operators and wire
-  ``init >> mapped_step >> finish`` yourself.
+* Mapped steps (``.expand()``) are not auto-wired.
 * Flow operators declared *after* an auto-wiring step clash with the auto-added task id; declare them
-  first, or pass ``auto_flow=False`` to the steps.
-* Finish waits for LaminDB steps only; wire other tasks upstream of it if the flow run should cover
-  them.
+  first.
+* Finish waits for auto-wired steps only.
 
 Every step looks the flow run up by its DAG run, so no XCom plumbing is needed and any DAG topology
 works. A step whose flow init has not run fails with a clear error.

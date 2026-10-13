@@ -14,10 +14,33 @@ def noop(x=None):
     return x
 
 
-def test_steps_share_auto_created_flow_tasks() -> None:
+def test_steps_are_not_auto_wired_by_default() -> None:
     with DAG("d", schedule=None) as dag:
+        task.lamindb_venv(noop, task_id="a")()
+        task.lamindb_venv(noop, task_id="b", track=False)()
+
+    assert set(dag.task_ids) == {"a", "b"}
+
+
+def test_setup_teardown_context_wires_only_roots_and_leaves() -> None:
+    with DAG("d", schedule=None) as dag, LaminDBFlowInitOperator() >> LaminDBFlowFinishOperator() as scope:
         a = task.lamindb_venv(noop, task_id="a")()
         b = task.lamindb_venv(noop, task_id="b")()
+        c = task.lamindb_venv(noop, task_id="c")()
+        plain = task(noop, task_id="plain")()
+        mapped = task.lamindb_venv(noop, task_id="m").expand(x=[1, 2])
+        scope.add_task(mapped)  # Airflow only tracks unmapped tasks in the context
+        a >> plain >> b
+        a >> c >> mapped
+
+    assert dag.get_task(INIT).downstream_task_ids == {"a", FINISH}
+    assert dag.get_task(FINISH).upstream_task_ids == {"b", "m", INIT}
+
+
+def test_steps_share_auto_created_flow_tasks() -> None:
+    with DAG("d", schedule=None) as dag:
+        a = task.lamindb_venv(noop, task_id="a", auto_flow=True)()
+        b = task.lamindb_venv(noop, task_id="b", auto_flow=True)()
         a >> b
 
     assert set(dag.task_ids) == {"a", "b", INIT, FINISH}
@@ -34,24 +57,23 @@ def test_existing_flow_tasks_are_reused() -> None:
     with DAG("d", schedule=None) as dag:
         init = LaminDBFlowInitOperator(task_id="my_init")
         finish = LaminDBFlowFinishOperator(task_id="my_finish")
-        task.lamindb_venv(noop, task_id="a")()
+        task.lamindb_venv(noop, task_id="a", auto_flow=True)()
 
     assert set(dag.task_ids) == {"a", "my_init", "my_finish"}
     assert init.downstream_task_ids == {"a"}
     assert finish.upstream_task_ids == {"a"}
 
 
-def test_auto_flow_opt_out() -> None:
+def test_track_false_is_never_auto_wired() -> None:
     with DAG("d", schedule=None) as dag:
-        task.lamindb_venv(noop, task_id="a", auto_flow=False)()
-        task.lamindb_venv(noop, task_id="b", track=False)()
+        task.lamindb_venv(noop, task_id="a", auto_flow=True, track=False)()
 
-    assert set(dag.task_ids) == {"a", "b"}
+    assert set(dag.task_ids) == {"a"}
 
 
 def test_flow_tasks_land_in_root_task_group() -> None:
     with DAG("d", schedule=None) as dag, TaskGroup("group"):
-        task.lamindb_venv(noop, task_id="a")()
+        task.lamindb_venv(noop, task_id="a", auto_flow=True)()
 
     assert set(dag.task_ids) == {"group.a", INIT, FINISH}
 
@@ -61,6 +83,7 @@ def test_venv_step_creates_flow_tasks_with_its_settings() -> None:
         task.lamindb_venv(
             noop,
             task_id="a",
+            auto_flow=True,
             requirements=["pandas", "lamindb-core==2.9.0"],
             python_version="3.11",
             system_site_packages=False,
@@ -82,7 +105,7 @@ def test_venv_step_creates_flow_tasks_with_its_settings() -> None:
 
 def test_dag_default_args_reach_lamindb_arguments() -> None:
     with DAG("d", schedule=None, default_args={"lamindb_conn_id": None, "lamindb_instance": "a/b"}) as dag:
-        task.lamindb_venv(noop, task_id="a")()
+        task.lamindb_venv(noop, task_id="a", auto_flow=True)()
         LaminDBFlowFinishOperator(task_id="my_finish")
 
     for task_id in ("a", INIT, "my_finish"):
@@ -92,8 +115,8 @@ def test_dag_default_args_reach_lamindb_arguments() -> None:
 
 def test_first_step_decides_flow_task_settings() -> None:
     with DAG("d", schedule=None) as dag:
-        task.lamindb_venv(noop, task_id="a", python_version="3.11")()
-        task.lamindb_venv(noop, task_id="b", python_version="3.12")()
+        task.lamindb_venv(noop, task_id="a", python_version="3.11", auto_flow=True)()
+        task.lamindb_venv(noop, task_id="b", python_version="3.12", auto_flow=True)()
 
     assert dag.get_task(INIT).python_version == "3.11"
     assert dag.get_task(INIT).downstream_task_ids == {"a", "b", FINISH}
@@ -101,7 +124,7 @@ def test_first_step_decides_flow_task_settings() -> None:
 
 def test_flow_tasks_resolve_lamindb_when_they_run() -> None:
     with DAG("d", schedule=None) as dag:
-        task.lamindb_venv(noop, task_id="a")()
+        task.lamindb_venv(noop, task_id="a", auto_flow=True)()
 
     assert dag.get_task(INIT).requirements == []
     assert dag.get_task(INIT).lamindb_conn_id == "lamindb_default"
@@ -109,7 +132,7 @@ def test_flow_tasks_resolve_lamindb_when_they_run() -> None:
 
 def test_mapped_steps_are_not_auto_wired() -> None:
     with DAG("d", schedule=None) as dag:
-        task.lamindb_venv(noop, task_id="a").expand(x=[1, 2])
+        task.lamindb_venv(noop, task_id="a", auto_flow=True).expand(x=[1, 2])
 
     assert set(dag.task_ids) == {"a"}
     # unmapping on the worker must not add tasks either

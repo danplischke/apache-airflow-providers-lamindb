@@ -42,7 +42,7 @@ def test_task_lamindb_venv_keeps_xcom_args_and_dependencies() -> None:
         consume(produce())
 
     consume_op = test_dag().get_task("consume")
-    assert consume_op.upstream_task_ids == {"produce", "lamindb_flow_init"}
+    assert consume_op.upstream_task_ids == {"produce"}
     assert len(consume_op.op_args) == 1
 
 
@@ -59,7 +59,7 @@ def test_task_lamindb_venv_builds_operator() -> None:
 
 
 def test_task_lamindb_venv_passes_the_cache_dir_to_the_flow_operators() -> None:
-    op = _single_task(task.lamindb_venv(lamindb_cache_dir="/shared"), step)
+    op = _single_task(task.lamindb_venv(lamindb_cache_dir="/shared", auto_flow=True), step)
     init = op.get_dag().get_task("lamindb_flow_init")
     assert op.lamindb_cache_dir == init.lamindb_cache_dir == "/shared"
 
@@ -112,7 +112,7 @@ def test_remote_step_ships_wrapped_source_only_during_execute(
 def test_step_on_another_instance_than_the_flow_run_fails_early(
     fake_lamindb: MagicMock, make_context, lamindb_connection
 ) -> None:
-    op = _single_task(task.lamindb_venv(lamindb_instance="owner/other"), step)
+    op = _single_task(task.lamindb_venv(lamindb_instance="owner/other", auto_flow=True), step)
     context = make_context()
     context["ti"].xcom_pull.return_value = "owner/name"
 
@@ -211,7 +211,7 @@ def test_task_lamindb_k8s_without_connection_uses_the_pod_configuration(
 
     @dag
     def test_dag():
-        task.lamindb_k8s(image="python:3.12", lamindb_conn_id=None)(step)()
+        task.lamindb_k8s(image="python:3.12", lamindb_conn_id=None, auto_flow=True)(step)()
 
     built = test_dag()
     op = built.get_task("step")
