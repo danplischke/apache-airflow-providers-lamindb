@@ -2,7 +2,7 @@
 
 Airflow's virtualenv and Kubernetes operators ship the callable's *source text* to
 the remote interpreter and call it by name. We keep that mechanism: the shipped
-script embeds :mod:`airflow.providers.lamindb.utils.runtime` as source and calls into it.
+script embeds ``airflow.providers.lamindb.utils.runtime`` as source and calls into it.
 Only lamindb has to be installed remotely; nothing is pickled by reference.
 """
 
@@ -52,7 +52,7 @@ def build_remote_step_source(*, user_source: str, callable_name: str, config: di
     """Append a wrapper to ``user_source`` and rebind ``callable_name`` to it.
 
     The operator's script template then calls the wrapper, which runs the user
-    function via :func:`runtime.run_step` with ``config`` as keyword arguments.
+    function via ``runtime.run_step`` with ``config`` as keyword arguments.
     """
     return (
         user_source.rstrip()

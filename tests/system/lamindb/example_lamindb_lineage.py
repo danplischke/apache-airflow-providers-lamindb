@@ -1,4 +1,6 @@
-"""Example DAGs for lamindb-airflow, run by test_example_lamindb_lineage.py through dag.test().
+"""Example DAGs for apache-airflow-providers-lamindb.
+
+test_example_lamindb_lineage.py runs them through dag.test().
 
 LaminDB only runs inside the virtualenvs, so the worker needs no lamindb. The examples pass
 ``system_site_packages=True`` so the virtualenvs reuse the lamindb of the test environment.
@@ -15,7 +17,7 @@ from airflow.providers.lamindb.operators.flow import (
 
 # Init/finish wrap the steps; Airflow wires them to the steps' roots and leaves.
 with DAG("lamindb_example_ok") as dag_ok:
-    # [START howto_decorator_lamindb_venv]
+    # --8<-- [start:howto_decorator_lamindb_venv]
     @task.lamindb_venv(system_site_packages=True)
     def extract(count: int = 10) -> dict:
         return {"count": count}
@@ -36,14 +38,14 @@ with DAG("lamindb_example_ok") as dag_ok:
         assert ln.context.run is not None, "step run context missing in venv"
         return {"value": value * 10, "run_uid": ln.context.run.uid}
 
-    # [END howto_decorator_lamindb_venv]
+    # --8<-- [end:howto_decorator_lamindb_venv]
 
-    # [START howto_operator_lamindb_flow]
+    # --8<-- [start:howto_operator_lamindb_flow]
     init = LaminDBFlowInitOperator(system_site_packages=True)
     finish = LaminDBFlowFinishOperator(system_site_packages=True)
     with init >> finish:
         report(load(transform(extract(count=3))))
-    # [END howto_operator_lamindb_flow]
+    # --8<-- [end:howto_operator_lamindb_flow]
 
 
 with (
@@ -61,7 +63,7 @@ with (
 
 # auto_flow adds flow tasks that copy the first step's virtualenv settings.
 with DAG("lamindb_example_auto_flow") as dag_auto_flow:
-    # [START howto_lamindb_auto_flow]
+    # --8<-- [start:howto_lamindb_auto_flow]
     @task.lamindb_venv(system_site_packages=True, auto_flow=True)
     def venv_extract(count: int = 10) -> dict:
         return {"count": count}
@@ -71,4 +73,4 @@ with DAG("lamindb_example_auto_flow") as dag_auto_flow:
         return {"count": data["count"] * 2}
 
     venv_double(venv_extract(count=4))
-    # [END howto_lamindb_auto_flow]
+    # --8<-- [end:howto_lamindb_auto_flow]

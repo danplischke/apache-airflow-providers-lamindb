@@ -1,10 +1,10 @@
 [build-system]
-requires = ["flit_core>=3.12,<5"]
-build-backend = "flit_core.buildapi"
+requires = ["hatchling>=1.30", "hatch-vcs>=0.5"]
+build-backend = "hatchling.build"
 
 [project]
-name = "lamindb-airflow"
-version = "0.1.0"
+name = "apache-airflow-providers-lamindb"
+dynamic = ["version"]
 description = "Apache Airflow provider for LaminDB: track DAG runs as flows and tasks as steps, and trigger DAGs on LaminHub events."
 readme = "README.md"
 license = "MIT"
@@ -35,21 +35,23 @@ requires-python = ">=3.10,!=3.15"
 dependencies = [
     # asset_state_store for event triggers was added in Airflow 3.3.0
     "apache-airflow>=3.3.0",
-    "apache-airflow-providers-standard",
+    # floors: the versions Airflow 3.3.0's constraints pin, checked by the compat job in qa.yml
+    "apache-airflow-providers-standard>=1.15.0",
     "httpx>=0.27.0",
+    "packaging>=22",
 ]
 
 [project.optional-dependencies]
 # lamindb is never needed on the worker: the virtualenv/pod operators install it remotely.
 "cncf.kubernetes" = [
-    "apache-airflow-providers-cncf-kubernetes",
+    "apache-airflow-providers-cncf-kubernetes>=10.19.0",
 ]
 
 [dependency-groups]
 dev = [
-    "lamindb-airflow[cncf.kubernetes]",
+    "apache-airflow-providers-lamindb[cncf.kubernetes]",
     # integration and system tests run lamindb against a throwaway instance
-    "lamindb",
+    "lamindb>=2.10",
     "mypy>=1.15",
     "pytest>=8.3",
     "pytest-asyncio>=0.25",
@@ -57,28 +59,43 @@ dev = [
     "respx>=0.22",
     "ruff>=0.11",
 ]
+docs = [
+    "mkdocstrings-python>=2.0",
+    # formats the signatures in the API reference
+    "ruff>=0.11",
+    "zensical>=0.0.69; python_version >= '3.11'",
+]
 
 [project.urls]
-"Documentation" = "https://github.com/danplischke/apache-airflow-providers-lamindb/tree/main/docs"
-"Changelog" = "https://github.com/danplischke/apache-airflow-providers-lamindb/blob/main/docs/changelog.rst"
+"Documentation" = "https://danplischke.github.io/apache-airflow-providers-lamindb/"
+"Changelog" = "https://danplischke.github.io/apache-airflow-providers-lamindb/changelog/"
 "Source Code" = "https://github.com/danplischke/apache-airflow-providers-lamindb"
 "Bug Tracker" = "https://github.com/danplischke/apache-airflow-providers-lamindb/issues"
 
 [project.entry-points."apache_airflow_provider"]
 provider_info = "airflow.providers.lamindb.get_provider_info:get_provider_info"
 
-[tool.flit.module]
-name = "airflow.providers.lamindb"
+[tool.hatch.version]
+source = "vcs"
+fallback-version = "0.0.0"
 
-# Explicit sdist contents so the build does not rely on VCS information
-[tool.flit.sdist]
-include = [
-    "docs/",
+[tool.hatch.build.targets.wheel]
+only-include = ["src/airflow/providers/lamindb"]
+sources = ["src"]
+
+[tool.hatch.build.targets.sdist]
+only-include = [
+    ".github/workflows/qa.yml",
+    "dev/dags",
+    "docs",
     "provider.yaml",
-    "src/airflow/__init__.py",
-    "src/airflow/providers/__init__.py",
-    "tests/",
+    "src",
+    "tests",
 ]
+
+# rebuild the editable install when a commit or tag changes the version
+[tool.uv]
+cache-keys = [{ file = "pyproject.toml" }, { git = { commit = true, tags = true } }]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

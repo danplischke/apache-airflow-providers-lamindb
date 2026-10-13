@@ -57,7 +57,7 @@ def lamindb_k8s_task(
     ``False`` it runs exactly as under ``@task.kubernetes``). The image must have lamindb
     installed and credentials for the instance, e.g. ``LAMIN_API_KEY`` from a Kubernetes
     secret. The worker needs no lamindb. Requires
-    ``pip install "lamindb-airflow[cncf.kubernetes]"``.
+    ``pip install "apache-airflow-providers-lamindb[cncf.kubernetes]"``.
 
     The step needs the ``lamindb_default`` connection (or the one named by
     ``lamindb_conn_id``) and fails if it is missing. Pass ``lamindb_conn_id=None`` to
@@ -71,7 +71,7 @@ def lamindb_k8s_task(
     except ImportError as e:
         raise ImportError(
             "@task.lamindb_k8s requires apache-airflow-providers-cncf-kubernetes. "
-            'Install with: pip install "lamindb-airflow[cncf.kubernetes]"'
+            'Install with: pip install "apache-airflow-providers-lamindb[cncf.kubernetes]"'
         ) from e
 
     return task_decorator_factory(

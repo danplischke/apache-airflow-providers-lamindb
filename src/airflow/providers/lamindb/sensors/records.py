@@ -27,13 +27,12 @@ class LaminDBRecordSensor(BaseSensorOperator):
 
     Returns the matching records (newest first, at most ``limit``), which are pushed to XCom.
 
-    .. seealso::
-        For more information on how to use this sensor, take a look at the guide:
-        :ref:`howto/sensor:LaminDBRecordSensor`
+    For more information on how to use this sensor, take a look at the
+    [guide](https://danplischke.github.io/apache-airflow-providers-lamindb/sensors/#lamindbrecordsensor).
 
     :param registry: Registry to query, e.g. ``LaminDBRegistry.RUN``, ``"core.artifact"`` or
         ``"bionty.celltype"``.
-    :param filter: Filter built with :class:`~airflow.providers.lamindb.utils.filters.F`, e.g.
+    :param filter: Filter built with [`F`][airflow.providers.lamindb.utils.filters.F], e.g.
         ``F(ArtifactField.KEY) == "raw/sample1.fastq.gz"``, or a LaminHub REST filter such as
         ``{"key": {"eq": "raw/sample1.fastq.gz"}}``. It's validated when the DAG is parsed.
     :param branch: Only records on this branch (name or id); ``None`` for all branches and for
@@ -137,16 +136,15 @@ class LaminDBArtifactSensor(LaminDBRecordSensor):
 
     Returns the matching artifacts (newest first, at most ``limit``), which are pushed to XCom.
 
-    .. seealso::
-        For more information on how to use this sensor, take a look at the guide:
-        :ref:`howto/sensor:LaminDBArtifactSensor`
+    For more information on how to use this sensor, take a look at the
+    [guide](https://danplischke.github.io/apache-airflow-providers-lamindb/sensors/#lamindbartifactsensor).
 
     :param key: Artifact key, e.g. ``"raw/sample1.fastq.gz"``.
     :param key_prefix: Key prefix, e.g. ``"raw/"``.
     :param suffix: Suffix (or suffixes), e.g. ``".parquet"``.
     :param kind: Artifact kind (or kinds), e.g. ``ArtifactKind.DATASET``.
     :param include_internal: Also consider artifacts LaminDB creates internally (run logs, ...).
-    :param filter: Additional filter, see :class:`LaminDBRecordSensor`.
+    :param filter: Additional filter, see [`LaminDBRecordSensor`][].
     :param wait_for_upload: Ignore artifacts whose upload is still in progress (default).
     """
 

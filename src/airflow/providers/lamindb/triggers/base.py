@@ -29,7 +29,7 @@ class LaminDBDbWriteEventTrigger(BaseEventTrigger):
     which writes to poll and how to turn them into trigger events.
 
     The trigger polls writes with an id greater than its cursor, and stores the cursor under
-    :attr:`state_key` so that a restarted triggerer resumes where it left off. The cursor is committed
+    [`state_key`][] so that a restarted triggerer resumes where it left off. The cursor is committed
     at least ``commit_delay`` seconds after the events were yielded, which gives Airflow time to persist
     them: events are delivered at least once. It is only committed when the trigger processed new
     writes. On the first start the trigger only reports writes that happen from then on.
@@ -40,10 +40,10 @@ class LaminDBDbWriteEventTrigger(BaseEventTrigger):
     :param batch_size: Number of writes fetched per request (at most 200).
     :param max_batches_per_poll: Maximum number of batches processed per poll cycle.
     :param cursor_store: Where and how to store the cursor:
-        :class:`~airflow.providers.lamindb.triggers.cursors.AssetCursorStore` (default) in the asset
-        state store of the :class:`~airflow.sdk.AssetWatcher`'s assets, or
-        :class:`~airflow.providers.lamindb.triggers.cursors.RecordCursorStore` in a record of the
-        watched instance. Both also set the ``commit_delay``.
+        [`AssetCursorStore`][airflow.providers.lamindb.triggers.cursors.AssetCursorStore] (default) in
+        the asset state store of the [`AssetWatcher`][airflow.sdk.AssetWatcher]'s assets, or
+        [`RecordCursorStore`][airflow.providers.lamindb.triggers.cursors.RecordCursorStore] in a record
+        of the watched instance. Both also set the ``commit_delay``.
     """
 
     def __init__(
@@ -74,7 +74,7 @@ class LaminDBDbWriteEventTrigger(BaseEventTrigger):
     # -- subclass API --------------------------------------------------------------------------------
 
     def _trigger_kwargs(self) -> dict[str, Any]:
-        """Subclass-specific keyword arguments; they define :attr:`state_key` and are serialized."""
+        """Subclass-specific keyword arguments; they define [`state_key`][] and are serialized."""
         raise NotImplementedError
 
     async def _setup(self, hook: LaminDBHook) -> None:
@@ -93,7 +93,7 @@ class LaminDBDbWriteEventTrigger(BaseEventTrigger):
     async def _should_commit(self, hook: LaminDBHook, writes: list[dict[str, Any]]) -> bool:
         """Whether a processed batch moves the stored cursor; ``False`` for writes of cursor records.
 
-        Called after :meth:`_events_for`. Skipping the commit only costs re-reading the batch after a
+        Called after ``_events_for``. Skipping the commit only costs re-reading the batch after a
         restart, but stops triggers that store cursors in LaminDB from reacting to each other's saves.
         """
         return True

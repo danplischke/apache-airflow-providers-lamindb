@@ -26,9 +26,8 @@ class LaminDBBranchStatusSensor(BaseSensorOperator):
     branch reaches one of the ``failure_status`` statuses (by default, when the Change Request is
     closed without merging).
 
-    .. seealso::
-        For more information on how to use this sensor, take a look at the guide:
-        :ref:`howto/sensor:LaminDBBranchStatusSensor`
+    For more information on how to use this sensor, take a look at the
+    [guide](https://danplischke.github.io/apache-airflow-providers-lamindb/sensors/#lamindbbranchstatussensor).
 
     :param branch: Branch name or id.
     :param target_status: Status (or statuses) to wait for, any of ``standalone``, ``draft``,

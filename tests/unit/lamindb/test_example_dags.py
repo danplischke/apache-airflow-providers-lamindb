@@ -7,6 +7,7 @@ from airflow.dag_processing.dagbag import DagBag
 from airflow.serialization.serialized_objects import DagSerialization
 
 EXAMPLES = Path(__file__).parents[2] / "system" / "lamindb"
+DEV_DAGS = Path(__file__).parents[3] / "dev" / "dags"
 
 
 @pytest.fixture(scope="module")
@@ -38,3 +39,22 @@ def test_watchers_use_lamindb_triggers(dagbag):
     serialized = str(DagSerialization.to_dict(dagbag.dags["example_lamindb_artifact_events"]))
     assert "airflow.providers.lamindb.triggers.records.LaminDBArtifactEventTrigger" in serialized
     assert "lamindb_new_fastqs_watcher" in serialized
+
+
+@pytest.mark.parametrize(
+    ("hosted", "dag_ids"),
+    [
+        (False, ["lamindb_showcase", "lamindb_showcase_auto_flow"]),
+        (True, ["lamindb_showcase", "lamindb_showcase_auto_flow", "lamindb_showcase_on_table"]),
+    ],
+)
+def test_standalone_dags_import(monkeypatch, hosted, dag_ids):
+    if hosted:
+        monkeypatch.setenv("AIRFLOW_CONN_LAMINDB_DEFAULT", '{"conn_type": "lamindb"}')
+    else:
+        monkeypatch.delenv("AIRFLOW_CONN_LAMINDB_DEFAULT", raising=False)
+    dagbag = DagBag(dag_folder=str(DEV_DAGS))
+    assert dagbag.import_errors == {}
+    assert sorted(dagbag.dag_ids) == dag_ids
+    for dag in dagbag.dags.values():
+        DagSerialization.to_dict(dag)

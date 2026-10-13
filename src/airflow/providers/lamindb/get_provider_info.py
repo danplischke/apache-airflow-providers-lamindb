@@ -6,7 +6,7 @@ from __future__ import annotations
 
 def get_provider_info() -> dict[str, object]:
     return {
-        "package-name": "lamindb-airflow",
+        "package-name": "apache-airflow-providers-lamindb",
         "name": "LaminDB",
         "description": "`LaminDB <https://lamin.ai/>`__ lineage for DAG runs and event-driven scheduling "
         "via the LaminHub REST API.\n",
@@ -14,11 +14,6 @@ def get_provider_info() -> dict[str, object]:
             {
                 "integration-name": "LaminDB",
                 "external-doc-url": "https://docs.lamin.ai/",
-                "how-to-guide": [
-                    "/docs/lamindb-airflow/lineage.rst",
-                    "/docs/lamindb-airflow/triggers.rst",
-                    "/docs/lamindb-airflow/sensors.rst",
-                ],
                 "tags": ["service", "software"],
             }
         ],

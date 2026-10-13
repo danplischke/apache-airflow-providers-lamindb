@@ -1,0 +1,87 @@
+name: Docs
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  PYTHON_VERSION_DEFAULT: "3.14"
+
+jobs:
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    outputs:
+      docs: ${{ steps.filter.outputs.docs }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 — https://github.com/actions/checkout/releases/tag/v7.0.1
+        if: github.event_name == 'pull_request'
+        with:
+          fetch-depth: 2
+
+      - name: Match changed files
+        id: filter
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          if [ "$EVENT" != pull_request ]; then echo "docs=true" | tee -a "$GITHUB_OUTPUT"; exit 0; fi
+          # src/ feeds the API reference; the example DAGs are included as snippets
+          pattern='^(docs/|zensical\.toml$|src/|tests/system/lamindb/example_|pyproject\.toml$|uv\.lock$|\.github/workflows/docs\.yml$)'
+          git diff --name-only HEAD^1 HEAD | grep -qE "$pattern" && docs=true || docs=false
+          echo "docs=$docs" | tee -a "$GITHUB_OUTPUT"
+
+  build:
+    name: Build documentation
+    needs: [changes]
+    if: needs.changes.outputs.docs == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 — https://github.com/actions/checkout/releases/tag/v7.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0 — https://github.com/actions/setup-python/releases/tag/v7.0.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION_DEFAULT }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0 — https://github.com/astral-sh/setup-uv/releases/tag/v10.3.0
+
+      - name: Install dependencies
+        run: uv sync --locked --only-group docs
+
+      - name: Build site
+        run: uv run --no-sync zensical build --strict --clean
+
+      - name: Upload Pages artifact
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0 — https://github.com/actions/upload-pages-artifact/releases/tag/v5.0.0
+        with:
+          path: site
+
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: [build]
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Configure Pages
+        uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0 — https://github.com/actions/configure-pages/releases/tag/v6.0.0
+
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1 — https://github.com/actions/deploy-pages/releases/tag/v5.0.1

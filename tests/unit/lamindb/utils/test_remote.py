@@ -85,7 +85,10 @@ CORE_COMPANIONS = ["numpy", "pandas>=2.0.0", "pandera>=0.24.0"]
         (["lamindb-core==2.8.0"], ["lamindb-core==2.8.0", *CORE_COMPANIONS]),
         (["lamindb_core", "Pandas"], ["lamindb_core", "Pandas", "numpy", "pandera>=0.24.0"]),
         (["lamindb_setup"], ["lamindb_setup", "lamindb-core==9.9", *CORE_COMPANIONS]),
-        (["lamindb-airflow"], ["lamindb-airflow", "lamindb-core==9.9", *CORE_COMPANIONS]),
+        (
+            ["apache-airflow-providers-lamindb"],
+            ["apache-airflow-providers-lamindb", "lamindb-core==9.9", *CORE_COMPANIONS],
+        ),
         # a rendered requirements file is one multi-line element
         (["pandas\nlamindb==1.3.0"], ["pandas\nlamindb==1.3.0"]),
         (["# comment\n\n  lamindb  # pinned below"], ["# comment\n\n  lamindb  # pinned below"]),

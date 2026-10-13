@@ -20,7 +20,7 @@
 /tests/integration/ @danplischke
 /tests/system/lamindb/example_lamindb_lineage.py @danplischke
 /tests/system/lamindb/test_example_lamindb_lineage.py @danplischke
-/docs/lineage.rst @danplischke
+/docs/lineage.md @danplischke
 
 # Event-driven scheduling: LaminHub REST API hook, triggers, sensors and filters
 /src/airflow/providers/lamindb/hooks/ @ap--
@@ -40,6 +40,6 @@
 /tests/unit/lamindb/utils/test_filters.py @ap--
 /tests/system/lamindb/example_lamindb_event_scheduling.py @ap--
 /tests/system/lamindb/example_lamindb_sensors.py @ap--
-/docs/triggers.rst @ap--
-/docs/sensors.rst @ap--
-/docs/filters.rst @ap--
+/docs/triggers.md @ap--
+/docs/sensors.md @ap--
+/docs/filters.md @ap--

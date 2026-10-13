@@ -1,4 +1,4 @@
-# lamindb-airflow
+# apache-airflow-providers-lamindb
 
 An [Apache Airflow](https://airflow.apache.org) 3 provider for [LaminDB](https://lamin.ai) with two parts:
 
@@ -14,8 +14,8 @@ Both parts use the same Airflow connection, and the worker never needs the `lami
 ## Installation
 
 ```bash
-pip install lamindb-airflow
-pip install "lamindb-airflow[cncf.kubernetes]"  # adds @task.lamindb_k8s
+pip install apache-airflow-providers-lamindb
+pip install "apache-airflow-providers-lamindb[cncf.kubernetes]"  # adds @task.lamindb_k8s
 ```
 
 Requires `apache-airflow>=3.3.0` and `apache-airflow-providers-standard`. Airflow 3.3.0 added the asset
@@ -38,7 +38,8 @@ export AIRFLOW_CONN_LAMINDB_DEFAULT='{
 ```
 
 Every operator, decorator, trigger and sensor accepts `lamindb_conn_id` to use another connection,
-for example a different API key for one task. See [docs/connections/lamindb.rst](docs/connections/lamindb.rst).
+for example a different API key for one task. See
+[Connection types](https://danplischke.github.io/apache-airflow-providers-lamindb/connections/lamindb/).
 
 ## Lineage: DAG runs as flows, tasks as steps
 
@@ -97,7 +98,7 @@ another connection, for example to run under another API key:
 def curate(data: dict) -> None: ...
 ```
 
-See [docs/lineage.rst](docs/lineage.rst) for auto-wiring, all settings, `track=False`, how
+See [Lineage](https://danplischke.github.io/apache-airflow-providers-lamindb/lineage/) for auto-wiring, all settings, `track=False`, how
 the steps are recorded and the limitations.
 
 ## Event-driven scheduling
@@ -195,39 +196,26 @@ LaminDBRecordSensor(
 
 ## Documentation
 
-- [Connection](docs/connections/lamindb.rst)
-- [Lineage](docs/lineage.rst)
-- [Triggers (event-driven scheduling)](docs/triggers.rst)
-- [Sensors and hook](docs/sensors.rst)
-- [Filters](docs/filters.rst)
+The documentation is at <https://danplischke.github.io/apache-airflow-providers-lamindb/>:
+
+- [Connection types](https://danplischke.github.io/apache-airflow-providers-lamindb/connections/lamindb/)
+- [Lineage](https://danplischke.github.io/apache-airflow-providers-lamindb/lineage/)
+- [Triggers (event-driven scheduling)](https://danplischke.github.io/apache-airflow-providers-lamindb/triggers/)
+- [Sensors and hook](https://danplischke.github.io/apache-airflow-providers-lamindb/sensors/)
+- [Filters](https://danplischke.github.io/apache-airflow-providers-lamindb/filters/)
+- [API reference](https://danplischke.github.io/apache-airflow-providers-lamindb/api/)
 - [Example DAGs](tests/system/lamindb)
-- [Changelog](docs/changelog.rst)
+- [Changelog](https://danplischke.github.io/apache-airflow-providers-lamindb/changelog/)
 
 ## Development
 
-The layout follows the provider packages in the `apache/airflow` repository (`provider.yaml`,
-`get_provider_info.py`, `tests/unit`, `tests/system`, `docs`). Keep `provider.yaml` and
-`get_provider_info.py` in sync; a unit test checks that they match.
+See [CONTRIBUTING.md](https://github.com/danplischke/apache-airflow-providers-lamindb/blob/main/CONTRIBUTING.md). In short, with [uv](https://docs.astral.sh/uv/) and
+[just](https://just.systems/):
 
 ```bash
-uv sync
-uv run pytest tests/unit                 # lamindb and the LaminHub API mocked
-uv run ruff check . && uv run ruff format --check .
-uv run --isolated --python 3.10 mypy    # type-check on the oldest supported Python
-```
-
-Integration and system tests run against a real lamindb instance:
-
-```bash
-# use a throwaway instance: keep ~/.lamin away from your real settings
-export HOME=/tmp/lamin-home
-lamin init --storage /tmp/lamin-home/store --name airflowtest
-LAMINDB_INTEGRATION_TEST=1 pytest tests/integration   # shipped sources against a real instance
-
-export AIRFLOW_HOME=/tmp/airflow-e2e AIRFLOW__CORE__LOAD_EXAMPLES=False
-export AIRFLOW__CORE__DAGS_FOLDER=$PWD/tests/system/lamindb
-airflow db migrate
-LAMINDB_E2E_TEST=1 pytest tests/system             # dag.test(): real task runner + virtualenv
+just dev     # install the dev and docs dependencies and the pre-commit hooks
+just check   # lint, type check, unit tests, docs, package build and smoke test, as the CI does
+just standalone  # Airflow at http://localhost:8080 with sample DAGs and a local lamindb instance
 ```
 
 ## License

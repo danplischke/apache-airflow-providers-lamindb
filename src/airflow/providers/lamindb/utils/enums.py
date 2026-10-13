@@ -2,7 +2,7 @@
 Enums for building LaminHub REST filters: registries, filter operators, registry fields and values.
 
 The field enums reflect the core registries of LaminDB 2.10. Use them with
-:class:`~airflow.providers.lamindb.utils.filters.F`, for example ``F(ArtifactField.KEY) == "raw/a.csv"``.
+[`F`][airflow.providers.lamindb.utils.filters.F], for example ``F(ArtifactField.KEY) == "raw/a.csv"``.
 Plain strings work for every field, including fields of other schema modules such as ``bionty``.
 """
 
@@ -18,7 +18,7 @@ def plain_value(value: Any) -> Any:
 
 
 class _StrEnum(str, Enum):
-    """A ``str`` enum that formats as its value (like :class:`enum.StrEnum`, which needs Python 3.11)."""
+    """A ``str`` enum that formats as its value (like [`enum.StrEnum`][], which needs Python 3.11)."""
 
     def __str__(self) -> str:
         return str(self.value)
@@ -105,7 +105,7 @@ class FilterOperator(_StrEnum):
 
 
 class ArtifactKind(_StrEnum):
-    """Values of :attr:`ArtifactField.KIND`."""
+    """Values of [`ArtifactField.KIND`][]."""
 
     DATASET = "dataset"
     MODEL = "model"
@@ -117,7 +117,7 @@ class ArtifactKind(_StrEnum):
 
 
 class TransformKind(_StrEnum):
-    """Values of :attr:`TransformField.KIND`."""
+    """Values of [`TransformField.KIND`][]."""
 
     PIPELINE = "pipeline"
     NOTEBOOK = "notebook"
@@ -126,7 +126,7 @@ class TransformKind(_StrEnum):
 
 
 class RunStatus(IntEnum):
-    """Run statuses, as the codes stored in :attr:`RunField.STATUS_CODE`."""
+    """Run statuses, as the codes stored in [`RunField.STATUS_CODE`][]."""
 
     SCHEDULED = -3
     RESTARTED = -2
@@ -140,8 +140,8 @@ class RegistryField(_StrEnum):
     """
     Base class of the registry field enums.
 
-    Members that are relations know the registry they point to (:attr:`related`), so that
-    :class:`~airflow.providers.lamindb.utils.filters.F` can follow them, for example
+    Members that are relations know the registry they point to ([`related`][]), so that
+    [`F`][airflow.providers.lamindb.utils.filters.F] can follow them, for example
     ``F(ArtifactField.CREATED_BY, UserField.HANDLE)``. Foreign keys (``..._ID`` members) hold the id of
     the related record and can be compared directly.
     """
@@ -156,7 +156,7 @@ class RegistryField(_StrEnum):
 
 
 class ArtifactField(RegistryField):
-    """Fields of ``core.artifact`` (:attr:`LaminDBRegistry.ARTIFACT`)."""
+    """Fields of ``core.artifact`` ([`LaminDBRegistry.ARTIFACT`][])."""
 
     ID = "id"
     UID = "uid"
@@ -209,7 +209,7 @@ class ArtifactField(RegistryField):
 
 
 class CollectionField(RegistryField):
-    """Fields of ``core.collection`` (:attr:`LaminDBRegistry.COLLECTION`)."""
+    """Fields of ``core.collection`` ([`LaminDBRegistry.COLLECTION`][])."""
 
     ID = "id"
     UID = "uid"
@@ -251,7 +251,7 @@ class CollectionField(RegistryField):
 
 
 class RunField(RegistryField):
-    """Fields of ``core.run`` (:attr:`LaminDBRegistry.RUN`)."""
+    """Fields of ``core.run`` ([`LaminDBRegistry.RUN`][])."""
 
     ID = "id"
     UID = "uid"
@@ -268,7 +268,7 @@ class RunField(RegistryField):
     REFERENCE_TYPE = "reference_type"
     STARTED_AT = "started_at"
     STATUS_CODE = "_status_code"
-    """The run status as a code, compare it with :class:`RunStatus`."""
+    """The run status as a code, compare it with [`RunStatus`][]."""
     UPDATED_AT = "updated_at"
     # foreign keys
     BRANCH_ID = "branch_id"
@@ -309,7 +309,7 @@ class RunField(RegistryField):
 
 
 class TransformField(RegistryField):
-    """Fields of ``core.transform`` (:attr:`LaminDBRegistry.TRANSFORM`)."""
+    """Fields of ``core.transform`` ([`LaminDBRegistry.TRANSFORM`][])."""
 
     ID = "id"
     UID = "uid"
@@ -353,7 +353,7 @@ class TransformField(RegistryField):
 
 
 class RecordField(RegistryField):
-    """Fields of ``core.record`` (:attr:`LaminDBRegistry.RECORD`)."""
+    """Fields of ``core.record`` ([`LaminDBRegistry.RECORD`][])."""
 
     ID = "id"
     UID = "uid"
@@ -405,7 +405,7 @@ class RecordField(RegistryField):
 
 
 class ULabelField(RegistryField):
-    """Fields of ``core.ulabel`` (:attr:`LaminDBRegistry.ULABEL`)."""
+    """Fields of ``core.ulabel`` ([`LaminDBRegistry.ULABEL`][])."""
 
     ID = "id"
     UID = "uid"
@@ -444,7 +444,7 @@ class ULabelField(RegistryField):
 
 
 class FeatureField(RegistryField):
-    """Fields of ``core.feature`` (:attr:`LaminDBRegistry.FEATURE`)."""
+    """Fields of ``core.feature`` ([`LaminDBRegistry.FEATURE`][])."""
 
     ID = "id"
     UID = "uid"
@@ -482,7 +482,7 @@ class FeatureField(RegistryField):
 
 
 class SchemaField(RegistryField):
-    """Fields of ``core.schema`` (:attr:`LaminDBRegistry.SCHEMA`)."""
+    """Fields of ``core.schema`` ([`LaminDBRegistry.SCHEMA`][])."""
 
     ID = "id"
     UID = "uid"
@@ -528,7 +528,7 @@ class SchemaField(RegistryField):
 
 
 class ProjectField(RegistryField):
-    """Fields of ``core.project`` (:attr:`LaminDBRegistry.PROJECT`)."""
+    """Fields of ``core.project`` ([`LaminDBRegistry.PROJECT`][])."""
 
     ID = "id"
     UID = "uid"
@@ -576,7 +576,7 @@ class ProjectField(RegistryField):
 
 
 class ReferenceField(RegistryField):
-    """Fields of ``core.reference`` (:attr:`LaminDBRegistry.REFERENCE`)."""
+    """Fields of ``core.reference`` ([`LaminDBRegistry.REFERENCE`][])."""
 
     ID = "id"
     UID = "uid"
@@ -616,7 +616,7 @@ class ReferenceField(RegistryField):
 
 
 class StorageField(RegistryField):
-    """Fields of ``core.storage`` (:attr:`LaminDBRegistry.STORAGE`)."""
+    """Fields of ``core.storage`` ([`LaminDBRegistry.STORAGE`][])."""
 
     ID = "id"
     UID = "uid"
@@ -645,7 +645,7 @@ class StorageField(RegistryField):
 
 
 class BranchField(RegistryField):
-    """Fields of ``core.branch`` (:attr:`LaminDBRegistry.BRANCH`)."""
+    """Fields of ``core.branch`` ([`LaminDBRegistry.BRANCH`][])."""
 
     ID = "id"
     UID = "uid"
@@ -665,7 +665,7 @@ class BranchField(RegistryField):
 
 
 class SpaceField(RegistryField):
-    """Fields of ``core.space`` (:attr:`LaminDBRegistry.SPACE`)."""
+    """Fields of ``core.space`` ([`LaminDBRegistry.SPACE`][])."""
 
     ID = "id"
     UID = "uid"
@@ -679,7 +679,7 @@ class SpaceField(RegistryField):
 
 
 class UserField(RegistryField):
-    """Fields of ``core.user`` (:attr:`LaminDBRegistry.USER`)."""
+    """Fields of ``core.user`` ([`LaminDBRegistry.USER`][])."""
 
     ID = "id"
     UID = "uid"

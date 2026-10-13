@@ -3,10 +3,11 @@ name: QA Check
 on:
   push:
     branches: [main]
-  # No paths filter: these jobs are required status checks on main, and a
-  # filtered-out PR would wait on them forever.
+  # No paths filter: "QA result" is a required check, so the workflow must run on every PR.
+  # The changes job skips what a PR doesn't touch instead.
   pull_request:
   workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read
@@ -19,8 +20,51 @@ env:
   PYTHON_VERSION_DEFAULT: "3.14"
 
 jobs:
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    outputs:
+      lint: ${{ steps.filter.outputs.lint }}
+      typecheck: ${{ steps.filter.outputs.typecheck }}
+      unit: ${{ steps.filter.outputs.unit }}
+      smoke: ${{ steps.filter.outputs.smoke }}
+      integration: ${{ steps.filter.outputs.integration }}
+      system: ${{ steps.filter.outputs.system }}
+      package: ${{ steps.filter.outputs.package }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 — https://github.com/actions/checkout/releases/tag/v7.0.1
+        if: github.event_name == 'pull_request'
+        with:
+          # the PR's merge commit and its first parent, the base branch
+          fetch-depth: 2
+
+      - name: Match changed files
+        id: filter
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          if [ "$EVENT" = pull_request ]; then
+            files=$(git diff --name-only HEAD^1 HEAD)
+            printf 'Changed files:\n%s\n' "$files"
+            match() { printf '%s\n' "$files" | grep -qE "$1" && echo true || echo false; }
+          else
+            match() { echo true; }
+          fi
+          src='^(src/|pyproject\.toml$|uv\.lock$|provider\.yaml$|\.github/workflows/qa\.yml$)'
+          {
+            echo "lint=$(match "$src|^(tests|dev)/.*\.py$")"
+            echo "typecheck=$(match "$src")"
+            echo "unit=$(match "$src|^tests/|^docs/changelog\.md$")"
+            echo "smoke=$(match "$src|^dev/smoke\.py$")"
+            echo "integration=$(match "$src|^tests/(integration/|conftest\.py$)")"
+            echo "system=$(match "$src|^tests/(system/|conftest\.py$)")"
+            echo "package=$(match "$src|^(tests/|docs/|README\.md$|LICENSE$)")"
+          } | tee -a "$GITHUB_OUTPUT"
+
   lint:
     name: Lint & Format Check
+    needs: [changes]
+    if: needs.changes.outputs.lint == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 — https://github.com/actions/checkout/releases/tag/v7.0.1
@@ -37,13 +81,15 @@ jobs:
         run: uv sync --locked --group dev
 
       - name: Run ruff linter
-        run: uv run ruff check src tests --output-format=github
+        run: uv run ruff check src tests dev --output-format=github
 
       - name: Run ruff format check
-        run: uv run ruff format src tests --check
+        run: uv run ruff format src tests dev --check
 
   typecheck:
     name: Type Check (mypy)
+    needs: [changes]
+    if: needs.changes.outputs.typecheck == 'true'
     runs-on: ubuntu-latest
     env:
       # mypy checks against the oldest supported Python; dependencies resolved for newer
@@ -68,6 +114,8 @@ jobs:
 
   test:
     name: Test Python ${{ matrix.python-version }} on ${{ matrix.os }}
+    needs: [changes]
+    if: needs.changes.outputs.unit == 'true'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -106,8 +154,73 @@ jobs:
           fail_ci_if_error: false
           verbose: true
 
-  test-no-extras:
-    name: Test (no optional extras installed)
+  compat:
+    name: Airflow ${{ matrix.airflow-version }} (official constraints)
+    needs: [changes]
+    if: needs.changes.outputs.unit == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # the floor in pyproject.toml and the newest release; test_project.py checks the floor
+        airflow-version: ["3.3.0", "3.3.2"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 — https://github.com/actions/checkout/releases/tag/v7.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0 — https://github.com/actions/setup-python/releases/tag/v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0 — https://github.com/astral-sh/setup-uv/releases/tag/v10.3.0
+
+      - name: Install Airflow with its constraints
+        env:
+          AIRFLOW_VERSION: ${{ matrix.airflow-version }}
+        run: |
+          uv venv --python 3.12
+          uv pip install "apache-airflow==${AIRFLOW_VERSION}" apache-airflow-providers-standard \
+            apache-airflow-providers-cncf-kubernetes apache-airflow-providers-common-compat \
+            pytest pytest-asyncio respx pyyaml jsonschema \
+            -c "https://raw.githubusercontent.com/apache/airflow/constraints-${AIRFLOW_VERSION}/constraints-3.12.txt"
+          uv pip install --no-deps -e .
+
+      - name: Check the requirements in pyproject.toml accept the constrained versions
+        run: uv pip check
+
+      - name: Run unit tests
+        run: .venv/bin/python -m pytest tests/unit -v
+
+  lowest-direct:
+    name: Lowest direct dependencies (Python 3.10)
+    needs: [changes]
+    if: needs.changes.outputs.unit == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 — https://github.com/actions/checkout/releases/tag/v7.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0 — https://github.com/actions/setup-python/releases/tag/v7.0.0
+        with:
+          python-version: "3.10"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0 — https://github.com/astral-sh/setup-uv/releases/tag/v10.3.0
+
+      - name: Install the lowest allowed versions
+        run: uv sync --resolution lowest-direct --group dev --python 3.10
+
+      - name: Show the installed versions
+        run: uv pip list
+
+      - name: Run unit tests
+        run: uv run --no-sync pytest tests/unit -v
+
+  smoke-test:
+    name: Smoke Test (base install)
+    needs: [changes]
+    if: needs.changes.outputs.smoke == 'true'
     runs-on: ubuntu-latest
     # lamindb only runs in virtualenvs and pods, and the kubernetes provider is an
     # optional extra; importing the provider must not require either of them.
@@ -126,13 +239,12 @@ jobs:
         run: uv sync --locked --no-default-groups
 
       - name: Smoke import
-        run: |
-          uv run --no-sync python -c "import airflow.providers.lamindb; print('import OK')"
-          uv run --no-sync python -c "from airflow.providers.lamindb.get_provider_info import get_provider_info; get_provider_info(); print('provider info OK')"
-          uv run --no-sync python -c "import importlib.util, sys; sys.exit(importlib.util.find_spec('lamindb') is not None)"
+        run: uv run --no-sync python dev/smoke.py
 
   integration-test:
     name: Integration Test
+    needs: [changes]
+    if: needs.changes.outputs.integration == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 — https://github.com/actions/checkout/releases/tag/v7.0.1
@@ -164,6 +276,8 @@ jobs:
 
   system-test:
     name: System Test (Airflow dag.test)
+    needs: [changes]
+    if: needs.changes.outputs.system == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 — https://github.com/actions/checkout/releases/tag/v7.0.1
@@ -201,6 +315,8 @@ jobs:
 
   package:
     name: Build & Check Package
+    needs: [changes]
+    if: needs.changes.outputs.package == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 — https://github.com/actions/checkout/releases/tag/v7.0.1
@@ -226,4 +342,19 @@ jobs:
         run: |
           uv venv /tmp/wheel-check
           uv pip install --python /tmp/wheel-check dist/*.whl
-          AIRFLOW_HOME=/tmp/airflow-home /tmp/wheel-check/bin/airflow providers get lamindb-airflow
+          AIRFLOW_HOME=/tmp/airflow-home /tmp/wheel-check/bin/airflow providers get apache-airflow-providers-lamindb
+
+  # The required check: skipped jobs pass, failed or cancelled ones fail it.
+  result:
+    name: QA result
+    needs:
+      [changes, lint, typecheck, test, compat, lowest-direct, smoke-test, integration-test, system-test, package]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check the job results
+        env:
+          RESULTS: ${{ toJSON(needs.*.result) }}
+        run: |
+          echo "$RESULTS"
+          if echo "$RESULTS" | grep -qE '"(failure|cancelled)"'; then exit 1; fi

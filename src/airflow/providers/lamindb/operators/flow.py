@@ -42,7 +42,7 @@ def lamindb_airflow_flow_task(lamindb_airflow_config: dict[str, Any]) -> str:
 
 
 class _LaminDBFlowOperator(PythonVirtualenvOperator):
-    """Run a :mod:`airflow.providers.lamindb.utils.runtime` function inside a virtualenv.
+    """Run a ``airflow.providers.lamindb.utils.runtime`` function inside a virtualenv.
 
     Accepts every ``PythonVirtualenvOperator`` argument except ``python_callable``,
     ``op_args`` and ``op_kwargs``. ``lamindb-core`` is added to ``requirements`` (see
