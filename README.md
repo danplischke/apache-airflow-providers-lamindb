@@ -207,7 +207,7 @@ The documentation is at <https://danplischke.github.io/apache-airflow-providers-
 - [Sensors and hook](https://danplischke.github.io/apache-airflow-providers-lamindb/sensors/)
 - [Filters](https://danplischke.github.io/apache-airflow-providers-lamindb/filters/)
 - [API reference](https://danplischke.github.io/apache-airflow-providers-lamindb/api/)
-- [Example DAGs](tests/system/lamindb)
+- [Example DAGs](https://github.com/danplischke/apache-airflow-providers-lamindb/tree/main/tests/system/lamindb)
 - [Changelog](https://danplischke.github.io/apache-airflow-providers-lamindb/changelog/)
 
 ## Development
