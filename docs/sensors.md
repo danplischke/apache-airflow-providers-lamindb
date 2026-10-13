@@ -6,7 +6,7 @@ occupied. For scheduling DAGs *on* LaminDB changes, use the [event triggers](tri
 
 Network errors, rate limiting (429) and LaminHub server errors (5xx) don't end the wait: the sensors
 log them and check again at the next poke, until their `timeout`. Other errors fail the task, for
-example an invalid filter, a missing permission or an instance on lamindb older than 2.11.
+example an invalid filter, a missing permission or an instance on lamindb older than 2.8.1.
 
 ## LaminDBBranchStatusSensor
 

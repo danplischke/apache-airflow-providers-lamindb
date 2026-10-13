@@ -28,9 +28,12 @@ log = logging.getLogger(__name__)
 _LAMINDB_REQUIREMENT = re.compile(r"^\s*lamindb(?P<core>[-_.]core)?\s*($|[\[<>=!~;@\s])", re.IGNORECASE)
 _REQUIREMENT_NAME = re.compile(r"^\s*([A-Za-z0-9][A-Za-z0-9._-]*)")
 _REQUIREMENT_COMMENT = re.compile(r"(^|\s)#.*$")
+_EXACT_PIN = re.compile(r"==\s*(\d[^,;\s]*)")
 
 LAMINDB_CORE_COMPANIONS = ("numpy", "pandas>=2.0.0", "pandera>=0.24.0")
 """Packages ``lamindb-core`` needs for querying runs but does not declare (they come with ``lamindb``)."""
+LAMINDB_CORE_COMPANIONS_PANDAS_2 = ("numpy", "pandas>=2.0.0,<3", "pandera>=0.24.0")
+"""The same for lamindb before 2.10, which requires pandas below 3."""
 
 
 def _runtime_loader_source() -> str:
@@ -113,6 +116,13 @@ def check_lamindb_version(lamindb_version: str | None) -> None:
         )
 
 
+def lamindb_core_companions(lamindb_version: str | None = None) -> tuple[str, ...]:
+    """The packages ``lamindb-core`` needs here for ``lamindb_version``; ``None`` for the latest."""
+    if lamindb_version and not runtime.lamindb_version_at_least(lamindb_version, "2.10"):
+        return LAMINDB_CORE_COMPANIONS_PANDAS_2
+    return LAMINDB_CORE_COMPANIONS
+
+
 def lamindb_requirements(lamindb_version: str | None = None) -> list[str]:
     """Requirements that install lamindb in a virtualenv, pinned to ``lamindb_version`` if given.
 
@@ -122,23 +132,28 @@ def lamindb_requirements(lamindb_version: str | None = None) -> list[str]:
     """
     check_lamindb_version(lamindb_version)
     if lamindb_version:
-        return [f"lamindb-core=={lamindb_version}", *LAMINDB_CORE_COMPANIONS]
-    return [f"lamindb-core>={runtime.MIN_LAMINDB_VERSION}", *LAMINDB_CORE_COMPANIONS]
+        return [f"lamindb-core=={lamindb_version}", *lamindb_core_companions(lamindb_version)]
+    return [f"lamindb-core>={runtime.MIN_LAMINDB_VERSION}", *lamindb_core_companions()]
 
 
 def add_lamindb_requirement(requirements: list[str], lamindb_version: str | None = None) -> None:
     """Append lamindb to ``requirements`` unless the full ``lamindb`` is listed already.
 
-    A listed ``lamindb-core`` is kept and only completed with the packages it does not declare.
-    Multi-line elements (a rendered requirements file) are searched line by line; a nested
-    ``-r other.txt`` is not, so list lamindb directly or pass ``lamindb_version`` then.
+    A listed ``lamindb-core`` is kept and only completed with the packages it does not declare, for
+    its version if pinned with ``==``. Multi-line elements (a rendered requirements file) are searched
+    line by line; a nested ``-r other.txt`` is not, so list lamindb directly or pass ``lamindb_version``
+    then.
     """
     lines = list(_requirement_lines(requirements))
     lamindb = [m for line in lines if (m := _LAMINDB_REQUIREMENT.match(line))]
     if any(not m.group("core") for m in lamindb):
         return
     listed = {_requirement_name(line) for line in lines}
-    to_add = list(LAMINDB_CORE_COMPANIONS) if lamindb else lamindb_requirements(lamindb_version)
+    if lamindb:
+        pins = [pin[1] for m in lamindb if (pin := _EXACT_PIN.search(m.string))]
+        to_add = list(lamindb_core_companions(pins[0] if pins else None))
+    else:
+        to_add = lamindb_requirements(lamindb_version)
     requirements.extend(r for r in to_add if _requirement_name(r) not in listed)
 
 

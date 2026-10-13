@@ -67,4 +67,4 @@ def test_venv_step_works_without_lamindb_on_worker(no_lamindb: None, make_contex
         mp.setattr(type(op).__mro__[2], "execute", lambda self, context: self.get_python_source())
         source = op.execute(make_context())
     assert "'instance': None" in source
-    assert op.requirements[0] == "lamindb-core>=2.11"
+    assert op.requirements[0] == "lamindb-core>=2.8.1"

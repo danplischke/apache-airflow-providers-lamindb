@@ -42,7 +42,9 @@ def dags():
     spec.loader.exec_module(module)
     # The throwaway instance is local and unknown to LaminHub, so the tasks use lamindb's own
     # configuration instead of the lamindb_default connection. The virtualenvs run in another
-    # directory, so they get the instance explicitly. dag.test() runs these task objects.
+    # directory, so they get the instance explicitly, and the lamindb version of this environment,
+    # which created the instance. dag.test() runs these task objects.
+    import lamindb
     import lamindb_setup
 
     for dag in (module.dag_ok, module.dag_fail, module.dag_auto_flow):
@@ -50,6 +52,7 @@ def dags():
             if hasattr(task, "lamindb_conn_id"):
                 task.lamindb_conn_id = None
                 task.lamindb_instance = lamindb_setup.settings.instance.slug
+                task.lamindb_version = lamindb.__version__
     return module
 
 

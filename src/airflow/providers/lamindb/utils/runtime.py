@@ -22,7 +22,7 @@ MAX_REFERENCE_LENGTH = 255
 
 # the oldest lamindb the provider supports, for the installed package here and for instances and
 # version pins on the worker; anything older fails deliberately
-MIN_LAMINDB_VERSION = "2.11"
+MIN_LAMINDB_VERSION = "2.8.1"
 
 STATUS_STARTED = -1
 STATUS_RESTARTED = -2
@@ -30,17 +30,25 @@ STATUS_COMPLETED = 0
 STATUS_ERRORED = 1
 
 
-def _major_minor(version):
+def _release(version):
     import re
 
-    match = re.match(r"\s*(\d+)\.(\d+)", str(version))
-    return (int(match[1]), int(match[2])) if match else None
+    match = re.match(r"\s*(\d+)\.(\d+)(?:\.(\d+))?", str(version))
+    return (int(match[1]), int(match[2]), int(match[3] or 0)) if match else None
+
+
+def lamindb_version_at_least(version, minimum):
+    """Whether lamindb ``version``, such as ``"2.11.0"``, is ``minimum`` or newer.
+
+    Compares major, minor and patch (a missing patch is 0); pre-releases count as their release.
+    """
+    release = _release(version)
+    return release is not None and release >= _release(minimum)
 
 
 def lamindb_version_supported(version):
-    """Whether lamindb ``version``, such as ``"2.11.0"``, is ``MIN_LAMINDB_VERSION`` or newer."""
-    major_minor = _major_minor(version)
-    return major_minor is not None and major_minor >= _major_minor(MIN_LAMINDB_VERSION)
+    """Whether lamindb ``version`` is ``MIN_LAMINDB_VERSION`` or newer."""
+    return lamindb_version_at_least(version, MIN_LAMINDB_VERSION)
 
 
 def connect(instance=None):

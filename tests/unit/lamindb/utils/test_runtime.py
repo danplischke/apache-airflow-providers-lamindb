@@ -35,11 +35,11 @@ def test_connect_uses_instance_only_when_given(fake_lamindb: MagicMock) -> None:
     fake_lamindb.connect.assert_called_once_with("owner/name")
 
 
-@pytest.mark.parametrize("version", ["2.10.3", "1.17.0"])
+@pytest.mark.parametrize("version", ["2.8.0", "1.17.0"])
 def test_connect_rejects_older_lamindb(fake_lamindb: MagicMock, version: str) -> None:
     fake_lamindb.__version__ = version
     with pytest.raises(
-        RuntimeError, match=rf"lamindb {version} is installed, .* needs lamindb 2\.11 or newer"
+        RuntimeError, match=rf"lamindb {version} is installed, .* needs lamindb 2\.8\.1 or newer"
     ):
         runtime.connect("owner/name")
     fake_lamindb.connect.assert_not_called()
@@ -48,13 +48,18 @@ def test_connect_rejects_older_lamindb(fake_lamindb: MagicMock, version: str) ->
 @pytest.mark.parametrize(
     ("version", "supported"),
     [
+        ("2.8.1", True),
+        ("2.8.1a3", True),  # pre-releases of 2.8.1 count as 2.8.1
+        ("2.8.2", True),
+        ("2.9", True),
+        ("2.10.0", True),
         ("2.11.0", True),
-        ("2.11", True),
-        ("2.11a3", True),  # pre-releases of 2.11 count as 2.11
         ("2.12.0.dev4+g1a2b3c", True),
         ("3.0.0", True),
         ("10.0", True),
-        ("2.10.9", False),
+        ("2.8.0", False),
+        ("2.8", False),
+        ("2.7.9", False),
         ("1.17.0", False),
         ("", False),
         ("unknown", False),

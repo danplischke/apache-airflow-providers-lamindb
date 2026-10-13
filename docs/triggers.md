@@ -16,7 +16,7 @@ of the changed fields. From this, the triggers derive semantic events such as "a
 
 - **Only hosted instances.** The database write log is a LaminHub feature. Instances that are not
   managed by LaminHub are not supported.
-- **Only lamindb 2.11 or newer.** A trigger never polls an instance on an older lamindb: it logs a
+- **Only lamindb 2.8.1 or newer.** A trigger never polls an instance on an older lamindb: it logs a
   [`LaminDBVersionError`][airflow.providers.lamindb.exceptions.LaminDBVersionError] and retries with
   backoff, like after any other error, so it starts once the instance is migrated.
 - **Resuming after restarts.** The cursor is stored (see [Where the cursor is stored](#where-the-cursor-is-stored)),

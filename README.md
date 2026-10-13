@@ -21,11 +21,12 @@ pip install "apache-airflow-providers-lamindb[cncf.kubernetes]"  # adds @task.la
 Requires `apache-airflow>=3.3.0` and `apache-airflow-providers-standard`. Airflow 3.3.0 added the asset
 state store that the event triggers use to resume after restarts.
 
-Supports lamindb 2.11 and newer only, for LaminDB instances and for the lamindb that lineage tasks
+Supports lamindb 2.8.1 and newer only, for LaminDB instances and for the lamindb that lineage tasks
 run. Older versions fail deliberately with an explicit error.
 
 Lineage tasks install `lamindb-core` in their own virtualenv or use the pod's image, so its version
-does not have to fit Airflow's dependencies. Tested end to end with Airflow 3.3.2 + lamindb 2.11.0.
+does not have to fit Airflow's dependencies. Tested end to end with Airflow 3.3.2 and lamindb 2.8.1
+and 2.11.0.
 
 ## Connection
 

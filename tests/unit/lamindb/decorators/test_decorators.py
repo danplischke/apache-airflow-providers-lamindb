@@ -60,8 +60,8 @@ def test_task_lamindb_venv_builds_operator() -> None:
 
 
 def test_task_lamindb_venv_rejects_older_lamindb_when_the_dag_is_parsed() -> None:
-    with pytest.raises(LaminDBVersionError, match=r"lamindb 2\.10\.0 is not supported"):
-        _single_task(task.lamindb_venv(lamindb_version="2.10.0"), step)
+    with pytest.raises(LaminDBVersionError, match=r"lamindb 2\.8\.0 is not supported"):
+        _single_task(task.lamindb_venv(lamindb_version="2.8.0"), step)
 
 
 def test_task_lamindb_venv_passes_the_cache_dir_to_the_flow_operators() -> None:
@@ -149,7 +149,7 @@ def test_step_without_connection_uses_lamindb_configuration(fake_lamindb: MagicM
     assert result == 1
     fake_lamindb.connect.assert_not_called()
     assert seen["env_vars"] == {}
-    assert seen["requirements"][0] == "lamindb-core>=2.11"
+    assert seen["requirements"][0] == "lamindb-core>=2.8.1"
 
 
 def test_untracked_steps_are_plain_tasks() -> None:

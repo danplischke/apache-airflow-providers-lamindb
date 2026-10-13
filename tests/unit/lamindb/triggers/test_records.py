@@ -434,7 +434,7 @@ class TestRecordSensorTrigger:
         assert events == [{"status": "success", "records": [artifact(2), artifact(1)]}]
 
     @pytest.mark.parametrize(
-        "error", [LaminDBApiError("forbidden"), LaminDBVersionError("owner/name runs lamindb 2.10.0")]
+        "error", [LaminDBApiError("forbidden"), LaminDBVersionError("owner/name runs lamindb 2.8.0")]
     )
     async def test_error(self, trigger, error):
         hook = FakeHook()

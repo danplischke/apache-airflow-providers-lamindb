@@ -160,7 +160,7 @@ def test_without_connection_lamindb_uses_its_own_configuration(fake_lamindb: Mag
     fake_lamindb.connect.assert_not_called()
     assert seen["env_vars"] == {}
     # nothing to ask LaminHub: any supported version
-    assert seen["requirements"] == ["lamindb-core>=2.11", *CORE[1:]]
+    assert seen["requirements"] == ["lamindb-core>=2.8.1", *CORE[1:]]
     context["ti"].xcom_push.assert_not_called()
 
 
@@ -194,20 +194,20 @@ def test_lamindb_version_lookup_only_when_needed(
 
 @pytest.mark.parametrize("operator", [LaminDBFlowInitOperator, LaminDBFlowFinishOperator])
 def test_older_lamindb_version_fails_when_the_dag_is_parsed(operator) -> None:
-    with pytest.raises(LaminDBVersionError, match=r"lamindb 2\.10\.0 is not supported"):
-        operator(lamindb_version="2.10.0")
+    with pytest.raises(LaminDBVersionError, match=r"lamindb 2\.8\.0 is not supported"):
+        operator(lamindb_version="2.8.0")
 
 
 def test_instance_on_older_lamindb_fails_before_the_virtualenv(
     fake_lamindb: MagicMock, make_context, lamindb_connection, monkeypatch
 ) -> None:
     def lookup(self):
-        raise LaminDBVersionError("The LaminDB instance owner/name runs lamindb 2.10.0")
+        raise LaminDBVersionError("The LaminDB instance owner/name runs lamindb 2.8.0")
 
     monkeypatch.setattr(RemoteLaminDB, "instance_lamindb_version", lookup)
     with (
         patch.object(PythonVirtualenvOperator, "execute") as venv_execute,
-        pytest.raises(LaminDBVersionError, match=r"runs lamindb 2\.10\.0"),
+        pytest.raises(LaminDBVersionError, match=r"runs lamindb 2\.8\.0"),
     ):
         LaminDBFlowInitOperator().execute(make_context())
     venv_execute.assert_not_called()

@@ -214,7 +214,7 @@ class TestPolling:
         # raising instead would make the triggerer restart the watcher at once, in a tight loop
         trigger = EchoTrigger(poll_interval=10)
         hook = fake_hook_factory(trigger, FakeHook(writes=[dbwrite(1, "INSERT", "t", 1)]))
-        error = LaminDBVersionError("The LaminDB instance owner/name runs lamindb 2.10.0")
+        error = LaminDBVersionError("The LaminDB instance owner/name runs lamindb 2.8.0")
         hook.fail_next = [error, error]
         sleeps["callbacks"].append(lambda: None)
 

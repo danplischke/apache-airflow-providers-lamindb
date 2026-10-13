@@ -32,14 +32,14 @@ The worker doesn't need the `lamindb` Python package. The triggers, sensors and 
 virtualenv or use a Kubernetes pod's image. `@task.lamindb_k8s` needs
 `pip install "apache-airflow-providers-lamindb[cncf.kubernetes]"`.
 
-LaminDB instances, and the lamindb in lineage virtualenvs and pods, must be on lamindb 2.11 or newer.
+LaminDB instances, and the lamindb in lineage virtualenvs and pods, must be on lamindb 2.8.1 or newer.
 Older versions fail deliberately with an explicit error:
 
 - The hook, sensors and lineage tasks reject instances on older lamindb with
   [`LaminDBVersionError`][airflow.providers.lamindb.exceptions.LaminDBVersionError], which fails the
   task without retries. Event triggers never poll such an instance; they log the error and retry
   with backoff, like after any other error.
-- A `lamindb_version` older than 2.11 fails when the DAG is parsed.
+- A `lamindb_version` older than 2.8.1 fails when the DAG is parsed.
 - A lineage task whose virtualenv or pod has an older lamindb, for example from your own
   `requirements` or the pod's image, fails when it starts.
 

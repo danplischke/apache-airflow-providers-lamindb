@@ -90,7 +90,7 @@ def lamindb_venv_task(
       Templated, e.g. from an upstream task's XCom.
     - ``lamindb_instance``: instance slug to connect to; overrides the connection's. Templated.
     - ``lamindb_version``: version of ``lamindb-core`` added to ``requirements`` unless
-      you list lamindb yourself, 2.11 or newer; defaults to the instance's version on
+      you list lamindb yourself, 2.8.1 or newer; defaults to the instance's version on
       LaminHub (with a connection), else the latest.
     - ``lamindb_cache_dir``: absolute path of a lamindb cache shared between tasks, set as
       ``LAMIN_CACHE_DIR``; overrides the connection's ``cache_dir`` extra. Templated.

@@ -458,25 +458,25 @@ class TestLamindbVersion:
             return_value=httpx.Response(200, json={**SETTINGS, "lamindb_version": lamindb_version})
         )
 
-    @pytest.mark.parametrize("lamindb_version", ["2.11.0", "2.12.3", "3.0.0", None, ""])
+    @pytest.mark.parametrize("lamindb_version", ["2.8.1", "2.10.4", "2.11.0", "3.0.0", None, ""])
     def test_supported_and_unknown_versions_pass(self, hook, mock_api, lamindb_version):
         self._settings(mock_api, lamindb_version)
         assert hook.get_instance().lamindb_version == lamindb_version
 
-    @pytest.mark.parametrize("lamindb_version", ["2.10.4", "1.17.0"])
+    @pytest.mark.parametrize("lamindb_version", ["2.8.0", "1.17.0"])
     def test_older_instances_fail(self, hook, mock_api, lamindb_version):
         self._settings(mock_api, lamindb_version)
         with pytest.raises(LaminDBVersionError, match=f"owner/name runs lamindb {lamindb_version}, but"):
             hook.get_instance()
         ok, message = hook.test_connection()
         assert not ok
-        assert "needs lamindb 2.11 or newer" in message
+        assert "needs lamindb 2.8.1 or newer" in message
 
     async def test_older_instances_fail_async(self, connection, mock_api):
-        self._settings(mock_api, "2.10.4")
+        self._settings(mock_api, "2.8.0")
         hook = LaminDBHook("lamindb_test", retry_backoff=0)
         try:
-            with pytest.raises(LaminDBVersionError, match=r"needs lamindb 2\.11 or newer"):
+            with pytest.raises(LaminDBVersionError, match=r"needs lamindb 2\.8\.1 or newer"):
                 await hook.aget_instance()
         finally:
             await hook.aclose()

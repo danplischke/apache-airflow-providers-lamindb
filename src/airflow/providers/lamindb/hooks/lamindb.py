@@ -170,7 +170,7 @@ class LaminDBHook(BaseHook):
     The connection's password is a Lamin API key; it is exchanged for a short-lived access token that
     is refreshed automatically. Without an API key, requests are anonymous, which works for public
     instances. The instance (``owner/name``) is read from the connection's ``instance`` extra and can
-    be overridden per hook. Instances on lamindb older than 2.11 are rejected with
+    be overridden per hook. Instances on lamindb older than 2.8.1 are rejected with
     [`LaminDBVersionError`][airflow.providers.lamindb.exceptions.LaminDBVersionError].
 
     :param lamindb_conn_id: Airflow connection of type ``lamindb``. ``None`` means anonymous access
@@ -503,7 +503,7 @@ class LaminDBHook(BaseHook):
         Return the configured instance (resolves its id and regional API URL on first use).
 
         Raises [`LaminDBVersionError`][airflow.providers.lamindb.exceptions.LaminDBVersionError] if the
-        instance runs lamindb older than 2.11.
+        instance runs lamindb older than 2.8.1.
         """
         if self._instance is None:
             config = self._get_config()

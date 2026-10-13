@@ -55,7 +55,7 @@ class _LaminDBFlowOperator(PythonVirtualenvOperator):
         ``LAMIN_CURRENT_INSTANCE``, ``~/.lamin``) instead. Templated.
     :param lamindb_instance: instance slug (``owner/name``) to connect to; overrides the
         connection's instance. Templated.
-    :param lamindb_version: lamindb version to install, 2.11 or newer. Defaults to the
+    :param lamindb_version: lamindb version to install, 2.8.1 or newer. Defaults to the
         instance's version on LaminHub (with a connection), else the latest.
     :param lamindb_cache_dir: absolute path of a lamindb cache shared between tasks, set as
         ``LAMIN_CACHE_DIR``; overrides the connection's ``cache_dir`` extra. Templated.
