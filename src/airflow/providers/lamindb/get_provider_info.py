@@ -64,7 +64,13 @@ def get_provider_info() -> dict[str, object]:
                         "description": "LaminDB instance slug in the form ``owner/name`` "
                         "(for example ``laminlabs/lamindata``).",
                         "schema": {"type": ["string", "null"]},
-                    }
+                    },
+                    "cache_dir": {
+                        "label": "Cache directory",
+                        "description": "Absolute path of a lamindb cache shared by the virtualenv tasks "
+                        "(``LAMIN_CACHE_DIR``), e.g. on a shared volume. Empty for lamindb's default.",
+                        "schema": {"type": ["string", "null"]},
+                    },
                 },
                 "ui-field-behaviour": {
                     "hidden-fields": ["port", "login", "schema", "extra"],
@@ -73,6 +79,7 @@ def get_provider_info() -> dict[str, object]:
                         "host": "https://aws.us-east-1.lamin.ai/api",
                         "password": "Lamin API key (leave empty for public instances)",
                         "instance": "owner/name",
+                        "cache_dir": "/shared/lamindb-cache",
                     },
                 },
             }

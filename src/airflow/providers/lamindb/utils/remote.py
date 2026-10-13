@@ -13,7 +13,7 @@ import logging
 import re
 import tempfile
 from collections.abc import Iterable, Iterator
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -147,21 +147,35 @@ class RemoteLaminDB:
     ``instance`` overrides the connection's instance. With ``conn_id=None``, the remote lamindb uses
     its own configuration (``LAMIN_API_KEY``, ``LAMIN_CURRENT_INSTANCE``, ``~/.lamin``) and connects to
     ``instance`` if given.
+
+    ``cache_dir`` is the lamindb cache shared by virtualenvs: ``cache_dir`` if given, else the
+    connection's ``cache_dir`` extra; ``None`` keeps lamindb's default.
     """
 
     conn_id: str | None
     instance: str | None
+    cache_dir: str | None = None
     api_key: str | None = field(default=None, repr=False)
     _hook: LaminDBHook | None = field(default=None, repr=False, compare=False)
 
     @classmethod
-    def resolve(cls, conn_id: str | None, instance: str | None) -> RemoteLaminDB:
+    def resolve(
+        cls, conn_id: str | None, instance: str | None, cache_dir: str | None = None
+    ) -> RemoteLaminDB:
         if conn_id is None:
-            return cls(conn_id=None, instance="/".join(parse_instance_slug(instance)) if instance else None)
+            return cls(
+                conn_id=None,
+                instance="/".join(parse_instance_slug(instance)) if instance else None,
+                cache_dir=cache_dir,
+            )
         hook = LaminDBHook(lamindb_conn_id=conn_id, instance=instance)
         try:
             return cls(
-                conn_id=conn_id, instance=hook.get_instance_slug(), api_key=hook.get_api_key(), _hook=hook
+                conn_id=conn_id,
+                instance=hook.get_instance_slug(),
+                cache_dir=cache_dir or hook.get_cache_dir(),
+                api_key=hook.get_api_key(),
+                _hook=hook,
             )
         except AirflowNotFoundException as e:
             raise AirflowNotFoundException(
@@ -202,18 +216,25 @@ def ensure_lamindb_requirement(operator: Any, remote: RemoteLaminDB, lamindb_ver
 def lamindb_virtualenv_env(operator: Any, remote: RemoteLaminDB) -> Iterator[None]:
     """Point a virtualenv operator's lamindb at the connection instead of the worker's ``~/.lamin``.
 
-    The virtualenv gets a temporary ``LAMIN_SETTINGS_DIR`` and the connection's ``LAMIN_API_KEY``.
-    Both are set while executing only (``env_vars`` is not templated, so the key is never rendered),
+    The virtualenv gets a temporary ``LAMIN_SETTINGS_DIR`` and the connection's ``LAMIN_API_KEY``,
+    plus ``LAMIN_CACHE_DIR`` if ``remote.cache_dir`` is set (also without a connection).
+    They are set while executing only (``env_vars`` is not templated, so the key is never rendered),
     and explicit ``env_vars`` of the operator take precedence.
     """
-    if remote.conn_id is None:
-        yield
-        return
-    original = operator.env_vars
-    with tempfile.TemporaryDirectory(prefix="lamindb-airflow-") as settings_dir:
-        env = {"LAMIN_SETTINGS_DIR": settings_dir}
-        if remote.api_key:
-            env["LAMIN_API_KEY"] = remote.api_key
+    with ExitStack() as stack:
+        env: dict[str, str] = {}
+        if remote.conn_id is not None:
+            env["LAMIN_SETTINGS_DIR"] = stack.enter_context(
+                tempfile.TemporaryDirectory(prefix="lamindb-airflow-")
+            )
+            if remote.api_key:
+                env["LAMIN_API_KEY"] = remote.api_key
+        if remote.cache_dir:
+            env["LAMIN_CACHE_DIR"] = remote.cache_dir
+        if not env:
+            yield
+            return
+        original = operator.env_vars
         operator.env_vars = {**env, **(original or {})}
         try:
             yield
@@ -253,6 +274,8 @@ class RemoteLaminDBStepMixin:
     """
 
     _lamindb_remote: dict[str, str | None] | None = None
+    # only virtualenv steps can point lamindb at a shared cache
+    lamindb_cache_dir: str | None = None
 
     def __init__(
         self,
@@ -277,7 +300,7 @@ class RemoteLaminDBStepMixin:
     def execute(self, context: Any) -> Any:
         if not self.track:
             return super().execute(context)  # type: ignore[misc]
-        remote = RemoteLaminDB.resolve(self.lamindb_conn_id, self.lamindb_instance)
+        remote = RemoteLaminDB.resolve(self.lamindb_conn_id, self.lamindb_instance, self.lamindb_cache_dir)
         check_flow_instance(self, context, remote.instance)
         self._lamindb_remote = {
             "flow_run_reference": context_flow_run_reference(context),

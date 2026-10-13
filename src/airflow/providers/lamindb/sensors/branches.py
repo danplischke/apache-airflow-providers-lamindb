@@ -39,7 +39,7 @@ class LaminDBBranchStatusSensor(BaseSensorOperator):
     :param deferrable: Wait in the triggerer instead of occupying a worker slot.
     """
 
-    template_fields: Sequence[str] = ("branch", "instance")
+    template_fields: Sequence[str] = ("branch", "instance", "lamindb_conn_id")
 
     def __init__(
         self,

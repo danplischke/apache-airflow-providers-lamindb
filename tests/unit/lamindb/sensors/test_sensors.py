@@ -42,6 +42,11 @@ class TestBranchStatusSensor:
     def make(self, **kwargs: Any) -> LaminDBBranchStatusSensor:
         return LaminDBBranchStatusSensor(task_id="wait", branch="release-1", poke_interval=0, **kwargs)
 
+    def test_templated_connection(self):
+        sensor = self.make(lamindb_conn_id="{{ params.conn_id }}")
+        sensor.render_template_fields({"params": {"conn_id": "lamindb_other"}})
+        assert sensor.hook.lamindb_conn_id == "lamindb_other"
+
     def test_poke(self, get_branch):
         sensor = self.make(instance="owner/name")
         get_branch.return_value = None
@@ -179,6 +184,13 @@ class TestRecordSensor:
         )
         sensor.render_template_fields({"params": {"name": "nightly"}})
         assert sensor.filter == {"name": {"eq": "nightly"}}
+
+    def test_templated_connection(self):
+        sensor = LaminDBRecordSensor(
+            task_id="wait", registry="core.run", lamindb_conn_id="{{ params.conn_id }}"
+        )
+        sensor.render_template_fields({"params": {"conn_id": "lamindb_other"}})
+        assert sensor.hook.lamindb_conn_id == "lamindb_other"
 
 
 class TestArtifactSensor:

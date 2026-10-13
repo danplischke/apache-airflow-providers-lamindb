@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Any
 
 from airflow.providers.lamindb.hooks.lamindb import LaminDBHook
@@ -18,6 +18,11 @@ def _lamindb_k8s_decorated_operator_class() -> type:
         """``@task.lamindb_k8s``: LaminDB step in a Kubernetes pod."""
 
         custom_operator_name = "@task.lamindb_k8s"
+        template_fields: Sequence[str] = (
+            *_KubernetesDecoratedOperator.template_fields,
+            "lamindb_conn_id",
+            "lamindb_instance",
+        )
 
         # BaseOperatorMeta expects the most-derived class to define __init__; the lamindb
         # arguments are repeated here so that DAG default_args reach them
@@ -46,7 +51,7 @@ def lamindb_k8s_task(
 
     Accepts every ``@task.kubernetes`` argument, plus ``lamindb_conn_id`` (Airflow
     connection of type ``lamindb``; the pod only gets its instance, not its API key),
-    ``lamindb_instance`` (instance slug; overrides the connection's), ``auto_flow`` (wire
+    ``lamindb_instance`` (instance slug; overrides the connection's; both templated), ``auto_flow`` (wire
     flow operators, which run in a virtualenv on the worker, if the DAG has none yet;
     default ``True``) and ``track`` (record the call in LaminDB; with ``False`` it runs
     exactly as under ``@task.kubernetes``). The image must have lamindb installed and

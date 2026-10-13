@@ -108,11 +108,22 @@ class TestConfiguration:
 
     def test_prefixed_extra(self):
         conn = Connection(
-            conn_id="c", conn_type="lamindb", extra=json.dumps({"extra__lamindb__instance": "a/b"})
+            conn_id="c",
+            conn_type="lamindb",
+            extra=json.dumps({"extra__lamindb__instance": "a/b", "extra__lamindb__cache_dir": "/cache"}),
         )
         config = LaminDBHook._config_from_connection(conn, None)
         assert config.hub_api_url == DEFAULT_HUB_API_URL
         assert (config.owner, config.name) == ("a", "b")
+        assert config.cache_dir == "/cache"
+
+    def test_cache_dir(self):
+        conn = Connection(
+            conn_id="c", conn_type="lamindb", extra=json.dumps({"instance": "a/b", "cache_dir": "/cache"})
+        )
+        assert LaminDBHook._config_from_connection(conn, None).cache_dir == "/cache"
+        conn = Connection(conn_id="c", conn_type="lamindb", extra=json.dumps({"instance": "a/b"}))
+        assert LaminDBHook._config_from_connection(conn, None).cache_dir is None
 
     def test_anonymous_without_connection(self):
         hook = LaminDBHook(lamindb_conn_id=None, instance="laminlabs/lamindata")

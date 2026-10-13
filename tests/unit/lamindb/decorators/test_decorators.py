@@ -53,6 +53,15 @@ def test_task_lamindb_venv_builds_operator() -> None:
     assert op.requirements == ["pandas"]  # lamindb is added when the task runs
     assert op.lamindb_version == "2.9.0"
     assert op.lamindb_conn_id == "lamindb_default"
+    assert {"requirements", "lamindb_conn_id", "lamindb_instance", "lamindb_cache_dir"} <= set(
+        op.template_fields
+    )
+
+
+def test_task_lamindb_venv_passes_the_cache_dir_to_the_flow_operators() -> None:
+    op = _single_task(task.lamindb_venv(lamindb_cache_dir="/shared"), step)
+    init = op.get_dag().get_task("lamindb_flow_init")
+    assert op.lamindb_cache_dir == init.lamindb_cache_dir == "/shared"
 
 
 def _execute_in_fake_venv(op, context):
@@ -168,6 +177,7 @@ def test_task_lamindb_k8s_builds_operator() -> None:
     assert op.custom_operator_name == "@task.lamindb_k8s"
     assert op.lamindb_instance == "owner/name"
     assert op.lamindb_conn_id == "lamindb_default"
+    assert {"image", "lamindb_conn_id", "lamindb_instance"} <= set(op.template_fields)
 
 
 def test_task_lamindb_k8s_gets_only_the_instance_from_the_connection(

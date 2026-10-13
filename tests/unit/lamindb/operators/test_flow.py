@@ -36,6 +36,27 @@ def test_requirements_are_resolved_at_execute_time() -> None:
     assert op.expect_airflow is False
 
 
+def test_lamindb_arguments_are_templated(fake_lamindb: MagicMock, make_context, lamindb_connection) -> None:
+    fake_lamindb.flow_run = MagicMock(uid="flowuid")
+    op = LaminDBFlowInitOperator(
+        lamindb_conn_id="{{ params.conn_id }}",
+        lamindb_instance="{{ params.instance }}",
+        lamindb_cache_dir="{{ params.cache_dir }}",
+    )
+    op.render_template_fields(
+        {"params": {"conn_id": "lamindb_default", "instance": "owner/other", "cache_dir": "/shared"}}
+    )
+    assert (op.lamindb_conn_id, op.lamindb_instance, op.lamindb_cache_dir) == (
+        "lamindb_default",
+        "owner/other",
+        "/shared",
+    )
+
+    _, seen = _run_in_fake_venv(op, make_context())
+    fake_lamindb.connect.assert_called_once_with("owner/other")
+    assert seen["env_vars"]["LAMIN_CACHE_DIR"] == "/shared"
+
+
 def _run_in_fake_venv(op, context):
     """Execute ``op`` but, instead of a virtualenv, exec its shipped source here.
 

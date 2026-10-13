@@ -85,6 +85,7 @@ class _HubConfig:
     api_key: str | None = field(repr=False)
     owner: str
     name: str
+    cache_dir: str | None = None
 
 
 def parse_instance_slug(slug: str) -> tuple[str, str]:
@@ -224,7 +225,13 @@ class LaminDBHook(BaseHook):
                 "or pass instance='owner/name'."
             )
         owner, name = parse_instance_slug(slug)
-        return _HubConfig(hub_api_url=hub_api_url.rstrip("/"), api_key=api_key, owner=owner, name=name)
+        return _HubConfig(
+            hub_api_url=hub_api_url.rstrip("/"),
+            api_key=api_key,
+            owner=owner,
+            name=name,
+            cache_dir=extra.get("cache_dir") or extra.get("extra__lamindb__cache_dir") or None,
+        )
 
     def _get_config(self) -> _HubConfig:
         if self._config is None:
@@ -471,6 +478,10 @@ class LaminDBHook(BaseHook):
     def get_api_key(self) -> str | None:
         """Return the connection's Lamin API key, or ``None`` for anonymous access."""
         return self._get_config().api_key
+
+    def get_cache_dir(self) -> str | None:
+        """Return the connection's ``cache_dir`` extra: the lamindb cache shared by virtualenv tasks."""
+        return self._get_config().cache_dir
 
     def get_instance(self) -> LaminDBInstance:
         """Return the configured instance (resolves its id and regional API URL on first use)."""

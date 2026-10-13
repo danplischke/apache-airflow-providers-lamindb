@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from typing import Any
 
@@ -35,6 +35,12 @@ class LaminDBVenvDecoratedOperator(RemoteLaminDBStepMixin, _PythonVirtualenvDeco
     """``@task.lamindb_venv``: LaminDB step inside a virtualenv."""
 
     custom_operator_name = "@task.lamindb_venv"
+    template_fields: Sequence[str] = (
+        *_PythonVirtualenvDecoratedOperator.template_fields,
+        "lamindb_conn_id",
+        "lamindb_instance",
+        "lamindb_cache_dir",
+    )
 
     # the lamindb arguments are repeated here so that DAG default_args reach them
     def __init__(
@@ -43,16 +49,19 @@ class LaminDBVenvDecoratedOperator(RemoteLaminDBStepMixin, _PythonVirtualenvDeco
         lamindb_conn_id: str | None = LaminDBHook.default_conn_name,
         lamindb_instance: str | None = None,
         lamindb_version: str | None = None,
+        lamindb_cache_dir: str | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(lamindb_conn_id=lamindb_conn_id, lamindb_instance=lamindb_instance, **kwargs)
         self.lamindb_version = lamindb_version
+        self.lamindb_cache_dir = lamindb_cache_dir
         if self.auto_flow:
             wire_flow_tasks(
                 self,
                 lamindb_conn_id=self.lamindb_conn_id,
                 lamindb_instance=self.lamindb_instance,
                 lamindb_version=self.lamindb_version,
+                lamindb_cache_dir=self.lamindb_cache_dir,
                 requirements=lamindb_requirement_lines(self.requirements),
                 **{name: getattr(self, name) for name in _SHARED_VENV_ARGS if hasattr(self, name)},
             )
@@ -76,10 +85,13 @@ def lamindb_venv_task(
     - ``lamindb_conn_id``: Airflow connection of type ``lamindb`` with the Lamin API key
       and the instance; default ``lamindb_default``. The virtualenv gets them instead of
       the worker's ``~/.lamin``. ``None`` uses lamindb's own configuration instead.
-    - ``lamindb_instance``: instance slug to connect to; overrides the connection's.
+      Templated, e.g. from an upstream task's XCom.
+    - ``lamindb_instance``: instance slug to connect to; overrides the connection's. Templated.
     - ``lamindb_version``: version of ``lamindb-core`` added to ``requirements`` unless
       you list lamindb yourself; defaults to the instance's version on LaminHub (with a
       connection), else the latest.
+    - ``lamindb_cache_dir``: absolute path of a lamindb cache shared between tasks, set as
+      ``LAMIN_CACHE_DIR``; overrides the connection's ``cache_dir`` extra. Templated.
     - ``auto_flow``: wire ``init >> step >> finish`` with the DAG's flow operators,
       adding ones with the same Python, index and LaminDB settings if the DAG has none
       yet. Default ``True``; mapped steps are never auto-wired.

@@ -46,7 +46,7 @@ class LaminDBRecordSensor(BaseSensorOperator):
     :param deferrable: Wait in the triggerer instead of occupying a worker slot.
     """
 
-    template_fields: Sequence[str] = ("registry", "filter", "branch", "instance")
+    template_fields: Sequence[str] = ("registry", "filter", "branch", "instance", "lamindb_conn_id")
     template_fields_renderers = {"filter": "json"}
 
     def __init__(

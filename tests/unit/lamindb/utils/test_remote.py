@@ -132,6 +132,14 @@ def test_remote_lamindb_from_connection(connection) -> None:
     assert RemoteLaminDB.resolve("lamindb_test", "owner/other").instance == "owner/other"
 
 
+def test_remote_lamindb_cache_dir(monkeypatch) -> None:
+    conn = {"conn_type": "lamindb", "extra": {"instance": "owner/name", "cache_dir": "/shared/cache"}}
+    monkeypatch.setenv("AIRFLOW_CONN_LAMINDB_CACHE", json.dumps(conn))
+    assert RemoteLaminDB.resolve("lamindb_cache", None).cache_dir == "/shared/cache"
+    assert RemoteLaminDB.resolve("lamindb_cache", None, "/task/cache").cache_dir == "/task/cache"
+    assert RemoteLaminDB.resolve(None, None, "/task/cache").cache_dir == "/task/cache"
+
+
 def test_remote_lamindb_without_connection() -> None:
     assert RemoteLaminDB.resolve(None, None) == RemoteLaminDB(conn_id=None, instance=None)
     assert RemoteLaminDB.resolve(None, "owner/name").instance == "owner/name"
@@ -187,3 +195,15 @@ def test_lamindb_virtualenv_env_isolates_settings() -> None:
 
     with lamindb_virtualenv_env(op, RemoteLaminDB(conn_id=None, instance=None)):
         assert op.env_vars == {"OTHER": "1"}
+
+
+def test_lamindb_virtualenv_env_sets_the_cache_dir() -> None:
+    op = MagicMock(env_vars=None)
+    with lamindb_virtualenv_env(op, RemoteLaminDB(conn_id=None, instance=None, cache_dir="/cache")):
+        assert op.env_vars == {"LAMIN_CACHE_DIR": "/cache"}
+    assert op.env_vars is None
+
+    with lamindb_virtualenv_env(op, RemoteLaminDB(conn_id="c", instance="o/n", cache_dir="/cache")):
+        assert op.env_vars["LAMIN_CACHE_DIR"] == "/cache"
+        assert "LAMIN_SETTINGS_DIR" in op.env_vars
+    assert op.env_vars is None

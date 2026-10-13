@@ -5,6 +5,7 @@ Both run lamindb inside a virtualenv, so the worker needs no lamindb.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
 from airflow.providers.lamindb.hooks.lamindb import LaminDBHook
@@ -50,13 +51,21 @@ class _LaminDBFlowOperator(PythonVirtualenvOperator):
     :param lamindb_conn_id: Airflow connection of type ``lamindb`` with the Lamin API key
         and the instance. The virtualenv gets them instead of the worker's ``~/.lamin``.
         ``None`` uses lamindb's own configuration (``LAMIN_API_KEY``,
-        ``LAMIN_CURRENT_INSTANCE``, ``~/.lamin``) instead.
+        ``LAMIN_CURRENT_INSTANCE``, ``~/.lamin``) instead. Templated.
     :param lamindb_instance: instance slug (``owner/name``) to connect to; overrides the
-        connection's instance.
+        connection's instance. Templated.
     :param lamindb_version: lamindb version to install. Defaults to the instance's version
         on LaminHub (with a connection), else the latest.
+    :param lamindb_cache_dir: absolute path of a lamindb cache shared between tasks, set as
+        ``LAMIN_CACHE_DIR``; overrides the connection's ``cache_dir`` extra. Templated.
     """
 
+    template_fields: Sequence[str] = (
+        *PythonVirtualenvOperator.template_fields,
+        "lamindb_conn_id",
+        "lamindb_instance",
+        "lamindb_cache_dir",
+    )
     _runtime_function: str
 
     def __init__(
@@ -65,6 +74,7 @@ class _LaminDBFlowOperator(PythonVirtualenvOperator):
         lamindb_conn_id: str | None = LaminDBHook.default_conn_name,
         lamindb_instance: str | None = None,
         lamindb_version: str | None = None,
+        lamindb_cache_dir: str | None = None,
         **kwargs: Any,
     ) -> None:
         kwargs.setdefault("expect_airflow", False)
@@ -72,6 +82,7 @@ class _LaminDBFlowOperator(PythonVirtualenvOperator):
         self.lamindb_conn_id = lamindb_conn_id
         self.lamindb_instance = lamindb_instance
         self.lamindb_version = lamindb_version
+        self.lamindb_cache_dir = lamindb_cache_dir
 
     def get_python_source(self) -> str:
         return build_remote_flow_source(
@@ -82,7 +93,7 @@ class _LaminDBFlowOperator(PythonVirtualenvOperator):
         raise NotImplementedError
 
     def execute(self, context: Any) -> Any:
-        remote = RemoteLaminDB.resolve(self.lamindb_conn_id, self.lamindb_instance)
+        remote = RemoteLaminDB.resolve(self.lamindb_conn_id, self.lamindb_instance, self.lamindb_cache_dir)
         ensure_lamindb_requirement(self, remote, self.lamindb_version)
         # a single named argument: a **kwargs signature would make PythonOperator pass the whole context
         self.op_kwargs = {
@@ -121,6 +132,7 @@ class LaminDBFlowInitOperator(_LaminDBFlowOperator):
         lamindb_conn_id: str | None = LaminDBHook.default_conn_name,
         lamindb_instance: str | None = None,
         lamindb_version: str | None = None,
+        lamindb_cache_dir: str | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(
@@ -128,6 +140,7 @@ class LaminDBFlowInitOperator(_LaminDBFlowOperator):
             lamindb_conn_id=lamindb_conn_id,
             lamindb_instance=lamindb_instance,
             lamindb_version=lamindb_version,
+            lamindb_cache_dir=lamindb_cache_dir,
             **kwargs,
         )
         if is_setup:
@@ -171,6 +184,7 @@ class LaminDBFlowFinishOperator(_LaminDBFlowOperator):
         lamindb_conn_id: str | None = LaminDBHook.default_conn_name,
         lamindb_instance: str | None = None,
         lamindb_version: str | None = None,
+        lamindb_cache_dir: str | None = None,
         **kwargs: Any,
     ) -> None:
         if not is_teardown:
@@ -180,6 +194,7 @@ class LaminDBFlowFinishOperator(_LaminDBFlowOperator):
             lamindb_conn_id=lamindb_conn_id,
             lamindb_instance=lamindb_instance,
             lamindb_version=lamindb_version,
+            lamindb_cache_dir=lamindb_cache_dir,
             **kwargs,
         )
         if is_teardown:
