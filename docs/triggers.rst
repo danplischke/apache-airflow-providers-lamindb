@@ -23,14 +23,17 @@ of the changed fields. From this, the triggers derive semantic events such as "a
   triggerer resumes where it left off. It's only saved when the trigger processed new writes that
   match its filter, at most once per poll. On the very first start, a trigger only reports changes
   from then on.
-* **At-least-once delivery.** The cursor is committed one poll cycle (at least the store's
-  ``commit_delay``, by default 5 seconds) after the events were handed to Airflow, so events are not lost if the triggerer crashes. After a crash an
-  event may be delivered twice. Each payload contains the ``dbwrite`` entry, whose ``id``/``uid``
-  identify the change, so DAGs can deduplicate if needed.
+* **At-least-once delivery.** The cursor is committed past events only once they were handed to
+  Airflow at least the store's ``commit_delay`` ago (by default 5 seconds), checked at the start of
+  each poll, so at least one poll cycle later. Events are not lost if the triggerer crashes, but after
+  a crash an event may be delivered twice. Each payload contains the ``dbwrite`` entry, whose
+  ``id``/``uid`` identify the change, so DAGs can deduplicate if needed.
 * **Batching.** Every change is a separate trigger event (and asset event). Airflow may combine
   several asset events into one DAG run; iterate over ``triggering_asset_events``.
 * **Changing a trigger resets its cursor.** The state key is derived from the trigger's arguments
-  (except the polling settings), so changing a filter starts a fresh cursor.
+  except the polling settings (``poll_interval``, ``batch_size``, ``max_batches_per_poll``) and
+  ``cursor_store``, so changing a filter, the connection or the instance starts a fresh cursor.
+  Changing ``cursor_store`` moves the cursor to another place; see `Where the cursor is stored`_.
 
 .. note::
 
