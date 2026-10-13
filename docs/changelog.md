@@ -15,7 +15,8 @@ Initial release.
   cursors in the asset state store: `LaminDBRecordEventTrigger`, `LaminDBArtifactEventTrigger`,
   `LaminDBBranchStatusEventTrigger` and `LaminDBBranchBlockEventTrigger`. With
   `cursor_store=RecordCursorStore()`, the cursors are kept in records of the watched instance
-  instead.
+  instead. On request, the triggers deliver the events of past database writes again, without
+  moving their cursors (`request_replay`, or a request in the asset state store).
 - Deferrable sensors: `LaminDBBranchStatusSensor`, `LaminDBRecordSensor` and `LaminDBArtifactSensor`.
 - Filters built in Python with `F` and enums for registries (`LaminDBRegistry`), registry fields
   (`ArtifactField`, `RunField`, ...), operators (`FilterOperator`) and values (`ArtifactKind`,

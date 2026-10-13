@@ -68,6 +68,8 @@ def evaluate(node: Mapping[str, Any] | None, row: Mapping[str, Any]) -> bool:
         return field is not None and field > operand
     if operator == "lt":
         return field is not None and field < operand
+    if operator == "lte":
+        return field is not None and field <= operand
     if operator == "startswith":
         return isinstance(field, str) and field.startswith(operand)
     raise NotImplementedError(operator)

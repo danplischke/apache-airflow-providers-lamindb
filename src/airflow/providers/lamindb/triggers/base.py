@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any
 from airflow.providers.lamindb.exceptions import LaminDBApiError
 from airflow.providers.lamindb.hooks.lamindb import MAX_PAGE_SIZE, LaminDBHook, LaminDBInstance
 from airflow.providers.lamindb.triggers.cursors import CursorBackend, CursorStore
+from airflow.providers.lamindb.triggers.replay import Replayer
 from airflow.providers.lamindb.utils.dbwrite import dbwrite_summary
 from airflow.triggers.base import BaseEventTrigger, TriggerEvent
 
@@ -32,7 +33,9 @@ class LaminDBDbWriteEventTrigger(BaseEventTrigger):
     [`state_key`][] so that a restarted triggerer resumes where it left off. The cursor is committed
     at least ``commit_delay`` seconds after the events were yielded, which gives Airflow time to persist
     them: events are delivered at least once. It is only committed when the trigger processed new
-    writes. On the first start the trigger only reports writes that happen from then on.
+    writes. On the first start the trigger only reports writes that happen from then on. In an
+    ``AssetWatcher``, the trigger also delivers past writes again on request, see
+    [`request_replay`][airflow.providers.lamindb.triggers.replay.request_replay].
 
     :param lamindb_conn_id: Airflow connection of type ``lamindb``.
     :param instance: LaminDB instance ``owner/name``; overrides the connection's instance.
@@ -160,6 +163,7 @@ class LaminDBDbWriteEventTrigger(BaseEventTrigger):
                 "No asset state store available; the cursor is kept in memory only. Use this trigger "
                 "in an AssetWatcher, or pass cursor_store=RecordCursorStore(), to resume after restarts."
             )
+        replayer = Replayer(self)
         cursor: int | None = None
         # (cursor, yielded_at), oldest first
         pending: deque[tuple[int, float]] = deque()
@@ -188,6 +192,8 @@ class LaminDBDbWriteEventTrigger(BaseEventTrigger):
                             pending.append((cursor, time.monotonic()))
                         if len(writes) < self.batch_size:
                             break
+                    for event in await replayer.poll(hook, instance, cursor):
+                        yield event
                     failures = 0
                     delay = self.poll_interval
                 except Exception:
