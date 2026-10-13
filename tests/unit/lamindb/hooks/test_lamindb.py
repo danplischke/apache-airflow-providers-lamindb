@@ -37,6 +37,7 @@ SCHEMA = {
         "artifact": {"table_name": "lamindb_artifact"},
         "branch": {"table_name": "lamindb_branch"},
         "user": {"table_name": "lamindb_user"},
+        "ulabel": {"table_name": "lamindb_ulabel"},
     },
     "bionty": {"gene": {"table_name": "bionty_gene"}},
 }
@@ -347,6 +348,73 @@ class TestQueries:
     def test_get_branch_missing(self, hook, mock_api):
         mock_api.post(f"{RECORDS_URL}/core/branch").mock(return_value=httpx.Response(200, json=[]))
         assert hook.get_branch("nope") is None
+
+
+class TestWrites:
+    @pytest.mark.parametrize(
+        "response", [[{"id": 1, "uid": "u1", "name": "treated"}], {"id": 1, "uid": "u1", "name": "treated"}]
+    )
+    def test_insert_records(self, hook, mock_api, response):
+        route = mock_api.put(f"{RECORDS_URL}/core/ulabel").mock(
+            return_value=httpx.Response(200, json=response)
+        )
+        assert hook.insert_records("core.ulabel", [{"name": "treated"}]) == [
+            {"id": 1, "uid": "u1", "name": "treated"}
+        ]
+        assert request_body(route.calls.last) == [{"name": "treated"}]
+
+    def test_update_record(self, hook, mock_api):
+        route = mock_api.patch(f"{RECORDS_URL}/core/ulabel/u1").mock(
+            return_value=httpx.Response(200, json=[{"uid": "u1", "description": "new"}])
+        )
+        assert hook.update_record("core.ulabel", "u1", {"description": "new"}) == {
+            "uid": "u1",
+            "description": "new",
+        }
+        assert request_body(route.calls.last) == {"description": "new"}
+        mock_api.patch(f"{RECORDS_URL}/core/ulabel/u2").mock(return_value=httpx.Response(204))
+        assert hook.update_record("core.ulabel", "u2", {"description": "new"}) is None
+
+    def test_unexpected_write_response(self, hook, mock_api):
+        mock_api.put(f"{RECORDS_URL}/core/ulabel").mock(return_value=httpx.Response(200, json="created"))
+        with pytest.raises(LaminDBApiError, match=r"Unexpected response when writing core\.ulabel"):
+            hook.insert_records("core.ulabel", [{"name": "treated"}])
+
+    @pytest.mark.parametrize(
+        "failure", [httpx.Response(503), httpx.Response(500), httpx.ReadTimeout("slow")], ids=str
+    )
+    def test_inserts_are_not_retried_once_they_may_have_reached_laminhub(self, hook, mock_api, failure):
+        route = mock_api.put(f"{RECORDS_URL}/core/ulabel").mock(
+            side_effect=[failure, httpx.Response(200, json=[{"id": 1}])]
+        )
+        with pytest.raises(LaminDBApiError):
+            hook.insert_records("core.ulabel", [{"name": "treated"}])
+        assert route.call_count == 1
+
+    @pytest.mark.parametrize("failure", [httpx.Response(429), httpx.ConnectError("refused")], ids=str)
+    def test_inserts_are_retried_when_laminhub_did_not_process_them(self, hook, mock_api, failure):
+        route = mock_api.put(f"{RECORDS_URL}/core/ulabel").mock(
+            side_effect=[failure, httpx.Response(200, json=[{"id": 1}])]
+        )
+        assert hook.insert_records("core.ulabel", [{"name": "treated"}]) == [{"id": 1}]
+        assert route.call_count == 2
+
+    async def test_async_writes(self, connection, mock_api):
+        hook = LaminDBHook("lamindb_test", retry_backoff=0)
+        insert = mock_api.put(f"{RECORDS_URL}/core/ulabel").mock(
+            side_effect=[httpx.Response(503), httpx.Response(200, json=[{"id": 1, "uid": "u1"}])]
+        )
+        update = mock_api.patch(f"{RECORDS_URL}/core/ulabel/u1").mock(
+            side_effect=[httpx.Response(503), httpx.Response(200, json={"uid": "u1", "name": "b"})]
+        )
+        try:
+            with pytest.raises(LaminDBApiError, match="503"):
+                await hook.ainsert_records("core.ulabel", [{"name": "a"}])
+            assert await hook.ainsert_records("core.ulabel", [{"name": "a"}]) == [{"id": 1, "uid": "u1"}]
+            assert await hook.aupdate_record("core.ulabel", "u1", {"name": "b"}) == {"uid": "u1", "name": "b"}
+            assert (insert.call_count, update.call_count) == (2, 2)  # updates are idempotent: retried
+        finally:
+            await hook.aclose()
 
 
 class TestTestConnection:
