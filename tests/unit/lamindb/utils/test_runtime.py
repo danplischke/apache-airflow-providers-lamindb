@@ -22,7 +22,7 @@ def test_runtime_is_self_contained() -> None:
         for node in ast.walk(tree)
         if isinstance(node, ast.ImportFrom) and node.module
     }
-    assert imported <= {"datetime", "inspect", "pathlib", "lamindb"}
+    assert imported <= {"datetime", "inspect", "pathlib", "re", "lamindb"}
     top_level = [node for node in tree.body if isinstance(node, (ast.Import, ast.ImportFrom))]
     assert all(node.module == "datetime" for node in top_level if isinstance(node, ast.ImportFrom))
     assert not any(isinstance(node, ast.Import) for node in top_level)
@@ -33,6 +33,35 @@ def test_connect_uses_instance_only_when_given(fake_lamindb: MagicMock) -> None:
     fake_lamindb.connect.assert_not_called()
     runtime.connect("owner/name")
     fake_lamindb.connect.assert_called_once_with("owner/name")
+
+
+@pytest.mark.parametrize("version", ["2.10.3", "1.17.0"])
+def test_connect_rejects_older_lamindb(fake_lamindb: MagicMock, version: str) -> None:
+    fake_lamindb.__version__ = version
+    with pytest.raises(
+        RuntimeError, match=rf"lamindb {version} is installed, .* needs lamindb 2\.11 or newer"
+    ):
+        runtime.connect("owner/name")
+    fake_lamindb.connect.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("version", "supported"),
+    [
+        ("2.11.0", True),
+        ("2.11", True),
+        ("2.11a3", True),  # pre-releases of 2.11 count as 2.11
+        ("2.12.0.dev4+g1a2b3c", True),
+        ("3.0.0", True),
+        ("10.0", True),
+        ("2.10.9", False),
+        ("1.17.0", False),
+        ("", False),
+        ("unknown", False),
+    ],
+)
+def test_lamindb_version_supported(version: str, supported: bool) -> None:
+    assert runtime.lamindb_version_supported(version) is supported
 
 
 def test_start_flow_run_tracks_dag_file_and_tags_run(fake_lamindb: MagicMock) -> None:

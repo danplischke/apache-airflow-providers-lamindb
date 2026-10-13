@@ -9,7 +9,7 @@ import pytest
 import respx
 from airflow.sdk import Connection
 
-from airflow.providers.lamindb.exceptions import LaminDBApiError
+from airflow.providers.lamindb.exceptions import LaminDBApiError, LaminDBVersionError
 from airflow.providers.lamindb.hooks.lamindb import (
     DBWRITE_REGISTRY,
     DEFAULT_HUB_API_URL,
@@ -440,6 +440,37 @@ class TestTestConnection:
         ok, message = hook.test_connection()
         assert not ok
         assert "forbidden" in message
+
+
+class TestLamindbVersion:
+    @staticmethod
+    def _settings(mock_api, lamindb_version):
+        mock_api.get(f"{HUB}/instances/owner/name/settings").mock(
+            return_value=httpx.Response(200, json={**SETTINGS, "lamindb_version": lamindb_version})
+        )
+
+    @pytest.mark.parametrize("lamindb_version", ["2.11.0", "2.12.3", "3.0.0", None, ""])
+    def test_supported_and_unknown_versions_pass(self, hook, mock_api, lamindb_version):
+        self._settings(mock_api, lamindb_version)
+        assert hook.get_instance().lamindb_version == lamindb_version
+
+    @pytest.mark.parametrize("lamindb_version", ["2.10.4", "1.17.0"])
+    def test_older_instances_fail(self, hook, mock_api, lamindb_version):
+        self._settings(mock_api, lamindb_version)
+        with pytest.raises(LaminDBVersionError, match=f"owner/name runs lamindb {lamindb_version}, but"):
+            hook.get_instance()
+        ok, message = hook.test_connection()
+        assert not ok
+        assert "needs lamindb 2.11 or newer" in message
+
+    async def test_older_instances_fail_async(self, connection, mock_api):
+        self._settings(mock_api, "2.10.4")
+        hook = LaminDBHook("lamindb_test", retry_backoff=0)
+        try:
+            with pytest.raises(LaminDBVersionError, match=r"needs lamindb 2\.11 or newer"):
+                await hook.aget_instance()
+        finally:
+            await hook.aclose()
 
 
 class TestAsync:

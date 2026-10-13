@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from airflow.sdk.exceptions import AirflowException
+from airflow.sdk.exceptions import AirflowException, AirflowFailException
 
 
 class LaminDBApiError(AirflowException):
@@ -12,3 +12,7 @@ class LaminDBApiError(AirflowException):
         super().__init__(message)
         self.http_status_code = http_status_code
         self.detail = detail
+
+
+class LaminDBVersionError(AirflowFailException, ValueError):
+    """Raised for lamindb older than the provider supports; tasks fail without retries."""

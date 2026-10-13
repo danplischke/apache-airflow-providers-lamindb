@@ -63,5 +63,5 @@
 
 ::: airflow.providers.lamindb.exceptions
     options:
-      members: [LaminDBApiError]
+      members: [LaminDBApiError, LaminDBVersionError]
       toc_label: exceptions

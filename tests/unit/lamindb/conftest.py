@@ -10,7 +10,7 @@ from airflow.providers.lamindb.utils.remote import RemoteLaminDB
 if TYPE_CHECKING:
     from unit.lamindb.fakes import FakeHook
 
-INSTANCE_LAMINDB_VERSION = "2.10.0"
+INSTANCE_LAMINDB_VERSION = "2.11.0"
 
 
 @pytest.fixture
@@ -26,7 +26,7 @@ def fake_hook_factory(monkeypatch):
 
 @pytest.fixture
 def lamindb_connection(monkeypatch):
-    """The ``lamindb_default`` connection; LaminHub reports lamindb 2.10.0 for its instance."""
+    """The ``lamindb_default`` connection; LaminHub reports lamindb 2.11.0 for its instance."""
     conn = {"conn_type": "lamindb", "password": "api-key", "extra": {"instance": "owner/name"}}
     monkeypatch.setenv("AIRFLOW_CONN_LAMINDB_DEFAULT", json.dumps(conn))
     monkeypatch.setattr(RemoteLaminDB, "instance_lamindb_version", lambda self: INSTANCE_LAMINDB_VERSION)

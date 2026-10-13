@@ -20,20 +20,44 @@ FLOW_RUN_REFERENCE_TYPE = "airflow_dag_run"
 STEP_RUN_REFERENCE_TYPE = "airflow_task_instance"
 MAX_REFERENCE_LENGTH = 255
 
+# the oldest lamindb the provider supports, for the installed package here and for instances and
+# version pins on the worker; anything older fails deliberately
+MIN_LAMINDB_VERSION = "2.11"
+
 STATUS_STARTED = -1
 STATUS_RESTARTED = -2
 STATUS_COMPLETED = 0
 STATUS_ERRORED = 1
 
 
+def _major_minor(version):
+    import re
+
+    match = re.match(r"\s*(\d+)\.(\d+)", str(version))
+    return (int(match[1]), int(match[2])) if match else None
+
+
+def lamindb_version_supported(version):
+    """Whether lamindb ``version``, such as ``"2.11.0"``, is ``MIN_LAMINDB_VERSION`` or newer."""
+    major_minor = _major_minor(version)
+    return major_minor is not None and major_minor >= _major_minor(MIN_LAMINDB_VERSION)
+
+
 def connect(instance=None):
     """Import lamindb, connected to ``instance`` if given.
 
     Credentials and the default instance follow lamindb's own configuration
-    (``LAMIN_API_KEY``, ``LAMIN_CURRENT_INSTANCE``, ``~/.lamin``).
+    (``LAMIN_API_KEY``, ``LAMIN_CURRENT_INSTANCE``, ``~/.lamin``). Fails if the installed lamindb
+    is older than ``MIN_LAMINDB_VERSION``.
     """
     import lamindb as ln
 
+    version = getattr(ln, "__version__", "unknown")
+    if not lamindb_version_supported(version):
+        raise RuntimeError(
+            f"lamindb {version} is installed, but apache-airflow-providers-lamindb needs lamindb "
+            f"{MIN_LAMINDB_VERSION} or newer. Install a newer lamindb in the virtualenv or pod image."
+        )
     if instance:
         ln.connect(instance)
     return ln

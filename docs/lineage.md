@@ -31,8 +31,8 @@ lamindb is added to `requirements` when the task runs (see `lamindb_version` und
 ## @task.lamindb_k8s
 
 `@task.lamindb_k8s` works like `@task.kubernetes` and accepts all of its arguments; it needs
-`pip install "apache-airflow-providers-lamindb[cncf.kubernetes]"`. The image must have lamindb installed, and the pod
-needs the API key, for example from a Kubernetes secret. The connection only provides the instance,
+`pip install "apache-airflow-providers-lamindb[cncf.kubernetes]"`. The image must have lamindb 2.11 or newer
+installed, and the pod needs the API key, for example from a Kubernetes secret. The connection only provides the instance,
 because environment variables of a pod are readable in its spec.
 
 ```python
@@ -118,11 +118,16 @@ The lineage operators and decorators accept these arguments, also through a DAG'
 :   The instance slug `owner/name`; overrides the connection's.
 
 `lamindb_version` (virtualenvs only)
-:   The lamindb version to install. Defaults to the instance's version on LaminHub, so that the
-    virtualenv speaks the instance's schema, else the latest. The virtualenvs install `lamindb-core`
-    and the few packages it needs here (`numpy`, `pandas`, `pandera`), about half the size of the
-    full `lamindb`; versions before 2.6.1 install `lamindb`. List `lamindb` in `requirements` if
-    your steps need all of it, for example `bionty` or `anndata`.
+:   The lamindb version to install, 2.11 or newer. Defaults to the instance's version on LaminHub,
+    so that the virtualenv speaks the instance's schema, else the latest. The virtualenvs install
+    `lamindb-core` and the few packages it needs here (`numpy`, `pandas`, `pandera`), about half the
+    size of the full `lamindb`. List `lamindb` in `requirements` if your steps need all of it, for
+    example `bionty` or `anndata`.
+
+Lineage needs lamindb 2.11 or newer, and anything older fails deliberately. An older
+`lamindb_version` fails when the DAG is parsed. An instance on an older lamindb fails the task
+before its virtualenv is built. A step or flow task whose virtualenv or pod has an older lamindb,
+for example from your own `requirements` or the pod's image, fails when it starts.
 
 A step can use another connection than the rest of the DAG, for example to run under another API key:
 

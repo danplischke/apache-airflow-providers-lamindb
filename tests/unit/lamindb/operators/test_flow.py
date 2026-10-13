@@ -7,6 +7,7 @@ import pytest
 from airflow.exceptions import AirflowNotFoundException
 from airflow.providers.standard.operators.python import PythonVirtualenvOperator
 
+from airflow.providers.lamindb.exceptions import LaminDBVersionError
 from airflow.providers.lamindb.operators.flow import (
     FLOW_INSTANCE_XCOM_KEY,
     LaminDBFlowFinishOperator,
@@ -14,7 +15,7 @@ from airflow.providers.lamindb.operators.flow import (
 )
 from airflow.providers.lamindb.utils.remote import RemoteLaminDB
 
-CORE = ["lamindb-core==2.10.0", "numpy", "pandas>=2.0.0", "pandera>=0.24.0"]
+CORE = ["lamindb-core==2.11.0", "numpy", "pandas>=2.0.0", "pandera>=0.24.0"]
 
 
 def test_flow_operators_are_setup_and_teardown() -> None:
@@ -158,7 +159,8 @@ def test_without_connection_lamindb_uses_its_own_configuration(fake_lamindb: Mag
     _, seen = _run_in_fake_venv(op, context)
     fake_lamindb.connect.assert_not_called()
     assert seen["env_vars"] == {}
-    assert seen["requirements"] == ["lamindb-core", *CORE[1:]]  # nothing to ask LaminHub: latest
+    # nothing to ask LaminHub: any supported version
+    assert seen["requirements"] == ["lamindb-core>=2.11", *CORE[1:]]
     context["ti"].xcom_push.assert_not_called()
 
 
@@ -171,24 +173,44 @@ def test_missing_connection_explains_how_to_opt_out(make_context, monkeypatch) -
 @pytest.mark.parametrize(
     ("kwargs", "expected", "looked_up"),
     [
-        ({}, ["lamindb-core==2.9.0", *CORE[1:]], True),
-        ({"lamindb_version": "2.8.0"}, ["lamindb-core==2.8.0", *CORE[1:]], False),
-        ({"lamindb_version": "2.4.2"}, ["lamindb==2.4.2"], False),
-        ({"requirements": ["lamindb>=2"]}, ["lamindb>=2"], False),
-        ({"requirements": ["lamindb-core==2.8.0"]}, ["lamindb-core==2.8.0", *CORE[1:]], False),
-        ({"requirements": "pandas\nlamindb==2.8.0"}, ["pandas\nlamindb==2.8.0"], False),
+        ({}, ["lamindb-core==2.12.0", *CORE[1:]], True),
+        ({"lamindb_version": "2.11.2"}, ["lamindb-core==2.11.2", *CORE[1:]], False),
+        ({"requirements": ["lamindb>=2.11"]}, ["lamindb>=2.11"], False),
+        ({"requirements": ["lamindb-core==2.11.2"]}, ["lamindb-core==2.11.2", *CORE[1:]], False),
+        ({"requirements": "pandas\nlamindb==2.11.2"}, ["pandas\nlamindb==2.11.2"], False),
     ],
 )
 def test_lamindb_version_lookup_only_when_needed(
     fake_lamindb: MagicMock, make_context, lamindb_connection, monkeypatch, kwargs, expected, looked_up
 ) -> None:
     fake_lamindb.flow_run = MagicMock(uid="flowuid")
-    lookup = MagicMock(return_value="2.9.0")
+    lookup = MagicMock(return_value="2.12.0")
     monkeypatch.setattr(RemoteLaminDB, "instance_lamindb_version", lookup)
 
     _, seen = _run_in_fake_venv(LaminDBFlowFinishOperator(**kwargs), make_context())
     assert seen["requirements"] == expected
     assert lookup.called is looked_up
+
+
+@pytest.mark.parametrize("operator", [LaminDBFlowInitOperator, LaminDBFlowFinishOperator])
+def test_older_lamindb_version_fails_when_the_dag_is_parsed(operator) -> None:
+    with pytest.raises(LaminDBVersionError, match=r"lamindb 2\.10\.0 is not supported"):
+        operator(lamindb_version="2.10.0")
+
+
+def test_instance_on_older_lamindb_fails_before_the_virtualenv(
+    fake_lamindb: MagicMock, make_context, lamindb_connection, monkeypatch
+) -> None:
+    def lookup(self):
+        raise LaminDBVersionError("The LaminDB instance owner/name runs lamindb 2.10.0")
+
+    monkeypatch.setattr(RemoteLaminDB, "instance_lamindb_version", lookup)
+    with (
+        patch.object(PythonVirtualenvOperator, "execute") as venv_execute,
+        pytest.raises(LaminDBVersionError, match=r"runs lamindb 2\.10\.0"),
+    ):
+        LaminDBFlowInitOperator().execute(make_context())
+    venv_execute.assert_not_called()
 
 
 @pytest.mark.parametrize("module", ["airflow.providers.lamindb", "airflow.providers.lamindb.operators"])
