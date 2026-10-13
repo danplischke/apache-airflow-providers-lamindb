@@ -82,6 +82,7 @@ name = "airflow.providers.lamindb"
 [tool.flit.sdist]
 include = [
     ".github/workflows/qa.yml",
+    "dev/dags/",
     "docs/",
     "provider.yaml",
     "src/airflow/__init__.py",

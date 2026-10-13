@@ -99,7 +99,7 @@ test-lowest *args:
     set -eu
     copy="$PWD/.cache/lowest"
     mkdir -p "$copy"
-    rsync -a --delete --exclude .git --exclude .venv --exclude .cache --exclude .lamin --exclude site ./ "$copy/"
+    rsync -a --delete --exclude .git --exclude .venv --exclude .cache --exclude .lamin --exclude .airflow --exclude site ./ "$copy/"
     cd "$copy"
     uv sync --quiet --resolution lowest-direct --group dev --python 3.10
     uv run --no-sync pytest tests/unit -q {{ args }}
@@ -110,6 +110,22 @@ test-all: test test-integration test-system
 # Lint, unit tests, docs, package build and smoke test, as the CI does
 [group('test')]
 check: lint test docs-build build smoke
+
+# Airflow at http://localhost:8080 with the DAGs in dev/dags; export AIRFLOW_CONN_LAMINDB_DEFAULT to use a hosted instance
+[group('airflow')]
+standalone: _lamin-instance
+    . dev/airflow-env.sh; exec .venv/bin/airflow standalone
+
+# The Airflow CLI against the standalone setup, e.g. `just airflow dags test lamindb_showcase`
+[group('airflow')]
+[positional-arguments]
+airflow *args: _lamin-instance
+    . dev/airflow-env.sh; exec .venv/bin/airflow "$@"
+
+# Delete the standalone Airflow home (database, logs, admin password)
+[group('airflow')]
+airflow-reset:
+    rm -rf .airflow
 
 # Serve the docs with live reload
 [group('docs')]

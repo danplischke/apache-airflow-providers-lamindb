@@ -33,6 +33,22 @@ DAGs in `tests/system/lamindb` are included in the docs, so keep them readable.
 The integration and system tests keep their lamindb instance and Airflow home in `.cache/`, never in
 your real `~/.lamin`. `just clean` removes them.
 
+## Trying it in Airflow
+
+`just standalone` starts Airflow at http://localhost:8080 with the sample DAGs in `dev/dags`, logged
+in as admin. Its home is `.airflow/`; `just airflow-reset` deletes it. `just airflow <args>` runs the
+Airflow CLI against the same setup, e.g. `just airflow dags test lamindb_showcase`.
+
+The sample DAGs record lineage into the throwaway lamindb instance `anonymous/airflowtest` in
+`.cache/lamin-home`; open it with `HOME=.cache/lamin-home .venv/bin/lamin`. To use a hosted
+instance instead, export the connection first. That also enables `lamindb_showcase_on_table`, which
+the artifact trigger runs for every table `lamindb_showcase` saves:
+
+```bash
+export AIRFLOW_CONN_LAMINDB_DEFAULT='{"conn_type": "lamindb", "password": "<API key>", "extra": {"instance": "<owner>/<name>"}}'
+just standalone
+```
+
 ## Docs
 
 The docs in `docs/` are built with [Zensical](https://zensical.org) and published to

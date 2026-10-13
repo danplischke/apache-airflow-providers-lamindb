@@ -26,6 +26,8 @@ READ_BY_TESTS = (
     ".github/workflows/qa.yml",
     "docs/changelog.md",
     "tests/system/lamindb/example_lamindb_lineage.py",
+    "dev/dags/lamindb_showcase.py",
+    "dev/dags/lamindb_showcase_events.py",
 )
 
 

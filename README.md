@@ -215,6 +215,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). In short, with [uv](https://docs.astral.
 ```bash
 just dev     # install the dev and docs dependencies and the pre-commit hooks
 just check   # lint, type check, unit tests, docs, package build and smoke test, as the CI does
+just standalone  # Airflow at http://localhost:8080 with sample DAGs and a local lamindb instance
 ```
 
 ## License
