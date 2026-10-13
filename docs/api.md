@@ -35,6 +35,11 @@
       members: [CursorStore, AssetCursorStore, RecordCursorStore, DEFAULT_COMMIT_DELAY]
       toc_label: triggers.cursors
 
+::: airflow.providers.lamindb.triggers.replay
+    options:
+      members: [request_replay, ReplayRequest, replay_key]
+      toc_label: triggers.replay
+
 ::: airflow.providers.lamindb.sensors.branches
     options:
       members: [LaminDBBranchStatusSensor]

@@ -25,8 +25,12 @@ of the changed fields. From this, the triggers derive semantic events such as "a
   each poll, so at least one poll cycle later. Events are not lost if the triggerer crashes, but after
   a crash an event may be delivered twice. Each payload contains the `dbwrite` entry, whose
   `id`/`uid` identify the change, so DAGs can deduplicate if needed.
+- **Replays.** A trigger in an `AssetWatcher` delivers the events of past changes again on request,
+  without moving its cursor. See [Replaying events](#replaying-events).
 - **Batching.** Every change is a separate trigger event (and asset event). Airflow may combine
-  several asset events into one DAG run; iterate over `triggering_asset_events`.
+  several asset events into one DAG run; iterate over `triggering_asset_events`. In Airflow 3.3,
+  events that arrive while the scheduler creates a run, such as the rest of a burst of changes, can
+  miss that run and only come with the run for the asset's next event.
 - **Changing a trigger resets its cursor.** The state key is derived from the trigger's arguments
   except the polling settings (`poll_interval`, `batch_size`, `max_batches_per_poll`) and
   `cursor_store`, so changing a filter, the connection or the instance starts a fresh cursor.
@@ -221,3 +225,80 @@ reports new comments and readmes on branches (`kinds`, `branch_name`). The paylo
 ```python title="tests/system/lamindb/example_lamindb_event_scheduling.py"
 --8<-- "tests/system/lamindb/example_lamindb_event_scheduling.py:howto_trigger_lamindb_branch_events"
 ```
+
+## Processing events one by one
+
+Airflow can batch several events into one DAG run. Map a task over the events to give each one
+its own task instance, with its own retries and its own failure:
+
+```python title="tests/system/lamindb/example_lamindb_event_scheduling.py"
+--8<-- "tests/system/lamindb/example_lamindb_event_scheduling.py:howto_process_lamindb_events_one_by_one"
+```
+
+- An event that fails doesn't stop the others. Its task instance retries on its own and then
+  fails, labeled with the event's write id, with the payload as its input. The failed task
+  instances of a run are its dead letters.
+- To reprocess a failed event, clear its task instance once the cause is fixed. Clearing the whole
+  DAG run reprocesses all its events.
+- To deliver a single event again without a replay, for example after its DAG run was deleted,
+  create an asset event with the same payload through Airflow's REST API:
+  `POST /api/v2/assets/events` with `{"asset_id": ..., "extra": {"payload": {...}}}`.
+- Events can arrive twice, after a triggerer crash or in a replay. If processing an event twice
+  does harm, deduplicate on `payload["dbwrite"]["id"]`.
+
+## Replaying events
+
+To deliver the events of past changes again, for example after fixing a bug in the DAG that
+processed them, ask the trigger for a replay. It reads the requested database writes again and
+delivers their events next to its live events. Its cursor doesn't move, so live events keep
+flowing. Replayed events have `"replay": {"id": ...}` in their payload.
+
+Ask for a replay from a task that has the watched asset as an inlet:
+
+```python title="tests/system/lamindb/example_lamindb_event_scheduling.py"
+--8<-- "tests/system/lamindb/example_lamindb_event_scheduling.py:howto_replay_lamindb_events"
+```
+
+[`request_replay`][airflow.providers.lamindb.triggers.replay.request_replay] stores the request in
+the asset state store of the watched asset, under the trigger's `state_key` plus `.replay`. Pass it
+the trigger from the `AssetWatcher` (or one with the same arguments) or its `state_key`. Without a
+task, write the request through Airflow's REST API. `GET /api/v2/assets/{asset_id}/state-store`
+lists the keys; the trigger's state key is the one that starts with `lamindb.` and the trigger's
+class name.
+
+```bash
+curl -X PUT "$AIRFLOW_URL/api/v2/assets/$ASSET_ID/state-store/$STATE_KEY.replay" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"value": {"id": "fix-1234", "from_dbwrite_id": 1000, "to_dbwrite_id": 2000}}'
+```
+
+A request contains:
+
+`from_dbwrite_id`, `to_dbwrite_id`
+:   A range of write ids, both inclusive. `to_dbwrite_id` defaults to the last write the trigger
+    has processed and is capped there: later writes are delivered as live events anyway.
+
+`dbwrite_ids`
+:   A list of write ids instead of a range, at most 10,000. For example the `dbwrite.id` of failed
+    events.
+
+`id` (optional)
+:   Identifies the request in the replayed payloads.
+
+How a replay runs:
+
+- **Next to the live events.** The trigger looks for a request at every poll and delivers up to
+  `max_batches_per_poll` batches of it per poll, after the live events.
+- **Status.** The trigger records the outcome in the request: `status` is `running` once it picked
+  the request up, then `done` with the number of `events`, `invalid` with an `error` for a request it
+  can't read, or `failed` with an `error` if processing the writes failed. LaminHub API errors don't
+  fail a replay; it continues at the next poll. Requests that are `done`, `invalid` or `failed` stay
+  until they are replaced; write a new request to replay again.
+- **One request at a time.** A new request replaces the previous one, and deleting the request
+  stops a running replay. If the triggerer restarts during a replay, the replay starts over:
+  replays are delivered at least once, too.
+- **Current state.** Only writes that match the trigger's filters are replayed, and their events
+  are derived again: payloads describe the records as they are now, and writes whose records no
+  longer match the filters, or no longer exist, may not be delivered again.
+- **Needs the asset state store.** Replays work for triggers in an `AssetWatcher`, with either
+  cursor store.

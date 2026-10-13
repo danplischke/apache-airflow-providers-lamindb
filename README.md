@@ -116,7 +116,7 @@ the steps are recorded and the limitations.
 
 The triggers poll the LaminHub database write log ("Changes → Database writes") and keep their
 cursor in Airflow's asset state store, so they resume after triggerer restarts. Events are delivered at
-least once.
+least once, and past events can be replayed on request.
 
 With the [connection](#connection) in place, run a DAG whenever a new FASTQ file is registered under `raw/` on the `main` branch:
 

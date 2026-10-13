@@ -10,6 +10,7 @@ from airflow.providers.lamindb.triggers import base
 from airflow.providers.lamindb.triggers.base import LaminDBDbWriteEventTrigger
 from airflow.providers.lamindb.triggers.cursors import AssetCursorStore, RecordCursorStore
 from airflow.providers.lamindb.triggers.records import LaminDBRecordEventTrigger
+from airflow.providers.lamindb.triggers.replay import replay_key
 from unit.lamindb.fakes import INSTANCE, FakeHook, FakeStateStore, dbwrite
 from unit.lamindb.fakes import evaluate as fake_evaluate
 
@@ -237,6 +238,211 @@ class TestPolling:
         sleeps["callbacks"].append(lambda: hook.writes.append(dbwrite(2, "INSERT", "t", 2)))
 
         assert [e["dbwrite"]["id"] for e in await collect(trigger)] == [2]
+
+
+def ids_and_replays(events: list[dict[str, Any]]) -> list[tuple[int, Any]]:
+    return [(e["dbwrite"]["id"], e.get("replay")) for e in events]
+
+
+class TestReplay:
+    """Replay requests in the asset state store, delivered next to the live events."""
+
+    @staticmethod
+    def setup(fake_hook_factory, request: Any, *, writes=None, **kwargs: Any):
+        """A trigger whose cursor is past writes 1-5 of table t, with ``request`` in its state store."""
+        trigger = EchoTrigger(poll_interval=10, **kwargs)
+        initial = {trigger.state_key: stored(5)}
+        if request is not None:
+            initial[replay_key(trigger.state_key)] = request
+        trigger.asset_state_store = store = FakeStateStore(initial)
+        writes = writes if writes is not None else [dbwrite(i, "INSERT", "t", i) for i in range(1, 6)]
+        hook = fake_hook_factory(trigger, FakeHook(writes=writes))
+        return trigger, store, hook
+
+    async def test_replays_a_range_next_to_live_events(self, fake_hook_factory, sleeps):
+        trigger, store, hook = self.setup(
+            fake_hook_factory, {"id": "r1", "from_dbwrite_id": 2, "to_dbwrite_id": 4}
+        )
+        sleeps["callbacks"].append(lambda: hook.writes.append(dbwrite(6, "INSERT", "t", 6)))
+
+        events = await collect(trigger)
+
+        replayed = {"id": "r1"}
+        assert ids_and_replays(events) == [(2, replayed), (3, replayed), (4, replayed), (6, None)]
+        request = store.data[replay_key(trigger.state_key)]
+        assert request.pop("finished_at")
+        assert request == {
+            "id": "r1",
+            "from_dbwrite_id": 2,
+            "to_dbwrite_id": 4,
+            "status": "done",
+            "events": 3,
+        }
+        # the request was marked running when the trigger picked it up
+        assert [v["status"] for k, v in store.writes if k == replay_key(trigger.state_key)] == [
+            "running",
+            "done",
+        ]
+        # replays never move the cursor
+        assert all(k != trigger.state_key for k, _ in store.writes)
+        assert sleeps["delays"] == [10, 10]
+
+    @pytest.mark.parametrize("to_dbwrite_id", [None, 100])
+    async def test_range_ends_at_the_live_cursor(self, fake_hook_factory, sleeps, to_dbwrite_id):
+        request = {"from_dbwrite_id": 4} | ({"to_dbwrite_id": to_dbwrite_id} if to_dbwrite_id else {})
+        trigger, _, _ = self.setup(fake_hook_factory, request)
+
+        events = await collect(trigger)
+
+        assert ids_and_replays(events) == [(4, {"id": None}), (5, {"id": None})]
+
+    async def test_replays_a_list_of_writes(self, fake_hook_factory, sleeps):
+        writes = [dbwrite(i, "INSERT", "t" if i != 3 else "other", i) for i in range(1, 6)]
+        trigger, store, _ = self.setup(
+            fake_hook_factory, {"id": "fix", "dbwrite_ids": [5, 3, 2, 2, 9]}, writes=writes
+        )
+        sleeps["callbacks"].append(lambda: None)
+
+        events = await collect(trigger)
+
+        # write 3 is not one of the trigger's writes, and write 9 comes later as a live event
+        assert ids_and_replays(events) == [(2, {"id": "fix"}), (5, {"id": "fix"})]
+        assert store.data[replay_key(trigger.state_key)]["events"] == 2
+
+    async def test_replays_in_batches_across_polls(self, fake_hook_factory, sleeps):
+        trigger, store, hook = self.setup(
+            fake_hook_factory, {"from_dbwrite_id": 1}, batch_size=2, max_batches_per_poll=1
+        )
+        sleeps["callbacks"].extend([lambda: None] * 3)
+
+        events = await collect(trigger)
+
+        assert [e["dbwrite"]["id"] for e in events] == [1, 2, 3, 4, 5]
+        replay_queries = [q for q in hook.dbwrite_queries if "lte" in str(q["filter"])]
+        assert [q["after_id"] for q in replay_queries] == [0, 2, 4]
+        assert store.data[replay_key(trigger.state_key)]["status"] == "done"
+
+    async def test_restarted_trigger_starts_a_running_replay_over(self, fake_hook_factory, sleeps):
+        trigger, _, _ = self.setup(
+            fake_hook_factory, {"from_dbwrite_id": 5, "status": "running", "started_at": "2026-10-13"}
+        )
+
+        assert [e["dbwrite"]["id"] for e in await collect(trigger)] == [5]
+
+    @pytest.mark.parametrize(
+        ("request_value", "error"),
+        [
+            ({"from_dbwrite_id": 3, "to_dbwrite_id": 2}, "to_dbwrite_id 2 is lower than from_dbwrite_id 3"),
+            ({"from": 3}, "Unknown replay request fields ['from']"),
+            ({"dbwrite_ids": []}, "dbwrite_ids must be a non-empty list of database write ids"),
+            ("everything", "A replay request must be a JSON object, got 'everything'"),
+        ],
+    )
+    async def test_marks_invalid_requests(self, fake_hook_factory, sleeps, request_value, error):
+        trigger, store, _ = self.setup(fake_hook_factory, request_value)
+        sleeps["callbacks"].append(lambda: None)
+
+        assert await collect(trigger) == []
+
+        request = store.data[replay_key(trigger.state_key)]
+        assert request["status"] == "invalid"
+        assert request["error"] == error
+        assert len(store.writes) == 1  # not picked up again
+
+    @pytest.mark.parametrize("status", ["done", "invalid", "failed"])
+    async def test_ignores_finished_requests(self, fake_hook_factory, sleeps, status):
+        trigger, store, _ = self.setup(fake_hook_factory, {"from_dbwrite_id": 1, "status": status})
+
+        assert await collect(trigger) == []
+        assert store.writes == []
+
+    async def test_replaced_request_stops_the_running_replay(self, fake_hook_factory, sleeps):
+        trigger, store, _ = self.setup(
+            fake_hook_factory, {"id": "r1", "from_dbwrite_id": 1}, batch_size=1, max_batches_per_poll=1
+        )
+        key = replay_key(trigger.state_key)
+        sleeps["callbacks"].extend(
+            [lambda: store.data.update({key: {"id": "r2", "dbwrite_ids": [5]}}), lambda: None]
+        )
+
+        events = await collect(trigger)
+
+        assert ids_and_replays(events) == [(1, {"id": "r1"}), (5, {"id": "r2"})]
+        assert store.data[key]["id"] == "r2"
+        assert store.data[key]["status"] == "done"
+
+    async def test_withdrawn_request_stops_the_running_replay(self, fake_hook_factory, sleeps):
+        trigger, store, _ = self.setup(
+            fake_hook_factory, {"from_dbwrite_id": 1}, batch_size=1, max_batches_per_poll=1
+        )
+        key = replay_key(trigger.state_key)
+        sleeps["callbacks"].extend([lambda: store.data.pop(key), lambda: None])
+
+        events = await collect(trigger)
+
+        assert [e["dbwrite"]["id"] for e in events] == [1]
+        assert key not in store.data
+
+    async def test_api_errors_are_retried_without_slowing_live_polling(self, fake_hook_factory, sleeps):
+        trigger, store, hook = self.setup(fake_hook_factory, {"from_dbwrite_id": 4})
+        query = hook.aquery_dbwrites
+        failures = [LaminDBApiError("down")]
+
+        async def flaky(filter=None, **kwargs):
+            if failures and "lte" in str(filter):
+                raise failures.pop()
+            return await query(filter, **kwargs)
+
+        hook.aquery_dbwrites = flaky
+        sleeps["callbacks"].extend([lambda: hook.writes.append(dbwrite(6, "INSERT", "t", 6)), lambda: None])
+
+        events = await collect(trigger)
+
+        assert ids_and_replays(events) == [(6, None), (4, {"id": None}), (5, {"id": None})]
+        assert store.data[replay_key(trigger.state_key)]["status"] == "done"
+        assert sleeps["delays"] == [10, 10, 10]
+
+    async def test_other_errors_fail_the_request(self, fake_hook_factory, sleeps):
+        class PoisonedTrigger(EchoTrigger):
+            async def _events_for(self, hook, instance, writes):
+                if any(w["id"] == 2 for w in writes):
+                    raise KeyError("data")
+                return await super()._events_for(hook, instance, writes)
+
+        trigger = PoisonedTrigger(poll_interval=10)
+        key = replay_key(trigger.state_key)
+        trigger.asset_state_store = store = FakeStateStore(
+            {trigger.state_key: stored(5), key: {"from_dbwrite_id": 1, "to_dbwrite_id": 3}}
+        )
+        hook = fake_hook_factory(
+            trigger, FakeHook(writes=[dbwrite(i, "INSERT", "t", i) for i in range(1, 6)])
+        )
+        sleeps["callbacks"].extend([lambda: hook.writes.append(dbwrite(6, "INSERT", "t", 6))])
+
+        events = await collect(trigger)
+
+        assert ids_and_replays(events) == [(6, None)]
+        assert store.data[key]["status"] == "failed"
+        assert store.data[key]["error"] == "KeyError: 'data'"
+        assert sleeps["delays"] == [10, 10]
+
+    async def test_request_on_any_watched_asset(self, fake_hook_factory, sleeps):
+        trigger = EchoTrigger()
+        key = replay_key(trigger.state_key)
+        first = FakeStateStore({trigger.state_key: stored(5)})
+        second = FakeStateStore({trigger.state_key: stored(5), key: {"dbwrite_ids": [3]}})
+
+        class TwoAssets:
+            _by_name = {"a": first}
+            _by_uri = {"b://x": second}
+
+        trigger.asset_state_store = TwoAssets()
+        fake_hook_factory(trigger, FakeHook(writes=[dbwrite(i, "INSERT", "t", i) for i in range(1, 6)]))
+        sleeps["callbacks"].append(lambda: None)
+
+        assert [e["dbwrite"]["id"] for e in await collect(trigger)] == [3]
+        assert second.data[key]["status"] == "done"
+        assert key not in first.data
 
 
 class TestSerialization:
