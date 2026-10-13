@@ -300,6 +300,7 @@ class LaminDBHook(BaseHook):
                 f"LaminHub API request {method} {url} failed with status {response.status_code}: {detail}",
                 http_status_code=response.status_code,
                 detail=detail,
+                transient=response.status_code == 429 or response.status_code >= 500,
             )
         if not response.content:
             return None
@@ -327,7 +328,9 @@ class LaminDBHook(BaseHook):
                 response = client.request(method, url, params=params, json=json, headers=headers)
             except httpx.TransportError as err:
                 if not isinstance(err, retry_errors) or attempt >= self.retries:
-                    raise LaminDBApiError(f"LaminHub API request {method} {url} failed: {err}") from err
+                    raise LaminDBApiError(
+                        f"LaminHub API request {method} {url} failed: {err}", transient=True
+                    ) from err
                 time.sleep(self._backoff(attempt))
                 attempt += 1
                 continue
@@ -363,7 +366,9 @@ class LaminDBHook(BaseHook):
                 response = await client.request(method, url, params=params, json=json, headers=headers)
             except httpx.TransportError as err:
                 if not isinstance(err, retry_errors) or attempt >= self.retries:
-                    raise LaminDBApiError(f"LaminHub API request {method} {url} failed: {err}") from err
+                    raise LaminDBApiError(
+                        f"LaminHub API request {method} {url} failed: {err}", transient=True
+                    ) from err
                 await asyncio.sleep(self._backoff(attempt))
                 attempt += 1
                 continue

@@ -442,6 +442,12 @@ class TestRecordSensorTrigger:
         events = [e.payload async for e in trigger(hook).run()]
         assert events == [{"status": "error", "message": str(error)}]
 
+    async def test_keeps_waiting_through_transient_errors(self, trigger):
+        hook = FakeHook(records={"core.artifact": {1: artifact(1)}})
+        hook.fail_next = [LaminDBApiError("unavailable", http_status_code=503, transient=True)] * 2
+        events = [e.payload async for e in trigger(hook).run()]
+        assert events == [{"status": "success", "records": [artifact(1)]}]
+
     def test_serialize(self):
         trigger = LaminDBRecordSensorTrigger("core.run", {"name": {"eq": "x"}}, branch=None, min_count=2)
         classpath, kwargs = trigger.serialize()

@@ -6,6 +6,7 @@ from unittest import mock
 import pytest
 from airflow.sdk.exceptions import AirflowException, AirflowFailException, TaskDeferred
 
+from airflow.providers.lamindb.exceptions import LaminDBApiError
 from airflow.providers.lamindb.hooks.lamindb import LaminDBHook
 from airflow.providers.lamindb.sensors.branches import LaminDBBranchStatusSensor
 from airflow.providers.lamindb.sensors.records import LaminDBArtifactSensor, LaminDBRecordSensor
@@ -87,6 +88,18 @@ class TestBranchStatusSensor:
         get_branch.return_value = branch(-1)
         assert self.make(deferrable=True).execute({})["status"] == "merged"
 
+    def test_poke_waits_through_transient_errors(self, get_branch):
+        get_branch.side_effect = LaminDBApiError("unavailable", http_status_code=503, transient=True)
+        assert not self.make().poke({})
+        get_branch.side_effect = LaminDBApiError("forbidden", http_status_code=403)
+        with pytest.raises(LaminDBApiError, match="forbidden"):
+            self.make().poke({})
+
+    def test_execute_deferrable_defers_through_transient_errors(self, get_branch):
+        get_branch.side_effect = LaminDBApiError("unavailable", transient=True)
+        with pytest.raises(TaskDeferred):
+            self.make(deferrable=True).execute({})
+
     def test_execute_complete(self):
         sensor = self.make()
         assert sensor.execute_complete({}, {"status": "success", "branch": {"id": 10}}) == {"id": 10}
@@ -123,6 +136,14 @@ class TestRecordSensor:
             order_by=["-id"],
             limit=100,
         )
+
+    def test_poke_waits_through_transient_errors(self, query_records):
+        sensor = LaminDBRecordSensor(task_id="wait", registry="core.run")
+        query_records.side_effect = LaminDBApiError("unavailable", http_status_code=503, transient=True)
+        assert not sensor.poke({})
+        query_records.side_effect = LaminDBApiError("bad filter", http_status_code=400)
+        with pytest.raises(LaminDBApiError, match="bad filter"):
+            sensor.poke({})
 
     def test_waits_for_upload_of_artifacts(self, query_records):
         query_records.return_value = [{"id": 2, "_aux": {"so": 1}}, {"id": 1, "_aux": None}]

@@ -21,6 +21,7 @@ Initial release.
   `cursor_store=RecordCursorStore()`, the cursors are kept in records of the watched instance
   instead.
 - Deferrable sensors: `LaminDBBranchStatusSensor`, `LaminDBRecordSensor` and `LaminDBArtifactSensor`.
+  They keep waiting through network errors, rate limiting and LaminHub server errors.
 - Filters built in Python with `F` and enums for registries (`LaminDBRegistry`), registry fields
   (`ArtifactField`, `RunField`, ...), operators (`FilterOperator`) and values (`ArtifactKind`,
   `TransformKind`, `RunStatus`). Filters are validated when a sensor, trigger or hook receives them.

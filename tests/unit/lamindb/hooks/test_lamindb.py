@@ -237,14 +237,23 @@ class TestRetries:
             hook.get_instance()
         assert err.value.http_status_code == 502
         assert err.value.detail == "bad gateway"
+        assert err.value.transient
 
     def test_does_not_retry_client_errors(self, hook, mock_api):
         route = mock_api.get(f"{HUB}/instances/owner/name/settings").mock(
             return_value=httpx.Response(404, json={"detail": "not found"})
         )
-        with pytest.raises(LaminDBApiError, match="404"):
+        with pytest.raises(LaminDBApiError, match="404") as err:
             hook.get_instance()
         assert route.call_count == 1
+        assert not err.value.transient
+
+    @pytest.mark.parametrize(("status", "transient"), [(429, True), (501, True), (400, False), (403, False)])
+    def test_transient_status_codes(self, hook, mock_api, status, transient):
+        mock_api.get(f"{HUB}/instances/owner/name/settings").mock(return_value=httpx.Response(status))
+        with pytest.raises(LaminDBApiError) as err:
+            LaminDBHook("lamindb_test", retry_backoff=0, retries=0).get_instance()
+        assert err.value.transient is transient
 
     def test_retries_transport_errors(self, hook, mock_api):
         route = mock_api.get(f"{HUB}/instances/owner/name/settings").mock(
@@ -503,6 +512,7 @@ class TestAsync:
     async def test_async_error(self, connection, mock_api):
         hook = LaminDBHook("lamindb_test", retry_backoff=0, retries=0)
         mock_api.get(f"{HUB}/instances/owner/name/settings").mock(side_effect=httpx.ReadTimeout("slow"))
-        with pytest.raises(LaminDBApiError, match="slow"):
+        with pytest.raises(LaminDBApiError, match="slow") as err:
             await hook.aget_instance()
+        assert err.value.transient  # a network error
         await hook.aclose()

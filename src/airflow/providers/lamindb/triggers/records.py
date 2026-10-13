@@ -549,13 +549,18 @@ class LaminDBRecordSensorTrigger(BaseTrigger):
                         self.registry, query, order_by=["-id"], limit=self.limit
                     )
                 except (LaminDBApiError, ValueError) as err:
-                    yield TriggerEvent({"status": "error", "message": str(err)})
-                    return
-                matching = ready_records(records, wait_for_upload=self.wait_for_upload)
-                if len(matching) >= self.min_count:
-                    yield TriggerEvent({"status": "success", "records": matching})
-                    return
-                self.log.info("Found %d of %d records in %s", len(matching), self.min_count, self.registry)
+                    if not (isinstance(err, LaminDBApiError) and err.transient):
+                        yield TriggerEvent({"status": "error", "message": str(err)})
+                        return
+                    self.log.warning("LaminHub is unavailable, checking again later: %s", err)
+                else:
+                    matching = ready_records(records, wait_for_upload=self.wait_for_upload)
+                    if len(matching) >= self.min_count:
+                        yield TriggerEvent({"status": "success", "records": matching})
+                        return
+                    self.log.info(
+                        "Found %d of %d records in %s", len(matching), self.min_count, self.registry
+                    )
                 await asyncio.sleep(self.poll_interval)
         finally:
             await hook.aclose()

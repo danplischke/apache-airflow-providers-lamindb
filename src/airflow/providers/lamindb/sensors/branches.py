@@ -4,6 +4,7 @@ from collections.abc import Sequence
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any
 
+from airflow.providers.lamindb.exceptions import LaminDBApiError
 from airflow.providers.lamindb.hooks.lamindb import LaminDBHook
 from airflow.providers.lamindb.triggers.branches import (
     LaminDBBranchStatusSensorTrigger,
@@ -24,7 +25,8 @@ class LaminDBBranchStatusSensor(BaseSensorOperator):
 
     Returns the branch (with its ``status``), which is pushed to XCom. Fails without retries if the
     branch reaches one of the ``failure_status`` statuses (by default, when the Change Request is
-    closed without merging).
+    closed without merging). Network errors, rate limiting and LaminHub server errors don't end the
+    wait; the sensor checks again later.
 
     For more information on how to use this sensor, take a look at the
     [guide](https://danplischke.github.io/apache-airflow-providers-lamindb/sensors/#lamindbbranchstatussensor).
@@ -71,6 +73,11 @@ class LaminDBBranchStatusSensor(BaseSensorOperator):
         hook = self.hook
         try:
             branch = hook.get_branch(self.branch)
+        except LaminDBApiError as err:
+            if not err.transient:
+                raise
+            self.log.warning("LaminHub is unavailable, checking again later: %s", err)
+            return PokeReturnValue(is_done=False)
         finally:
             hook.close()
         if branch is None:
