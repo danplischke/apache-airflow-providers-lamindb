@@ -1,4 +1,4 @@
-# lamindb-airflow
+# apache-airflow-providers-lamindb
 
 An [Apache Airflow](https://airflow.apache.org) 3 provider for [LaminDB](https://lamin.ai) with two parts:
 
@@ -14,8 +14,8 @@ Both parts use the same Airflow connection, and the worker never needs the `lami
 ## Installation
 
 ```bash
-pip install lamindb-airflow
-pip install "lamindb-airflow[cncf.kubernetes]"  # adds @task.lamindb_k8s
+pip install apache-airflow-providers-lamindb
+pip install "apache-airflow-providers-lamindb[cncf.kubernetes]"  # adds @task.lamindb_k8s
 ```
 
 Requires `apache-airflow>=3.3.0` and `apache-airflow-providers-standard`. Airflow 3.3.0 added the asset
@@ -209,7 +209,7 @@ The documentation is at <https://danplischke.github.io/apache-airflow-providers-
 
 ## Development
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). In short, with [uv](https://docs.astral.sh/uv/) and
+See [CONTRIBUTING.md](https://github.com/danplischke/apache-airflow-providers-lamindb/blob/main/CONTRIBUTING.md). In short, with [uv](https://docs.astral.sh/uv/) and
 [just](https://just.systems/):
 
 ```bash

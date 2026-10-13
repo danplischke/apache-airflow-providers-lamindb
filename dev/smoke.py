@@ -26,7 +26,7 @@ if importlib.util.find_spec("airflow.providers.cncf") is None:
     try:
         task.lamindb_k8s(lambda: None)
     except ImportError as e:
-        if "lamindb-airflow[cncf.kubernetes]" not in str(e):
+        if "apache-airflow-providers-lamindb[cncf.kubernetes]" not in str(e):
             raise SystemExit(f"@task.lamindb_k8s gives no install hint: {e}") from e
     else:
         raise SystemExit("@task.lamindb_k8s worked without apache-airflow-providers-cncf-kubernetes")

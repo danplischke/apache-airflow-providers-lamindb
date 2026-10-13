@@ -342,7 +342,7 @@ jobs:
         run: |
           uv venv /tmp/wheel-check
           uv pip install --python /tmp/wheel-check dist/*.whl
-          AIRFLOW_HOME=/tmp/airflow-home /tmp/wheel-check/bin/airflow providers get lamindb-airflow
+          AIRFLOW_HOME=/tmp/airflow-home /tmp/wheel-check/bin/airflow providers get apache-airflow-providers-lamindb
 
   # The required check: skipped jobs pass, failed or cancelled ones fail it.
   result:

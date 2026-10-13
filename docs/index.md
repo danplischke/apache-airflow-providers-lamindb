@@ -1,4 +1,4 @@
-# lamindb-airflow
+# apache-airflow-providers-lamindb
 
 Provider package for [LaminDB](https://lamin.ai). It records DAG runs in LaminDB and lets DAGs react to
 changes in LaminDB instances hosted on LaminHub:
@@ -30,10 +30,10 @@ state store that the event triggers use to resume after restarts.
 The worker doesn't need the `lamindb` Python package. The triggers, sensors and hook talk to the
 [LaminHub REST API](https://docs.lamin.ai/rest), and the lineage operators install `lamindb-core` in a
 virtualenv or use a Kubernetes pod's image. `@task.lamindb_k8s` needs
-`pip install "lamindb-airflow[cncf.kubernetes]"`.
+`pip install "apache-airflow-providers-lamindb[cncf.kubernetes]"`.
 
 ## Installation
 
 ```bash
-pip install lamindb-airflow
+pip install apache-airflow-providers-lamindb
 ```

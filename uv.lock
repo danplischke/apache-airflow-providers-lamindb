@@ -528,6 +528,65 @@ wheels = [
 ]
 
 [[package]]
+name = "apache-airflow-providers-lamindb"
+source = { editable = "." }
+dependencies = [
+    { name = "apache-airflow" },
+    { name = "apache-airflow-providers-standard" },
+    { name = "httpx" },
+    { name = "packaging" },
+]
+
+[package.optional-dependencies]
+cncf-kubernetes = [
+    { name = "apache-airflow-providers-cncf-kubernetes" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "apache-airflow-providers-lamindb", extra = ["cncf-kubernetes"] },
+    { name = "lamindb" },
+    { name = "mypy" },
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "pytest-cov" },
+    { name = "respx" },
+    { name = "ruff" },
+]
+docs = [
+    { name = "mkdocstrings-python" },
+    { name = "ruff" },
+    { name = "zensical", marker = "python_full_version >= '3.11'" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "apache-airflow", specifier = ">=3.3.0" },
+    { name = "apache-airflow-providers-cncf-kubernetes", marker = "extra == 'cncf-kubernetes'", specifier = ">=10.19.0" },
+    { name = "apache-airflow-providers-standard", specifier = ">=1.15.0" },
+    { name = "httpx", specifier = ">=0.27.0" },
+    { name = "packaging", specifier = ">=22" },
+]
+provides-extras = ["cncf-kubernetes"]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "apache-airflow-providers-lamindb", extras = ["cncf-kubernetes"] },
+    { name = "lamindb", specifier = ">=2.10" },
+    { name = "mypy", specifier = ">=1.15" },
+    { name = "pytest", specifier = ">=8.3" },
+    { name = "pytest-asyncio", specifier = ">=0.25" },
+    { name = "pytest-cov", specifier = ">=4.0" },
+    { name = "respx", specifier = ">=0.22" },
+    { name = "ruff", specifier = ">=0.11" },
+]
+docs = [
+    { name = "mkdocstrings-python", specifier = ">=2.0" },
+    { name = "ruff", specifier = ">=0.11" },
+    { name = "zensical", marker = "python_full_version >= '3.11'", specifier = ">=0.0.69" },
+]
+
+[[package]]
 name = "apache-airflow-providers-smtp"
 version = "3.1.0"
 source = { registry = "https://pypi.org/simple" }
@@ -2442,65 +2501,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/b2/57/205e9b33a7b833f0959474e219763bfd0712c09187118bd2e8a3e8fc7efc/lamindb-2.10.0.tar.gz", hash = "sha256:492f64dcf6768f46f272e044ad0b27f63d7e933969886fa7a392adc35ac15c56", size = 663747, upload-time = "2026-08-26T07:21:33.732Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/e1/78/5eb37477ab755892ef05dd17596aadb8b3d8216c2985da697bb2e17b77b4/lamindb-2.10.0-py3-none-any.whl", hash = "sha256:fcd6b6e72b714716fb8c7a66cb9b0cbb2b6ccd58d2026a8cafa2e9bdb7993e54", size = 12618, upload-time = "2026-08-26T07:21:31.793Z" },
-]
-
-[[package]]
-name = "lamindb-airflow"
-source = { editable = "." }
-dependencies = [
-    { name = "apache-airflow" },
-    { name = "apache-airflow-providers-standard" },
-    { name = "httpx" },
-    { name = "packaging" },
-]
-
-[package.optional-dependencies]
-cncf-kubernetes = [
-    { name = "apache-airflow-providers-cncf-kubernetes" },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "lamindb" },
-    { name = "lamindb-airflow", extra = ["cncf-kubernetes"] },
-    { name = "mypy" },
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
-    { name = "pytest-cov" },
-    { name = "respx" },
-    { name = "ruff" },
-]
-docs = [
-    { name = "mkdocstrings-python" },
-    { name = "ruff" },
-    { name = "zensical", marker = "python_full_version >= '3.11'" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "apache-airflow", specifier = ">=3.3.0" },
-    { name = "apache-airflow-providers-cncf-kubernetes", marker = "extra == 'cncf-kubernetes'", specifier = ">=10.19.0" },
-    { name = "apache-airflow-providers-standard", specifier = ">=1.15.0" },
-    { name = "httpx", specifier = ">=0.27.0" },
-    { name = "packaging", specifier = ">=22" },
-]
-provides-extras = ["cncf-kubernetes"]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "lamindb", specifier = ">=2.10" },
-    { name = "lamindb-airflow", extras = ["cncf-kubernetes"] },
-    { name = "mypy", specifier = ">=1.15" },
-    { name = "pytest", specifier = ">=8.3" },
-    { name = "pytest-asyncio", specifier = ">=0.25" },
-    { name = "pytest-cov", specifier = ">=4.0" },
-    { name = "respx", specifier = ">=0.22" },
-    { name = "ruff", specifier = ">=0.11" },
-]
-docs = [
-    { name = "mkdocstrings-python", specifier = ">=2.0" },
-    { name = "ruff", specifier = ">=0.11" },
-    { name = "zensical", marker = "python_full_version >= '3.11'", specifier = ">=0.0.69" },
 ]
 
 [[package]]

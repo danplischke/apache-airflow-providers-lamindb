@@ -19,14 +19,16 @@ __all__ = [
 ]
 
 try:
-    __version__ = importlib.metadata.version("lamindb-airflow")
+    __version__ = importlib.metadata.version("apache-airflow-providers-lamindb")
 except importlib.metadata.PackageNotFoundError:  # imported from a source tree that is not installed
     __version__ = "0.0.0"
 
 if packaging.version.parse(packaging.version.parse(airflow_version).base_version) < packaging.version.parse(
     "3.3.0"
 ):
-    raise RuntimeError(f"The package `lamindb-airflow:{__version__}` needs Apache Airflow 3.3.0+")
+    raise RuntimeError(
+        f"The package `apache-airflow-providers-lamindb:{__version__}` needs Apache Airflow 3.3.0+"
+    )
 
 
 def __getattr__(name: str) -> Any:

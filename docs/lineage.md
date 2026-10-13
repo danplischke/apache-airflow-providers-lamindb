@@ -31,7 +31,7 @@ lamindb is added to `requirements` when the task runs (see `lamindb_version` und
 ## @task.lamindb_k8s
 
 `@task.lamindb_k8s` works like `@task.kubernetes` and accepts all of its arguments; it needs
-`pip install "lamindb-airflow[cncf.kubernetes]"`. The image must have lamindb installed, and the pod
+`pip install "apache-airflow-providers-lamindb[cncf.kubernetes]"`. The image must have lamindb installed, and the pod
 needs the API key, for example from a Kubernetes secret. The connection only provides the instance,
 because environment variables of a pod are readable in its spec.
 

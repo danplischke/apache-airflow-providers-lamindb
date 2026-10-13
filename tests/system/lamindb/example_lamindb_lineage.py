@@ -1,4 +1,6 @@
-"""Example DAGs for lamindb-airflow, run by test_example_lamindb_lineage.py through dag.test().
+"""Example DAGs for apache-airflow-providers-lamindb.
+
+test_example_lamindb_lineage.py runs them through dag.test().
 
 LaminDB only runs inside the virtualenvs, so the worker needs no lamindb. The examples pass
 ``system_site_packages=True`` so the virtualenvs reuse the lamindb of the test environment.

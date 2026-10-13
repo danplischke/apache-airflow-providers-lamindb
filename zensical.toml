@@ -1,5 +1,5 @@
 [project]
-site_name = "lamindb-airflow"
+site_name = "apache-airflow-providers-lamindb"
 site_description = "Apache Airflow provider for LaminDB: DAG runs as flows, tasks as steps, and DAGs triggered by LaminHub events."
 site_author = "Dan Plischke, Andreas Poehlmann"
 site_url = "https://danplischke.github.io/apache-airflow-providers-lamindb/"
@@ -30,7 +30,7 @@ nav = [
     { "Python API" = "api.md" },
   ] },
   { "Resources" = [
-    { "PyPI Repository" = "https://pypi.org/project/lamindb-airflow/" },
+    { "PyPI Repository" = "https://pypi.org/project/apache-airflow-providers-lamindb/" },
     { "LaminDB" = "https://docs.lamin.ai/" },
   ] },
   { "Commits" = [
@@ -89,7 +89,7 @@ link = "https://github.com/danplischke/apache-airflow-providers-lamindb"
 
 [[project.extra.social]]
 icon = "fontawesome/brands/python"
-link = "https://pypi.org/project/lamindb-airflow/"
+link = "https://pypi.org/project/apache-airflow-providers-lamindb/"
 
 [project.plugins.llmstxt]
 full_output = "llms-full.txt"
@@ -98,7 +98,7 @@ Apache Airflow 3 provider for [LaminDB](https://lamin.ai). It records DAG runs a
 tasks as steps, with lamindb running in a virtualenv (`@task.lamindb_venv`) or a Kubernetes pod
 (`@task.lamindb_k8s`), never on the worker. Event triggers schedule DAGs on artifacts, records and branches
 changing in a LaminHub-hosted instance, and deferrable sensors wait for them inside a DAG. Install with
-`pip install lamindb-airflow` (add the `[cncf.kubernetes]` extra for `@task.lamindb_k8s`); it needs
+`pip install apache-airflow-providers-lamindb` (add the `[cncf.kubernetes]` extra for `@task.lamindb_k8s`); it needs
 Apache Airflow 3.3.0 or newer.
 """
 

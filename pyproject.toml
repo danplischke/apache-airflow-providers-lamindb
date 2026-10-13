@@ -3,7 +3,7 @@ requires = ["hatchling>=1.30", "hatch-vcs>=0.5"]
 build-backend = "hatchling.build"
 
 [project]
-name = "lamindb-airflow"
+name = "apache-airflow-providers-lamindb"
 dynamic = ["version"]
 description = "Apache Airflow provider for LaminDB: track DAG runs as flows and tasks as steps, and trigger DAGs on LaminHub events."
 readme = "README.md"
@@ -49,7 +49,7 @@ dependencies = [
 
 [dependency-groups]
 dev = [
-    "lamindb-airflow[cncf.kubernetes]",
+    "apache-airflow-providers-lamindb[cncf.kubernetes]",
     # integration and system tests run lamindb against a throwaway instance
     "lamindb>=2.10",
     "mypy>=1.15",
