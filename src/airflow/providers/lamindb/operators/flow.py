@@ -27,9 +27,9 @@ class LaminDBFlowInitOperator(BaseOperator):
     """Start the LaminDB flow run for this DAG run, in the worker process.
 
     Creates (or restarts, on retry) a ``Run`` of the DAG file's ``Transform`` and tags
-    it with the DAG run so downstream LaminDB steps can find it. Step operators add
-    and wire one automatically; declare it yourself (before the steps) to configure
-    it. Returns the flow run uid.
+    it with the DAG run so downstream LaminDB steps can find it. Wrap the steps in
+    ``with init >> finish:`` to wire them, or let steps with ``auto_flow=True`` add
+    and wire one. Returns the flow run uid.
 
     Marked as an Airflow *setup* task by default, pairing with the *teardown*
     ``LaminDBFlowFinishOperator``; pass ``is_setup=False`` to opt out. Needs lamindb
@@ -54,8 +54,7 @@ class LaminDBFlowFinishOperator(BaseOperator):
     Marked as an Airflow *teardown* task by default: it runs after every other task
     (``trigger_rule=all_done_setup_success``) and is ignored when Airflow decides the
     DAG run state, so a failed step still fails the DAG run. Marks the flow run
-    errored if any other task in the DAG run failed. Step operators wire it
-    downstream of themselves (``init >> steps >> finish``). Pass ``is_teardown=False`` together
+    errored if any other task in the DAG run failed. Pass ``is_teardown=False`` together
     with your own ``trigger_rule`` to opt out. Needs lamindb on the worker; see
     ``LaminDBVenvFlowFinishOperator`` otherwise.
     """
@@ -183,7 +182,7 @@ _FINISH_OPERATORS = (LaminDBFlowFinishOperator, LaminDBVenvFlowFinishOperator)
 def wire_flow_tasks(step: BaseOperator, *, venv: bool, **flow_kwargs: Any) -> None:
     """Wire ``init >> step >> finish``, adding the DAG's flow init/finish tasks on first use.
 
-    Called by the step operators at DAG parse time. Flow operators already in the DAG
+    Called at DAG parse time by step operators with ``auto_flow=True``. Flow operators already in the DAG
     are reused, so the first LaminDB step decides whether they run in the worker
     process or in a virtualenv (``venv``, built with ``flow_kwargs``). Declare the flow
     operators yourself before the steps to control that.

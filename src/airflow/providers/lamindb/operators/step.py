@@ -18,8 +18,9 @@ class LaminDBStepOperator(BaseOperator):
     ``@task.lamindb_venv`` otherwise.
 
     :param auto_flow: wire ``init >> step >> finish`` with the DAG's flow operators,
-        adding in-process ones if the DAG has none yet. Pass ``False`` to wire the
-        flow operators yourself. Mapped steps (``.expand()``) are never auto-wired.
+        adding in-process ones if the DAG has none yet. Default ``False``: wire the
+        flow operators yourself, e.g. ``with init >> finish:`` around the steps.
+        Mapped steps (``.expand()``) are never auto-wired.
     :param track: record the call in LaminDB. Pass ``False`` to run ``python_callable``
         as a plain Python task: no step run, no flow wiring, no lamindb needed. A
         callable decorated with ``@ln.step()`` is unwrapped and called directly.
@@ -33,7 +34,7 @@ class LaminDBStepOperator(BaseOperator):
         python_callable: Callable[..., Any],
         op_args: Sequence[Any] | None = None,
         op_kwargs: Mapping[str, Any] | None = None,
-        auto_flow: bool = True,
+        auto_flow: bool = False,
         track: bool = True,
         **kwargs: Any,
     ) -> None:

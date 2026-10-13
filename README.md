@@ -37,7 +37,7 @@ Tested end to end with Airflow 3.3.2 + lamindb 2.10.0.
 import lamindb as ln
 from airflow.sdk import DAG, task
 
-from airflow.providers.lamindb import LaminDBStepOperator
+from airflow.providers.lamindb import LaminDBFlowFinishOperator, LaminDBFlowInitOperator, LaminDBStepOperator
 
 
 def extract(count: int = 10) -> dict:
@@ -50,34 +50,34 @@ def transform(data: dict) -> dict:
 
 
 with DAG("my_pipeline") as dag:
-    t1 = LaminDBStepOperator(task_id="extract", python_callable=extract, op_kwargs={"count": 3})
-    t2 = LaminDBStepOperator(task_id="transform", python_callable=transform, op_args=[t1.output])
+    with LaminDBFlowInitOperator() >> LaminDBFlowFinishOperator():
+        t1 = LaminDBStepOperator(task_id="extract", python_callable=extract, op_kwargs={"count": 3})
+        t2 = LaminDBStepOperator(task_id="transform", python_callable=transform, op_args=[t1.output])
 
-    @task.lamindb
-    def load(data: dict) -> int:
-        return data["count"]
+        @task.lamindb
+        def load(data: dict) -> int:
+            return data["count"]
 
-    @task.lamindb_venv(requirements=["pandas"])
-    def report(count: int) -> None:
-        import pandas as pd
+        @task.lamindb_venv(requirements=["pandas"])
+        def report(count: int) -> None:
+            import pandas as pd
 
-        print(pd.Series([count]).describe())
+            print(pd.Series([count]).describe())
 
-    t1 >> t2 >> report(load(t2.output))
+        t1 >> t2 >> report(load(t2.output))
 ```
 
-Each step adds the DAG's `lamindb_flow_init` and `lamindb_flow_finish` tasks on first use
-and wires `init >> step >> finish` (`auto_flow=True`). To configure them, declare them
-yourself before the steps; they are reused:
+Init and finish are Airflow setup/teardown tasks, so `with init >> finish:` is Airflow's
+setup/teardown context. When the block ends, Airflow wires init upstream of the tasks in it that
+have no upstream, and finish downstream of the ones that have no downstream. Every task in
+the block, LaminDB step or not, runs inside the flow run. Use
+`LaminDBVenvFlowInitOperator` / `LaminDBVenvFlowFinishOperator` to keep lamindb off the
+worker. Airflow does not track mapped tasks (`.expand()`) in the context; add them with
+`with init >> finish as scope: ... scope.add_task(mapped)` if they are a root or leaf.
 
-```python
-from airflow.providers.lamindb import LaminDBFlowFinishOperator, LaminDBFlowInitOperator
-
-with DAG("my_pipeline") as dag:
-    init = LaminDBFlowInitOperator(retries=3)
-    finish = LaminDBFlowFinishOperator()
-    ...
-```
+Alternatively, pass `auto_flow=True` to the steps: each one adds the DAG's
+`lamindb_flow_init` and `lamindb_flow_finish` tasks on first use and wires
+`init >> step >> finish`, which adds an edge per step.
 
 How it works:
 
@@ -94,17 +94,16 @@ How it works:
   state, so a failed step still fails the DAG run. Pass `is_setup=False` /
   `is_teardown=False` to opt out.
 
-Auto-wiring caveats:
+Auto-wiring (`auto_flow=True`) caveats:
 
 - The first LaminDB step decides the kind of flow tasks: in-process for
   `LaminDBStepOperator` / `@task.lamindb`, virtualenv for `@task.lamindb_venv` (copying
   its Python version, index, lamindb pin and env settings) and `@task.lamindb_k8s`.
-- Mapped steps (`.expand()`) are not auto-wired. Declare the flow operators and wire
-  `init >> mapped_step >> finish` yourself.
+  Flow operators declared before the steps are reused instead.
+- Mapped steps (`.expand()`) are not auto-wired.
 - Flow operators declared *after* an auto-wiring step clash with the auto-added task id;
-  declare them first, or pass `auto_flow=False` to the steps.
-- Finish waits for LaminDB steps only; wire other tasks upstream of it if the flow run
-  should cover them.
+  declare them first.
+- Finish waits for auto-wired steps only.
 
 ## Operators and decorators
 
@@ -118,7 +117,7 @@ Auto-wiring caveats:
 | `@task.lamindb_venv(...)` – like `@task.virtualenv`; the function runs as a step in the virtualenv | no |
 | `@task.lamindb_k8s(image=..., ...)` – like `@task.kubernetes`; the image needs lamindb and credentials | no |
 
-All step operators accept `auto_flow` and `track`. `track=False` runs the function as the
+All step operators accept `auto_flow` (default `False`) and `track`. `track=False` runs the function as the
 plain Airflow equivalent (`@task`, `@task.virtualenv`, `@task.kubernetes`): no step run, no
 flow wiring, and no lamindb needed; an `@ln.step()`-decorated callable is called unwrapped.
 The virtualenv and pod variants also accept

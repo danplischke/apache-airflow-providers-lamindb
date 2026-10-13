@@ -19,10 +19,34 @@ def noop(x=None):
     return x
 
 
-def test_steps_share_auto_created_flow_tasks() -> None:
+def test_steps_are_not_auto_wired_by_default() -> None:
     with DAG("d", schedule=None) as dag:
+        LaminDBStepOperator(task_id="a", python_callable=noop)
+        task.lamindb(noop, task_id="b")()
+        task.lamindb_venv(noop, task_id="c")()
+
+    assert set(dag.task_ids) == {"a", "b", "c"}
+
+
+def test_setup_teardown_context_wires_only_roots_and_leaves() -> None:
+    with DAG("d", schedule=None) as dag, LaminDBFlowInitOperator() >> LaminDBFlowFinishOperator() as scope:
         a = LaminDBStepOperator(task_id="a", python_callable=noop)
         b = LaminDBStepOperator(task_id="b", python_callable=noop)
+        c = LaminDBStepOperator(task_id="c", python_callable=noop)
+        plain = task(noop, task_id="plain")()
+        mapped = LaminDBStepOperator.partial(task_id="m", python_callable=noop).expand(op_args=[[1], [2]])
+        scope.add_task(mapped)  # Airflow only tracks unmapped tasks in the context
+        a >> plain >> b
+        a >> c >> mapped
+
+    assert dag.get_task(INIT).downstream_task_ids == {"a", FINISH}
+    assert dag.get_task(FINISH).upstream_task_ids == {"b", "m", INIT}
+
+
+def test_steps_share_auto_created_flow_tasks() -> None:
+    with DAG("d", schedule=None) as dag:
+        a = LaminDBStepOperator(task_id="a", python_callable=noop, auto_flow=True)
+        b = LaminDBStepOperator(task_id="b", python_callable=noop, auto_flow=True)
         a >> b
 
     assert set(dag.task_ids) == {"a", "b", INIT, FINISH}
@@ -39,25 +63,16 @@ def test_existing_flow_tasks_are_reused() -> None:
     with DAG("d", schedule=None) as dag:
         init = LaminDBFlowInitOperator(task_id="my_init")
         finish = LaminDBFlowFinishOperator(task_id="my_finish")
-        LaminDBStepOperator(task_id="a", python_callable=noop)
+        LaminDBStepOperator(task_id="a", python_callable=noop, auto_flow=True)
 
     assert set(dag.task_ids) == {"a", "my_init", "my_finish"}
     assert init.downstream_task_ids == {"a"}
     assert finish.upstream_task_ids == {"a"}
 
 
-def test_auto_flow_opt_out() -> None:
-    with DAG("d", schedule=None) as dag:
-        LaminDBStepOperator(task_id="a", python_callable=noop, auto_flow=False)
-        task.lamindb(noop, task_id="b", auto_flow=False)()
-        task.lamindb_venv(noop, task_id="c", auto_flow=False)()
-
-    assert set(dag.task_ids) == {"a", "b", "c"}
-
-
 def test_flow_tasks_land_in_root_task_group() -> None:
     with DAG("d", schedule=None) as dag, TaskGroup("group"):
-        LaminDBStepOperator(task_id="a", python_callable=noop)
+        LaminDBStepOperator(task_id="a", python_callable=noop, auto_flow=True)
 
     assert set(dag.task_ids) == {"group.a", INIT, FINISH}
 
@@ -67,6 +82,7 @@ def test_venv_step_creates_venv_flow_tasks_with_its_settings() -> None:
         task.lamindb_venv(
             noop,
             task_id="a",
+            auto_flow=True,
             requirements=["pandas"],
             python_version="3.11",
             system_site_packages=False,
@@ -85,8 +101,8 @@ def test_venv_step_creates_venv_flow_tasks_with_its_settings() -> None:
 
 def test_first_step_decides_flow_task_kind() -> None:
     with DAG("d", schedule=None) as dag:
-        LaminDBStepOperator(task_id="a", python_callable=noop)
-        task.lamindb_venv(noop, task_id="b")()
+        LaminDBStepOperator(task_id="a", python_callable=noop, auto_flow=True)
+        task.lamindb_venv(noop, task_id="b", auto_flow=True)()
 
     assert type(dag.get_task(INIT)) is LaminDBFlowInitOperator
     assert dag.get_task(INIT).downstream_task_ids == {"a", "b", FINISH}
@@ -94,15 +110,15 @@ def test_first_step_decides_flow_task_kind() -> None:
 
 def test_venv_flow_tasks_pin_worker_lamindb_by_default() -> None:
     with DAG("d", schedule=None) as dag:
-        task.lamindb_venv(noop, task_id="a")()
+        task.lamindb_venv(noop, task_id="a", auto_flow=True)()
 
     assert dag.get_task(INIT).requirements == [f"lamindb=={version('lamindb')}"]
 
 
 def test_mapped_steps_are_not_auto_wired() -> None:
     with DAG("d", schedule=None) as dag:
-        LaminDBStepOperator.partial(task_id="a", python_callable=noop).expand(op_args=[[1], [2]])
-        task.lamindb(noop, task_id="b").expand(x=[1, 2])
+        LaminDBStepOperator.partial(task_id="a", python_callable=noop, auto_flow=True).expand(op_args=[[1], [2]])
+        task.lamindb(noop, task_id="b", auto_flow=True).expand(x=[1, 2])
 
     assert set(dag.task_ids) == {"a", "b"}
     # unmapping on the worker must not add tasks either

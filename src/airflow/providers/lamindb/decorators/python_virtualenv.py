@@ -61,7 +61,7 @@ def lamindb_venv_task(
       lamindb yourself; defaults to the worker's version if installed, else latest.
     - ``auto_flow``: wire ``init >> step >> finish`` with the DAG's flow operators,
       adding virtualenv ones (same Python, index and lamindb settings) if the DAG
-      has none yet. Default ``True``; mapped steps are never auto-wired.
+      has none yet. Default ``False``; mapped steps are never auto-wired.
     - ``track``: record the call in LaminDB. Default ``True``; with ``False`` the
       function runs exactly as under ``@task.virtualenv``, and lamindb is not added
       to ``requirements``.

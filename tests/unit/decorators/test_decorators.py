@@ -48,7 +48,7 @@ def test_task_lamindb_keeps_xcom_args_and_dependencies() -> None:
         consume(produce())
 
     consume_op = test_dag().get_task("consume")
-    assert consume_op.upstream_task_ids == {"produce", "lamindb_flow_init"}
+    assert consume_op.upstream_task_ids == {"produce"}
     assert len(consume_op.op_args) == 1
 
 

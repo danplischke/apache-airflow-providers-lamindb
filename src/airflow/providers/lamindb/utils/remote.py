@@ -106,8 +106,8 @@ class RemoteLaminDBStepMixin:
         Defaults to the worker's instance if lamindb is set up there, else to
         lamindb's own default in the remote environment (``LAMIN_CURRENT_INSTANCE``).
     :param auto_flow: wire ``init >> step >> finish`` with the DAG's flow operators,
-        adding virtualenv ones if the DAG has none yet. The concrete operator does
-        the wiring once fully initialised. Ignored when ``track`` is ``False``.
+        adding virtualenv ones if the DAG has none yet. Default ``False``. The concrete
+        operator does the wiring once fully initialised. Ignored when ``track`` is ``False``.
     :param track: record the call in LaminDB. Pass ``False`` to ship the function
         unchanged, as the plain virtualenv/pod operator would.
     """
@@ -115,7 +115,7 @@ class RemoteLaminDBStepMixin:
     _lamindb_remote: dict[str, str | None] | None = None
 
     def __init__(
-        self, *, lamindb_instance: str | None = None, auto_flow: bool = True, track: bool = True, **kwargs: Any
+        self, *, lamindb_instance: str | None = None, auto_flow: bool = False, track: bool = True, **kwargs: Any
     ) -> None:
         super().__init__(**kwargs)
         self.lamindb_instance = lamindb_instance

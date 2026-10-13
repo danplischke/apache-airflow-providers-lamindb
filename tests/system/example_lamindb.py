@@ -40,20 +40,20 @@ with DAG("lamindb_example_ok") as dag_ok:
     init >> t_extract >> t_transform >> venv_step(load(t_transform.output)) >> finish
 
 
-# Flow init/finish are added and wired by the step (auto_flow=True).
-with DAG("lamindb_example_fail") as dag_fail:
+# Init/finish wrap the steps; Airflow wires them to the steps' roots and leaves.
+with DAG("lamindb_example_fail") as dag_fail, LaminDBFlowInitOperator() >> LaminDBFlowFinishOperator():
     LaminDBStepOperator(task_id="boom", python_callable=boom)
 
 
 # Everything LaminDB-related runs in virtualenvs: the worker needs no lamindb.
-# The auto-added flow tasks copy the first step's virtualenv settings.
+# auto_flow adds flow tasks that copy the first step's virtualenv settings.
 with DAG("lamindb_example_venv_only") as dag_venv_only:
 
-    @task.lamindb_venv(system_site_packages=True)
+    @task.lamindb_venv(system_site_packages=True, auto_flow=True)
     def venv_extract(count: int = 10) -> dict:
         return {"count": count}
 
-    @task.lamindb_venv(system_site_packages=True)
+    @task.lamindb_venv(system_site_packages=True, auto_flow=True)
     def venv_double(data: dict) -> dict:
         return {"count": data["count"] * 2}
 
