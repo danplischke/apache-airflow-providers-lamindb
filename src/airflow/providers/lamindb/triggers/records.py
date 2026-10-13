@@ -78,7 +78,7 @@ class LaminDBRecordEventTrigger(LaminDBDbWriteEventTrigger):
     """
     Fire an event for every record of a LaminDB registry that is created, updated or deleted.
 
-    Use it in an :class:`~airflow.sdk.AssetWatcher` to schedule DAGs on LaminDB changes. Each event
+    Use it in an [`AssetWatcher`][airflow.sdk.AssetWatcher] to schedule DAGs on LaminDB changes. Each event
     payload contains the ``event`` (``created``/``updated``/``deleted``), the current ``record``
     (``None`` for hard deletes), the ``previous`` values logged with the write, the ``changed_fields``
     of updates, ``changed_by`` and the underlying ``dbwrite`` log entry.
@@ -94,7 +94,7 @@ class LaminDBRecordEventTrigger(LaminDBDbWriteEventTrigger):
     :param branch: Name or id of the branch to watch; ``None`` reports raw inserts, updates and
         deletes on all branches.
     :param filter: Filter the record must match, built with
-        :class:`~airflow.providers.lamindb.utils.filters.F`, e.g.
+        [`F`][airflow.providers.lamindb.utils.filters.F], e.g.
         ``F(ArtifactField.KEY).startswith("raw/")``, or a LaminHub REST filter such as
         ``{"key": {"startswith": "raw/"}}``. It's evaluated against the current record; for hard
         deletes against the deleted row, which only supports direct fields.
@@ -103,9 +103,9 @@ class LaminDBRecordEventTrigger(LaminDBDbWriteEventTrigger):
 
     Records that hold trigger cursors (see ``cursor_store``) are never reported. They are
     recognized by the ``registry`` and ``reference_type`` of this trigger's own
-    :class:`~airflow.providers.lamindb.triggers.cursors.RecordCursorStore` (by default ``core.record``
-    and ``airflow_trigger_cursor``), so give triggers that store cursors in the registry they watch the
-    same settings.
+    [`RecordCursorStore`][airflow.providers.lamindb.triggers.cursors.RecordCursorStore] (by default
+    ``core.record`` and ``airflow_trigger_cursor``), so give triggers that store cursors in the registry
+    they watch the same settings.
     """
 
     def __init__(
@@ -325,8 +325,8 @@ class LaminDBArtifactEventTrigger(LaminDBRecordEventTrigger):
     """
     Fire an event for every LaminDB artifact that is created, updated or deleted.
 
-    A specialization of :class:`LaminDBRecordEventTrigger` for ``core.artifact``. By default, the
-    ``created`` event fires only once the artifact's upload to storage has completed
+    A specialization of [`LaminDBRecordEventTrigger`][] for ``core.artifact``. By default,
+    the ``created`` event fires only once the artifact's upload to storage has completed
     (``wait_for_upload``), so that downstream tasks can load it right away. Artifacts that LaminDB
     creates internally (run logs, environments) are ignored unless ``include_internal`` is set.
 
@@ -337,10 +337,10 @@ class LaminDBArtifactEventTrigger(LaminDBRecordEventTrigger):
     :param include_internal: Also report artifacts LaminDB creates internally.
     :param wait_for_upload: Report ``created`` only once the upload to storage has completed and
         skip updates of artifacts that are being uploaded.
-    :param events: See :class:`LaminDBRecordEventTrigger`.
-    :param branch: See :class:`LaminDBRecordEventTrigger`.
-    :param filter: Additional filter, see :class:`LaminDBRecordEventTrigger`.
-    :param changed_fields: See :class:`LaminDBRecordEventTrigger`.
+    :param events: See [`LaminDBRecordEventTrigger`][].
+    :param branch: See [`LaminDBRecordEventTrigger`][].
+    :param filter: Additional filter, see [`LaminDBRecordEventTrigger`][].
+    :param changed_fields: See [`LaminDBRecordEventTrigger`][].
     """
 
     def __init__(
@@ -480,11 +480,12 @@ class LaminDBRecordSensorTrigger(BaseTrigger):
     """
     Wait until records matching a filter exist in a LaminDB registry.
 
-    Used by :class:`~airflow.providers.lamindb.sensors.records.LaminDBRecordSensor` in deferrable mode.
+    Used by [`LaminDBRecordSensor`][airflow.providers.lamindb.sensors.records.LaminDBRecordSensor] in
+    deferrable mode.
     Yields ``{"status": "success", "records": [...]}`` or ``{"status": "error", "message": ...}``.
 
     :param registry: Registry to query, e.g. ``core.artifact``.
-    :param filter: Filter built with :class:`~airflow.providers.lamindb.utils.filters.F` or a
+    :param filter: Filter built with [`F`][airflow.providers.lamindb.utils.filters.F] or a
         LaminHub REST filter.
     :param branch: Only records on this branch (name or id); ``None`` for all branches.
     :param min_count: Number of matching records required.

@@ -10,7 +10,7 @@ from airflow.providers.lamindb.triggers.branches import (
 )
 from airflow.providers.lamindb.triggers.records import LaminDBArtifactEventTrigger, LaminDBRecordEventTrigger
 
-# [START howto_trigger_lamindb_artifact_events]
+# --8<-- [start:howto_trigger_lamindb_artifact_events]
 new_fastqs = Asset(
     "lamindb_new_fastqs",
     watchers=[
@@ -40,11 +40,11 @@ def example_lamindb_artifact_events():
     process_new_fastqs()
 
 
-# [END howto_trigger_lamindb_artifact_events]
+# --8<-- [end:howto_trigger_lamindb_artifact_events]
 
 example_lamindb_artifact_events()
 
-# [START howto_trigger_lamindb_record_events]
+# --8<-- [start:howto_trigger_lamindb_record_events]
 cell_type_changes = Asset(
     "lamindb_cell_type_changes",
     watchers=[
@@ -71,11 +71,11 @@ def example_lamindb_record_events():
     sync_cell_types()
 
 
-# [END howto_trigger_lamindb_record_events]
+# --8<-- [end:howto_trigger_lamindb_record_events]
 
 example_lamindb_record_events()
 
-# [START howto_trigger_lamindb_branch_events]
+# --8<-- [start:howto_trigger_lamindb_branch_events]
 review_requested = Asset(
     "lamindb_review_requested",
     watchers=[
@@ -120,7 +120,7 @@ def example_lamindb_branch_comments():
     notify()
 
 
-# [END howto_trigger_lamindb_branch_events]
+# --8<-- [end:howto_trigger_lamindb_branch_events]
 
 example_lamindb_branch_review()
 example_lamindb_branch_comments()

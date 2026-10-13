@@ -64,7 +64,7 @@ class CursorStore:
 
     @classmethod
     def coerce(cls, value: CursorStore | Mapping[str, Any] | None) -> CursorStore:
-        """Accept a store, its :meth:`serialize` form (as in serialized trigger kwargs) or None."""
+        """Accept a store, its ``serialize`` form (as in serialized trigger kwargs) or None."""
         if value is None:
             return AssetCursorStore()
         if isinstance(value, CursorStore):
@@ -90,7 +90,7 @@ class CursorStore:
 
 @dataclass(frozen=True, kw_only=True)
 class AssetCursorStore(CursorStore):
-    """Keep the cursor in the asset state store of the :class:`~airflow.sdk.AssetWatcher`'s assets.
+    """Keep the cursor in the asset state store of the [`AssetWatcher`][airflow.sdk.AssetWatcher]'s assets.
 
     The cursor lives in Airflow's metadata database next to the asset events. A trigger outside an
     ``AssetWatcher`` has no asset state store and keeps its cursor in memory only.
@@ -127,7 +127,7 @@ class RecordCursorStore(CursorStore):
     :param name: Name of the cursor record; ``None`` for the trigger's ``state_key``. A fixed name
         must be unique per trigger, or triggers overwrite each other's cursors.
     :param description: Description of the cursor record; ``None`` to describe the trigger.
-    :param commit_delay: See :class:`CursorStore`.
+    :param commit_delay: See [`CursorStore`][].
     """
 
     store_type: ClassVar[str] = "record"
@@ -215,7 +215,7 @@ class _AssetCursor:
 
 
 class _RecordCursor:
-    """The cursor in a record of the watched instance, as configured by :class:`RecordCursorStore`."""
+    """The cursor in a record of the watched instance, as configured by [`RecordCursorStore`][]."""
 
     is_persistent = True
 

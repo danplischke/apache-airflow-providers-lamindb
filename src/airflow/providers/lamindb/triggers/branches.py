@@ -244,8 +244,9 @@ class LaminDBBranchStatusSensorTrigger(BaseTrigger):
     """
     Wait until a LaminDB branch reaches a target status.
 
-    Used by :class:`~airflow.providers.lamindb.sensors.branches.LaminDBBranchStatusSensor` in deferrable
-    mode. Yields ``{"status": "success" | "failure" | "error", "branch": ..., "message": ...}``.
+    Used in deferrable mode by
+    [`LaminDBBranchStatusSensor`][airflow.providers.lamindb.sensors.branches.LaminDBBranchStatusSensor].
+    Yields ``{"status": "success" | "failure" | "error", "branch": ..., "message": ...}``.
 
     :param branch: Branch name or id.
     :param target_status: Statuses that end the wait successfully.

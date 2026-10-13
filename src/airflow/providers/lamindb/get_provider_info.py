@@ -14,11 +14,6 @@ def get_provider_info() -> dict[str, object]:
             {
                 "integration-name": "LaminDB",
                 "external-doc-url": "https://docs.lamin.ai/",
-                "how-to-guide": [
-                    "/docs/lamindb-airflow/lineage.rst",
-                    "/docs/lamindb-airflow/triggers.rst",
-                    "/docs/lamindb-airflow/sensors.rst",
-                ],
                 "tags": ["service", "software"],
             }
         ],

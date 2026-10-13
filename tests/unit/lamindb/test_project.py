@@ -24,15 +24,15 @@ QA_WORKFLOW = yaml.safe_load((ROOT / ".github" / "workflows" / "qa.yml").read_te
 READ_BY_TESTS = (
     "provider.yaml",
     ".github/workflows/qa.yml",
-    "docs/changelog.rst",
+    "docs/changelog.md",
     "tests/system/lamindb/example_lamindb_lineage.py",
 )
 
 
 def test_newest_changelog_section_is_the_version() -> None:
-    changelog = (ROOT / "docs" / "changelog.rst").read_text()
-    headings = re.findall(r"^(\S.*?)\s*\n\.{3,}\s*$", changelog, flags=re.MULTILINE)
-    assert headings, "docs/changelog.rst has no version section"
+    changelog = (ROOT / "docs" / "changelog.md").read_text()
+    headings = re.findall(r"^## (.+?)\s*$", changelog, flags=re.MULTILINE)
+    assert headings, "docs/changelog.md has no version section"
     assert headings[0] == __version__
 
 

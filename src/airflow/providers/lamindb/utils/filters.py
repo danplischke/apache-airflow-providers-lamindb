@@ -1,11 +1,13 @@
 """
 Build, validate and evaluate LaminHub REST filters.
 
-Filters select records by their fields. Build them with :class:`F` and the field enums, or write the
-JSON form of the `LaminHub REST API <https://docs.lamin.ai/rest>`__ directly. These are equivalent::
+Filters select records by their fields. Build them with [`F`][] and the field enums, or write the
+JSON form of the [LaminHub REST API](https://docs.lamin.ai/rest) directly. These are equivalent:
 
-    F(ArtifactField.KEY).startswith("raw/") & (F(ArtifactField.SIZE) > 1_000_000)
-    {"and": [{"key": {"startswith": "raw/"}}, {"size": {"gt": 1000000}}]}
+```python
+F(ArtifactField.KEY).startswith("raw/") & (F(ArtifactField.SIZE) > 1_000_000)
+{"and": [{"key": {"startswith": "raw/"}}, {"size": {"gt": 1000000}}]}
+```
 """
 
 from __future__ import annotations
@@ -207,13 +209,15 @@ class F:
     """
     A field to filter on, e.g. ``F(ArtifactField.KEY)``, ``F("key")`` or ``F("created_by.handle")``.
 
-    Compare it with a value to get a :class:`Condition`, using Python's comparison operators (``==``,
+    Compare it with a value to get a [`Condition`][], using Python's comparison operators (``==``,
     ``!=``, ``>``, ``>=``, ``<``, ``<=``) or the methods of this class. Combine conditions with ``&``
     (and) and ``|`` (or); as ``&`` and ``|`` bind more tightly than comparisons, wrap comparisons in
-    parentheses::
+    parentheses:
 
-        (F(ArtifactField.SUFFIX) == ".parquet") & (F(ArtifactField.SIZE) > 1_000_000)
-        F(ArtifactField.KEY).startswith("raw/") | F(ArtifactField.KIND).is_in([ArtifactKind.DATASET])
+    ```python
+    (F(ArtifactField.SUFFIX) == ".parquet") & (F(ArtifactField.SIZE) > 1_000_000)
+    F(ArtifactField.KEY).startswith("raw/") | F(ArtifactField.KIND).is_in([ArtifactKind.DATASET])
+    ```
 
     Pass several fields to follow relations: ``F(ArtifactField.CREATED_BY, UserField.HANDLE)`` is the
     path ``created_by.handle``. Index JSON fields with keys: ``F(RunField.PARAMS)["learning_rate"]``.
@@ -253,7 +257,7 @@ class F:
         return F(f'{self._path}["{key}"]')
 
     def op(self, operator: FilterOperator | str, value: Any) -> Condition:
-        """Compare with any :class:`FilterOperator`, e.g. ``F("key").op(FilterOperator.EQ, "a.csv")``."""
+        """Compare with any [`FilterOperator`][], e.g. ``F("key").op(FilterOperator.EQ, "a.csv")``."""
         return Condition(self, operator, value)
 
     def eq(self, value: Any) -> Condition:
@@ -358,7 +362,7 @@ def _as_list(values: Iterable[Any]) -> Any:
 
 
 class Count:
-    """The number of related records of a relation, see :meth:`F.count`."""
+    """The number of related records of a relation, see [`F.count`][]."""
 
     __slots__ = ("_field",)
 
@@ -417,10 +421,10 @@ class Count:
 
 class FilterExpression:
     """
-    Base class of filters built in Python: :class:`Condition`, :class:`And` and :class:`Or`.
+    Base class of filters built in Python: [`Condition`][], [`And`][] and [`Or`][].
 
     Combine filters with ``&`` (and) and ``|`` (or); the other operand may also be a LaminHub REST
-    filter dict. :meth:`to_dict` returns the JSON form that the LaminHub REST API expects.
+    filter dict. [`to_dict`][] returns the JSON form that the LaminHub REST API expects.
     """
 
     __slots__ = ()
@@ -490,7 +494,7 @@ class FilterExpression:
 
 
 FilterLike = Mapping[str, Any] | FilterExpression
-"""A filter built with :class:`F` or a LaminHub REST filter dict."""
+"""A filter built with [`F`][] or a LaminHub REST filter dict."""
 
 
 def _flatten(group: type[_Group], filter: FilterLike) -> tuple[FilterLike, ...]:
@@ -515,10 +519,10 @@ class Condition(FilterExpression):
     """
     A condition on a field, e.g. ``Condition(ArtifactField.KEY, FilterOperator.STARTSWITH, "raw/")``.
 
-    Comparing an :class:`F` creates conditions too, e.g. ``F(ArtifactField.KEY).startswith("raw/")``.
+    Comparing an [`F`][] creates conditions too, e.g. ``F(ArtifactField.KEY).startswith("raw/")``.
 
-    :param field: The field, as an :class:`F`, a field enum member or a field name.
-    :param operator: A :class:`FilterOperator` or its name, e.g. ``"startswith"``.
+    :param field: The field, as an [`F`][], a field enum member or a field name.
+    :param operator: A [`FilterOperator`][] or its name, e.g. ``"startswith"``.
     :param value: The value to compare with; enum members, dates, tuples and sets are converted to
         their JSON form.
     """
@@ -580,7 +584,7 @@ def normalize_filter(filter: FilterLike | None) -> dict[str, Any] | None:
     """
     Validate a filter and return its JSON form, or ``None`` for no filter.
 
-    Accepts filters built with :class:`F` and LaminHub REST filter dicts, and raises ``ValueError`` or
+    Accepts filters built with [`F`][] and LaminHub REST filter dicts, and raises ``ValueError`` or
     ``TypeError`` for invalid filters, such as unknown operators.
     """
     if filter is None or (isinstance(filter, Mapping) and not filter):
@@ -657,7 +661,7 @@ def matches_filter(node: FilterLike | None, row: Mapping[str, Any]) -> bool:
     """
     Evaluate a LaminHub REST filter against a plain record dict.
 
-    Only direct fields are supported (see :func:`is_local_filter`). Foreign keys can be
+    Only direct fields are supported (see [`is_local_filter`][]). Foreign keys can be
     referenced either by relation name (``run``) or by column (``run_id``). This is used for
     records that no longer exist on LaminHub (hard deletes), where the filter can't be
     evaluated server-side.

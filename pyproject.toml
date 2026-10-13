@@ -59,10 +59,16 @@ dev = [
     "respx>=0.22",
     "ruff>=0.11",
 ]
+docs = [
+    "mkdocstrings-python>=2.0",
+    # formats the signatures in the API reference
+    "ruff>=0.11",
+    "zensical>=0.0.69; python_version >= '3.11'",
+]
 
 [project.urls]
-"Documentation" = "https://github.com/danplischke/apache-airflow-providers-lamindb/tree/main/docs"
-"Changelog" = "https://github.com/danplischke/apache-airflow-providers-lamindb/blob/main/docs/changelog.rst"
+"Documentation" = "https://danplischke.github.io/apache-airflow-providers-lamindb/"
+"Changelog" = "https://danplischke.github.io/apache-airflow-providers-lamindb/changelog/"
 "Source Code" = "https://github.com/danplischke/apache-airflow-providers-lamindb"
 "Bug Tracker" = "https://github.com/danplischke/apache-airflow-providers-lamindb/issues"
 

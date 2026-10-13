@@ -54,7 +54,7 @@ jobs:
           {
             echo "lint=$(match "$src|^(tests|dev)/.*\.py$")"
             echo "typecheck=$(match "$src")"
-            echo "unit=$(match "$src|^tests/|^docs/changelog\.rst$")"
+            echo "unit=$(match "$src|^tests/|^docs/changelog\.md$")"
             echo "smoke=$(match "$src|^dev/smoke\.py$")"
             echo "integration=$(match "$src|^tests/(integration/|conftest\.py$)")"
             echo "system=$(match "$src|^tests/(system/|conftest\.py$)")"

@@ -22,7 +22,7 @@ from airflow.providers.lamindb.utils.filters import (
     params={"branch": Param("my-branch", type="string"), "key": Param("raw/sample1.fastq.gz", type="string")},
 )
 def example_lamindb_sensors():
-    # [START howto_sensor_lamindb_branch_status]
+    # --8<-- [start:howto_sensor_lamindb_branch_status]
     wait_for_merge = LaminDBBranchStatusSensor(
         task_id="wait_for_merge",
         branch="{{ params.branch }}",
@@ -31,18 +31,18 @@ def example_lamindb_sensors():
         deferrable=True,
         poke_interval=60,
     )
-    # [END howto_sensor_lamindb_branch_status]
+    # --8<-- [end:howto_sensor_lamindb_branch_status]
 
-    # [START howto_sensor_lamindb_artifact]
+    # --8<-- [start:howto_sensor_lamindb_artifact]
     wait_for_artifact = LaminDBArtifactSensor(
         task_id="wait_for_artifact",
         key="{{ params.key }}",
         deferrable=True,
         poke_interval=60,
     )
-    # [END howto_sensor_lamindb_artifact]
+    # --8<-- [end:howto_sensor_lamindb_artifact]
 
-    # [START howto_sensor_lamindb_record]
+    # --8<-- [start:howto_sensor_lamindb_record]
     wait_for_run = LaminDBRecordSensor(
         task_id="wait_for_run",
         registry=LaminDBRegistry.RUN,
@@ -52,9 +52,9 @@ def example_lamindb_sensors():
         deferrable=True,
         poke_interval=60,
     )
-    # [END howto_sensor_lamindb_record]
+    # --8<-- [end:howto_sensor_lamindb_record]
 
-    # [START howto_hook_lamindb]
+    # --8<-- [start:howto_hook_lamindb]
     @task
     def summarize(branch, artifacts, runs):
         hook = LaminDBHook()
@@ -64,7 +64,7 @@ def example_lamindb_sensors():
         print(f"Branch {branch['name']} is {branch['status']}; artifact {artifacts[0]['uid']} is ready")
         print(f"Run {runs[0]['uid']} completed; recent runs: {[run['uid'] for run in recent_runs]}")
 
-    # [END howto_hook_lamindb]
+    # --8<-- [end:howto_hook_lamindb]
 
     summarize(wait_for_merge.output, wait_for_artifact.output, wait_for_run.output)
 

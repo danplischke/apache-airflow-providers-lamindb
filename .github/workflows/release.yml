@@ -32,8 +32,8 @@ jobs:
           ver="${TAG#v}"
           pyproject=$(sed -n 's/^version = "\(.*\)"$/\1/p' pyproject.toml)
           provider=$(awk '/^versions:/ { getline; sub(/^ *- */, ""); print; exit }' provider.yaml)
-          changelog=$(awk 'prev && /^\.\.\.+$/ { print prev; exit } { prev = $0 }' docs/changelog.rst)
-          echo "tag: $ver, pyproject.toml: $pyproject, provider.yaml: $provider, docs/changelog.rst: $changelog"
+          changelog=$(sed -n 's/^## //p' docs/changelog.md | head -1)
+          echo "tag: $ver, pyproject.toml: $pyproject, provider.yaml: $provider, docs/changelog.md: $changelog"
           [ "$ver" = "$pyproject" ] && [ "$ver" = "$provider" ] && [ "$ver" = "$changelog" ]
 
   build:

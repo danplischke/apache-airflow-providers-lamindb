@@ -8,10 +8,10 @@ airflow_e2e_home := justfile_directory() / ".cache/airflow-e2e"
 @_:
     just --list
 
-# Install the package with the dev group, and the pre-commit hooks
+# Install the package with the dev and docs groups, and the pre-commit hooks
 [group('development')]
 dev:
-    uv sync --group dev
+    uv sync --group dev --group docs
     uvx pre-commit install
 
 [group('development')]
@@ -99,7 +99,7 @@ test-lowest *args:
     set -eu
     copy="$PWD/.cache/lowest"
     mkdir -p "$copy"
-    rsync -a --delete --exclude .git --exclude .venv --exclude .cache --exclude .lamin ./ "$copy/"
+    rsync -a --delete --exclude .git --exclude .venv --exclude .cache --exclude .lamin --exclude site ./ "$copy/"
     cd "$copy"
     uv sync --quiet --resolution lowest-direct --group dev --python 3.10
     uv run --no-sync pytest tests/unit -q {{ args }}
@@ -107,9 +107,19 @@ test-lowest *args:
 [group('test')]
 test-all: test test-integration test-system
 
-# Lint, unit tests, package build and smoke test, as the CI does
+# Lint, unit tests, docs, package build and smoke test, as the CI does
 [group('test')]
-check: lint test build smoke
+check: lint test docs-build build smoke
+
+# Serve the docs with live reload
+[group('docs')]
+docs:
+    uv run --group docs zensical serve
+
+# Build the docs into site/ with the same strict settings as the CI
+[group('docs')]
+docs-build:
+    uv run --group docs zensical build --strict --clean
 
 # Build the sdist and wheel into dist/ and check their metadata
 [group('package')]
@@ -136,7 +146,7 @@ upgrade:
 versions:
     @git tag -l "v*" --sort=-v:refname | head -10
 
-# Set <ver> in pyproject.toml, __init__.py and provider.yaml once it heads docs/changelog.rst, e.g. `just bump 0.2.0`
+# Set <ver> in pyproject.toml, __init__.py and provider.yaml once it heads docs/changelog.md, e.g. `just bump 0.2.0`
 [group('package')]
 bump ver:
     #!/usr/bin/env python3
@@ -148,9 +158,9 @@ bump ver:
         raise SystemExit(f"not a version: {ver}")
 
     # check before writing, so a failed bump leaves every file untouched
-    headings = re.findall(r"^(\S.*?)\s*\n\.{3,}\s*$", Path("docs/changelog.rst").read_text(), flags=re.M)
+    headings = re.findall(r"^## (.+?)\s*$", Path("docs/changelog.md").read_text(), flags=re.M)
     if not headings or headings[0] != ver:
-        raise SystemExit(f"add a '{ver}' section at the top of docs/changelog.rst, then run `just bump {ver}` again")
+        raise SystemExit(f"add '## {ver}' as the first section of docs/changelog.md, then run `just bump {ver}` again")
 
     def sub(path, pattern, repl):
         file = Path(path)
@@ -182,4 +192,4 @@ release ver:
 
 [group('maintenance')]
 clean:
-    rm -rf dist .cache .pytest_cache .ruff_cache .mypy_cache .coverage coverage.xml
+    rm -rf dist site .cache .pytest_cache .ruff_cache .mypy_cache .coverage coverage.xml

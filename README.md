@@ -38,7 +38,8 @@ export AIRFLOW_CONN_LAMINDB_DEFAULT='{
 ```
 
 Every operator, decorator, trigger and sensor accepts `lamindb_conn_id` to use another connection,
-for example a different API key for one task. See [docs/connections/lamindb.rst](docs/connections/lamindb.rst).
+for example a different API key for one task. See
+[Connection types](https://danplischke.github.io/apache-airflow-providers-lamindb/connections/lamindb/).
 
 ## Lineage: DAG runs as flows, tasks as steps
 
@@ -97,7 +98,7 @@ another connection, for example to run under another API key:
 def curate(data: dict) -> None: ...
 ```
 
-See [docs/lineage.rst](docs/lineage.rst) for auto-wiring, all settings, `track=False`, how
+See [Lineage](https://danplischke.github.io/apache-airflow-providers-lamindb/lineage/) for auto-wiring, all settings, `track=False`, how
 the steps are recorded and the limitations.
 
 ## Event-driven scheduling
@@ -195,13 +196,16 @@ LaminDBRecordSensor(
 
 ## Documentation
 
-- [Connection](docs/connections/lamindb.rst)
-- [Lineage](docs/lineage.rst)
-- [Triggers (event-driven scheduling)](docs/triggers.rst)
-- [Sensors and hook](docs/sensors.rst)
-- [Filters](docs/filters.rst)
+The documentation is at <https://danplischke.github.io/apache-airflow-providers-lamindb/>:
+
+- [Connection types](https://danplischke.github.io/apache-airflow-providers-lamindb/connections/lamindb/)
+- [Lineage](https://danplischke.github.io/apache-airflow-providers-lamindb/lineage/)
+- [Triggers (event-driven scheduling)](https://danplischke.github.io/apache-airflow-providers-lamindb/triggers/)
+- [Sensors and hook](https://danplischke.github.io/apache-airflow-providers-lamindb/sensors/)
+- [Filters](https://danplischke.github.io/apache-airflow-providers-lamindb/filters/)
+- [API reference](https://danplischke.github.io/apache-airflow-providers-lamindb/api/)
 - [Example DAGs](tests/system/lamindb)
-- [Changelog](docs/changelog.rst)
+- [Changelog](https://danplischke.github.io/apache-airflow-providers-lamindb/changelog/)
 
 ## Development
 
@@ -209,8 +213,8 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). In short, with [uv](https://docs.astral.
 [just](https://just.systems/):
 
 ```bash
-just dev     # install the dev dependencies and the pre-commit hooks
-just check   # lint, type check, unit tests, package build and smoke test, as the CI does
+just dev     # install the dev and docs dependencies and the pre-commit hooks
+just check   # lint, type check, unit tests, docs, package build and smoke test, as the CI does
 ```
 
 ## License

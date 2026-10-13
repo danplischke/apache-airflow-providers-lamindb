@@ -523,8 +523,8 @@ class LaminDBHook(BaseHook):
         Query records of a registry.
 
         :param registry: Registry name such as ``core.artifact``, ``core.run`` or ``bionty.gene``,
-            or a :class:`~airflow.providers.lamindb.utils.enums.LaminDBRegistry` member.
-        :param filter: Filter built with :class:`~airflow.providers.lamindb.utils.filters.F`, e.g.
+            or a [`LaminDBRegistry`][airflow.providers.lamindb.utils.enums.LaminDBRegistry] member.
+        :param filter: Filter built with [`F`][airflow.providers.lamindb.utils.filters.F], e.g.
             ``F(ArtifactField.SUFFIX) == ".csv"``, or a LaminHub REST filter such as
             ``{"suffix": {"eq": ".csv"}}``, see https://docs.lamin.ai/rest
         :param select: Fields (and relations such as ``created_by(handle)``) to return.
@@ -643,7 +643,7 @@ class LaminDBHook(BaseHook):
     # -- asynchronous API --------------------------------------------------------------------------
 
     async def aget_instance(self) -> LaminDBInstance:
-        """Async version of :meth:`get_instance`."""
+        """Async version of [`get_instance`][]."""
         if self._instance is None:
             config = await self._aget_config()
             settings = await self._asend("GET", self._settings_url(config))
@@ -651,14 +651,14 @@ class LaminDBHook(BaseHook):
         return self._instance
 
     async def aget_schema(self) -> dict[str, Any]:
-        """Async version of :meth:`get_schema`."""
+        """Async version of [`get_schema`][]."""
         if self._schema is None:
             instance = await self.aget_instance()
             self._schema = await self._asend("GET", f"{instance.api_url}/instances/{instance.id}/schema")
         return self._schema
 
     async def aget_registry(self, registry: str | Registry) -> Registry:
-        """Async version of :meth:`get_registry`."""
+        """Async version of [`get_registry`][]."""
         if isinstance(registry, Registry):
             return registry
         if registry.lower().startswith("hubmodule."):
@@ -678,7 +678,7 @@ class LaminDBHook(BaseHook):
         search: str | None = None,
         branch_ids: Sequence[int] | None = None,
     ) -> list[dict[str, Any]]:
-        """Async version of :meth:`query_records`."""
+        """Async version of [`query_records`][]."""
         reg = await self.aget_registry(registry)
         instance = await self.aget_instance()
         results: list[dict[str, Any]] = []
@@ -705,7 +705,7 @@ class LaminDBHook(BaseHook):
     async def aget_records_by_ids(
         self, registry: str | Registry, ids: Iterable[int], filter: FilterLike | None = None
     ) -> dict[int, dict[str, Any]]:
-        """Async version of :meth:`get_records_by_ids`."""
+        """Async version of [`get_records_by_ids`][]."""
         records: dict[int, dict[str, Any]] = {}
         for chunk in chunk_ids(ids):
             combined = combine_filters({"id": {"in": chunk}}, filter)
@@ -721,7 +721,7 @@ class LaminDBHook(BaseHook):
         limit: int = MAX_PAGE_SIZE,
         descending: bool = False,
     ) -> list[dict[str, Any]]:
-        """Async version of :meth:`query_dbwrites`."""
+        """Async version of [`query_dbwrites`][]."""
         return await self.aquery_records(
             DBWRITE_REGISTRY,
             self._dbwrite_filter(filter, after_id),
@@ -730,23 +730,23 @@ class LaminDBHook(BaseHook):
         )
 
     async def aget_latest_dbwrite_id(self) -> int:
-        """Async version of :meth:`get_latest_dbwrite_id`."""
+        """Async version of [`get_latest_dbwrite_id`][]."""
         rows = await self.aquery_dbwrites(limit=1, descending=True)
         return int(rows[0]["id"]) if rows else 0
 
     async def aget_branch(self, branch: str | int) -> dict[str, Any] | None:
-        """Async version of :meth:`get_branch`."""
+        """Async version of [`get_branch`][]."""
         rows = await self.aquery_records("core.branch", self._branch_filter(branch), limit=1)
         return rows[0] if rows else None
 
     async def aget_users(self, ids: Iterable[int]) -> dict[int, dict[str, Any]]:
-        """Async version of :meth:`get_users`."""
+        """Async version of [`get_users`][]."""
         return await self.aget_records_by_ids("core.user", ids)
 
     async def ainsert_records(
         self, registry: str | Registry, records: Sequence[Mapping[str, Any]]
     ) -> list[dict[str, Any]]:
-        """Async version of :meth:`insert_records`."""
+        """Async version of [`insert_records`][]."""
         reg = await self.aget_registry(registry)
         url = _registry_url(await self.aget_instance(), reg)
         return _written_rows(await self._asend("PUT", url, json=list(records), idempotent=False), reg)
@@ -754,7 +754,7 @@ class LaminDBHook(BaseHook):
     async def aupdate_record(
         self, registry: str | Registry, uid: str, values: Mapping[str, Any]
     ) -> dict[str, Any] | None:
-        """Async version of :meth:`update_record`."""
+        """Async version of [`update_record`][]."""
         reg = await self.aget_registry(registry)
         url = f"{_registry_url(await self.aget_instance(), reg)}/{uid}"
         rows = _written_rows(await self._asend("PATCH", url, json=dict(values)), reg)
