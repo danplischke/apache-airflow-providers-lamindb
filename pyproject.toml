@@ -50,8 +50,8 @@ dependencies = [
 [dependency-groups]
 dev = [
     "apache-airflow-providers-lamindb[cncf.kubernetes]",
-    # integration and system tests run lamindb against a throwaway instance
-    "lamindb>=2.10",
+    # integration and system tests run lamindb against a throwaway instance; 2.11 is the supported floor
+    "lamindb>=2.11",
     "mypy>=1.15",
     "pytest>=8.3",
     "pytest-asyncio>=0.25",
