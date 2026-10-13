@@ -162,7 +162,7 @@ upgrade:
 versions:
     @git tag -l "v*" --sort=-v:refname | head -10
 
-# Set <ver> in pyproject.toml, __init__.py and provider.yaml once it heads docs/changelog.md, e.g. `just bump 0.2.0`
+# Add <ver> to provider.yaml once it heads docs/changelog.md, e.g. `just bump 0.2.0`; the package version comes from the tag
 [group('package')]
 bump ver:
     #!/usr/bin/env python3
@@ -173,22 +173,18 @@ bump ver:
     if not re.fullmatch(r"\d+\.\d+\.\d+((a|b|rc)\d+)?", ver):
         raise SystemExit(f"not a version: {ver}")
 
-    # check before writing, so a failed bump leaves every file untouched
+    # check before writing, so a failed bump leaves provider.yaml untouched
     headings = re.findall(r"^## (.+?)\s*$", Path("docs/changelog.md").read_text(), flags=re.M)
     if not headings or headings[0] != ver:
         raise SystemExit(f"add '## {ver}' as the first section of docs/changelog.md, then run `just bump {ver}` again")
 
-    def sub(path, pattern, repl):
-        file = Path(path)
-        text, n = re.subn(pattern, repl, file.read_text(), count=1, flags=re.M)
+    provider = Path("provider.yaml")
+    text = provider.read_text()
+    if not re.search(rf"^versions:\n  - {re.escape(ver)}$", text, flags=re.M):
+        text, n = re.subn(r"^versions:\n", f"versions:\n  - {ver}\n", text, count=1, flags=re.M)
         if n != 1:
-            raise SystemExit(f"{path}: no match for {pattern}")
-        file.write_text(text)
-
-    sub("pyproject.toml", r'^version = ".*"$', f'version = "{ver}"')
-    sub("src/airflow/providers/lamindb/__init__.py", r'^__version__ = ".*"$', f'__version__ = "{ver}"')
-    if not re.search(rf"^versions:\n  - {re.escape(ver)}$", Path("provider.yaml").read_text(), flags=re.M):
-        sub("provider.yaml", r"^versions:\n", f"versions:\n  - {ver}\n")
+            raise SystemExit("provider.yaml has no versions: list")
+        provider.write_text(text)
     print(f"at {ver}; merge to main, then run `just release {ver}`")
 
 # Tag and push v<ver> from a clean main; the release workflow builds and publishes it

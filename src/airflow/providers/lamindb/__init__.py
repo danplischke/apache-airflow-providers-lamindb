@@ -5,6 +5,7 @@ Maps DAG runs to LaminDB flows and tasks to steps, and schedules DAGs on LaminHu
 
 from __future__ import annotations
 
+import importlib.metadata
 from typing import Any
 
 import packaging.version
@@ -17,7 +18,10 @@ __all__ = [
     "__version__",
 ]
 
-__version__ = "0.1.0"
+try:
+    __version__ = importlib.metadata.version("lamindb-airflow")
+except importlib.metadata.PackageNotFoundError:  # imported from a source tree that is not installed
+    __version__ = "0.0.0"
 
 if packaging.version.parse(packaging.version.parse(airflow_version).base_version) < packaging.version.parse(
     "3.3.0"

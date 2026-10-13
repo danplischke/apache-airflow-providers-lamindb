@@ -11,8 +11,6 @@ import yaml
 from packaging.requirements import Requirement
 from packaging.version import Version
 
-from airflow.providers.lamindb import __version__
-
 if sys.version_info >= (3, 11):
     import tomllib
 else:
@@ -31,11 +29,12 @@ READ_BY_TESTS = (
 )
 
 
-def test_newest_changelog_section_is_the_version() -> None:
+def test_newest_changelog_section_is_the_provider_version() -> None:
     changelog = (ROOT / "docs" / "changelog.md").read_text()
     headings = re.findall(r"^## (.+?)\s*$", changelog, flags=re.MULTILINE)
     assert headings, "docs/changelog.md has no version section"
-    assert headings[0] == __version__
+    provider_yaml = yaml.safe_load((ROOT / "provider.yaml").read_text())
+    assert headings[0] == provider_yaml["versions"][0]
 
 
 def test_compat_job_covers_the_airflow_floor() -> None:
@@ -49,6 +48,6 @@ def test_compat_job_covers_the_airflow_floor() -> None:
 
 @pytest.mark.parametrize("path", READ_BY_TESTS)
 def test_sdist_ships_the_files_the_tests_read(path: str) -> None:
-    included = PYPROJECT["tool"]["flit"]["sdist"]["include"]
+    included = PYPROJECT["tool"]["hatch"]["build"]["targets"]["sdist"]["only-include"]
     assert (ROOT / path).exists()
     assert any(PurePosixPath(path).is_relative_to(entry) for entry in included)

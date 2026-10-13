@@ -25,22 +25,24 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 — https://github.com/actions/checkout/releases/tag/v7.0.1
 
-      - name: Compare the tag with pyproject.toml, provider.yaml and the changelog
+      - name: Compare the tag with provider.yaml and the changelog
         env:
           TAG: ${{ github.ref_name }}
         run: |
           ver="${TAG#v}"
-          pyproject=$(sed -n 's/^version = "\(.*\)"$/\1/p' pyproject.toml)
           provider=$(awk '/^versions:/ { getline; sub(/^ *- */, ""); print; exit }' provider.yaml)
           changelog=$(sed -n 's/^## //p' docs/changelog.md | head -1)
-          echo "tag: $ver, pyproject.toml: $pyproject, provider.yaml: $provider, docs/changelog.md: $changelog"
-          [ "$ver" = "$pyproject" ] && [ "$ver" = "$provider" ] && [ "$ver" = "$changelog" ]
+          echo "tag: $ver, provider.yaml: $provider, docs/changelog.md: $changelog"
+          [ "$ver" = "$provider" ] && [ "$ver" = "$changelog" ]
 
   build:
     name: Build Package
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 — https://github.com/actions/checkout/releases/tag/v7.0.1
+        with:
+          # hatch-vcs derives the version from the tags
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0 — https://github.com/actions/setup-python/releases/tag/v7.0.0

@@ -62,8 +62,9 @@ include sections of the example DAGs marked with `# --8<-- [start:name]` and `# 
 ## Releasing
 
 1. Add a `## <version>` section at the top of `docs/changelog.md`.
-2. `just bump <version>` sets it in `pyproject.toml`, `__init__.py` and `provider.yaml`.
+2. `just bump <version>` adds it to the `versions` in `provider.yaml`.
 3. Merge to `main`, then `just release <version>` tags `v<version>` and pushes the tag.
 
-The release workflow runs the QA workflow, checks the tag against those files, then publishes to PyPI
-and creates the GitHub release.
+The package version comes from the git tag through hatch-vcs; between releases it is a `.dev`
+version. The release workflow runs the QA workflow, checks the tag against `provider.yaml` and the
+changelog, then publishes to PyPI and creates the GitHub release.

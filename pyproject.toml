@@ -1,10 +1,10 @@
 [build-system]
-requires = ["flit_core>=3.12,<5"]
-build-backend = "flit_core.buildapi"
+requires = ["hatchling>=1.30", "hatch-vcs>=0.5"]
+build-backend = "hatchling.build"
 
 [project]
 name = "lamindb-airflow"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Apache Airflow provider for LaminDB: track DAG runs as flows and tasks as steps, and trigger DAGs on LaminHub events."
 readme = "README.md"
 license = "MIT"
@@ -75,20 +75,27 @@ docs = [
 [project.entry-points."apache_airflow_provider"]
 provider_info = "airflow.providers.lamindb.get_provider_info:get_provider_info"
 
-[tool.flit.module]
-name = "airflow.providers.lamindb"
+[tool.hatch.version]
+source = "vcs"
+fallback-version = "0.0.0"
 
-# Explicit sdist contents so the build does not rely on VCS information
-[tool.flit.sdist]
-include = [
+[tool.hatch.build.targets.wheel]
+only-include = ["src/airflow/providers/lamindb"]
+sources = ["src"]
+
+[tool.hatch.build.targets.sdist]
+only-include = [
     ".github/workflows/qa.yml",
-    "dev/dags/",
-    "docs/",
+    "dev/dags",
+    "docs",
     "provider.yaml",
-    "src/airflow/__init__.py",
-    "src/airflow/providers/__init__.py",
-    "tests/",
+    "src",
+    "tests",
 ]
+
+# rebuild the editable install when a commit or tag changes the version
+[tool.uv]
+cache-keys = [{ file = "pyproject.toml" }, { git = { commit = true, tags = true } }]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
