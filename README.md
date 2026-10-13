@@ -205,29 +205,12 @@ LaminDBRecordSensor(
 
 ## Development
 
-The layout follows the provider packages in the `apache/airflow` repository (`provider.yaml`,
-`get_provider_info.py`, `tests/unit`, `tests/system`, `docs`). Keep `provider.yaml` and
-`get_provider_info.py` in sync; a unit test checks that they match.
+See [CONTRIBUTING.md](CONTRIBUTING.md). In short, with [uv](https://docs.astral.sh/uv/) and
+[just](https://just.systems/):
 
 ```bash
-uv sync
-uv run pytest tests/unit                 # lamindb and the LaminHub API mocked
-uv run ruff check . && uv run ruff format --check .
-uv run --isolated --python 3.10 mypy    # type-check on the oldest supported Python
-```
-
-Integration and system tests run against a real lamindb instance:
-
-```bash
-# use a throwaway instance: keep ~/.lamin away from your real settings
-export HOME=/tmp/lamin-home
-lamin init --storage /tmp/lamin-home/store --name airflowtest
-LAMINDB_INTEGRATION_TEST=1 pytest tests/integration   # shipped sources against a real instance
-
-export AIRFLOW_HOME=/tmp/airflow-e2e AIRFLOW__CORE__LOAD_EXAMPLES=False
-export AIRFLOW__CORE__DAGS_FOLDER=$PWD/tests/system/lamindb
-airflow db migrate
-LAMINDB_E2E_TEST=1 pytest tests/system             # dag.test(): real task runner + virtualenv
+just dev     # install the dev dependencies and the pre-commit hooks
+just check   # lint, type check, unit tests, package build and smoke test, as the CI does
 ```
 
 ## License

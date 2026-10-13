@@ -35,21 +35,23 @@ requires-python = ">=3.10,!=3.15"
 dependencies = [
     # asset_state_store for event triggers was added in Airflow 3.3.0
     "apache-airflow>=3.3.0",
-    "apache-airflow-providers-standard",
+    # floors: the versions Airflow 3.3.0's constraints pin, checked by the compat job in qa.yml
+    "apache-airflow-providers-standard>=1.15.0",
     "httpx>=0.27.0",
+    "packaging>=22",
 ]
 
 [project.optional-dependencies]
 # lamindb is never needed on the worker: the virtualenv/pod operators install it remotely.
 "cncf.kubernetes" = [
-    "apache-airflow-providers-cncf-kubernetes",
+    "apache-airflow-providers-cncf-kubernetes>=10.19.0",
 ]
 
 [dependency-groups]
 dev = [
     "lamindb-airflow[cncf.kubernetes]",
     # integration and system tests run lamindb against a throwaway instance
-    "lamindb",
+    "lamindb>=2.10",
     "mypy>=1.15",
     "pytest>=8.3",
     "pytest-asyncio>=0.25",
@@ -73,6 +75,7 @@ name = "airflow.providers.lamindb"
 # Explicit sdist contents so the build does not rely on VCS information
 [tool.flit.sdist]
 include = [
+    ".github/workflows/qa.yml",
     "docs/",
     "provider.yaml",
     "src/airflow/__init__.py",

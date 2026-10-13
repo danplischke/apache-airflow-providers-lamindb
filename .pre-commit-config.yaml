@@ -1,0 +1,42 @@
+# See https://pre-commit.com for usage. Install with: just dev
+# Mirrors the lint, format and type checks of .github/workflows/qa.yml.
+default_language_version:
+  python: python3
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: check-added-large-files
+      - id: mixed-line-ending
+        args: [--fix=lf]
+
+  - repo: local
+    hooks:
+      - id: ruff-check
+        name: ruff check
+        entry: uv run --group dev ruff check --fix
+        language: system
+        types_or: [python, pyi]
+      - id: ruff-format
+        name: ruff format
+        entry: uv run --group dev ruff format
+        language: system
+        types_or: [python, pyi]
+      - id: mypy
+        name: mypy
+        # Python 3.10 like CI, in its own environment so .venv is left alone
+        entry: env UV_PROJECT_ENVIRONMENT=.cache/py310 uv run --quiet --python 3.10 --group dev mypy
+        language: system
+        files: ^src/
+        pass_filenames: false
+
+  - repo: https://github.com/astral-sh/uv-pre-commit
+    rev: 0.13.0
+    hooks:
+      - id: uv-lock
