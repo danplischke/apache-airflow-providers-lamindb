@@ -260,11 +260,12 @@ def _is_tracked_step(task: Any) -> bool:
 
 
 def wire_lamindb_flow(
-    dag: DAG, **flow_kwargs: Any
+    dag: DAG | None = None, **flow_kwargs: Any
 ) -> tuple[LaminDBFlowInitOperator, LaminDBFlowFinishOperator]:
     """Wire ``init >> step >> finish`` for every LaminDB step of ``dag``, including mapped ones.
 
-    Call it once, after the steps are declared. Uses the DAG's flow operators, or adds them with
+    Call it once, after the steps are declared; without ``dag``, inside a ``with DAG(...)`` block or
+    a ``@dag`` function, for the DAG being defined. Uses the DAG's flow operators, or adds them with
     ``flow_kwargs`` (any ``LaminDBFlowInitOperator`` argument except the task id) if it has none.
     Each step gets one edge from init and one to finish, so finish waits for every map index of a
     mapped step; existing edges are kept, so calling it again or combining it with ``auto_flow`` or
@@ -272,6 +273,12 @@ def wire_lamindb_flow(
 
     Returns the flow init and finish tasks.
     """
+    if dag is None:
+        from airflow.sdk.definitions._internal.contextmanager import DagContext
+
+        dag = DagContext.get_current_dag()
+        if dag is None:
+            raise TypeError("wire_lamindb_flow() needs a DAG: pass one, or call it while defining the DAG")
     init = next((t for t in dag.tasks if isinstance(t, LaminDBFlowInitOperator)), None)
     finish = next((t for t in dag.tasks if isinstance(t, LaminDBFlowFinishOperator)), None)
     if init is None:

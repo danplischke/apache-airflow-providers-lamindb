@@ -77,7 +77,7 @@ Airflow does not track mapped tasks (`.expand()`) in the context; add them with
 
 ## Mapped steps
 
-`wire_lamindb_flow(dag)`, called once after the steps, wires every LaminDB step of the DAG between the
+`wire_lamindb_flow()`, called once after the steps, wires every LaminDB step of the DAG between the
 flow tasks, including mapped ones (`.expand()` and `.expand_kwargs()`), which neither `auto_flow` nor
 `with init >> finish:` wire on their own. It uses the DAG's flow operators, or adds them with the
 arguments you pass it.
