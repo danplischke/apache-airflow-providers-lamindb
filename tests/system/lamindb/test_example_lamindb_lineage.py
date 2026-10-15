@@ -53,7 +53,7 @@ def dags():
         "lamindb_instance": lamindb_setup.settings.instance.slug,
         "lamindb_version": lamindb.__version__,
     }
-    for dag in (module.dag_ok, module.dag_fail, module.dag_auto_flow, module.dag_params):
+    for dag in (module.dag_ok, module.dag_fail, module.dag_auto_flow, module.dag_params, module.dag_connect):
         for task in dag.tasks:
             if isinstance(task, MappedOperator) and hasattr(task.operator_class, "lamindb_cache_dir"):
                 # unmapped from partial_kwargs when it runs
@@ -126,3 +126,12 @@ def test_secret_arguments_are_not_recorded(dags, monkeypatch):
     assert sorted(step.params["sample"] for step in steps) == ["S1", "S2", "S3"]
     assert all(step.params == {"sample": step.params["sample"]} for step in steps)
     assert all(step.status == "completed" for step in steps)
+
+
+def test_connect_only_task_records_nothing(dags):
+    import lamindb as ln
+
+    runs_before = ln.Run.filter().count()
+    dr = dags.dag_connect.test()
+    assert str(dr.state) == "success"
+    assert ln.Run.filter().count() == runs_before
