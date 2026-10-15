@@ -118,10 +118,12 @@ def is_template(value: Any) -> bool:
 def check_lamindb_version(lamindb_version: str | None) -> None:
     """Fail for a lamindb version older than ``runtime.MIN_LAMINDB_VERSION``, the oldest one supported.
 
-    Templates pass; they are checked once rendered, before anything is installed.
+    Templates pass; they are checked once rendered, before anything is installed. Other values are
+    checked as strings, as DAGs that render templates as native objects may produce numbers.
     """
-    if not lamindb_version or is_template(lamindb_version):
+    if lamindb_version is None or lamindb_version == "" or is_template(lamindb_version):
         return
+    lamindb_version = str(lamindb_version)
     if not re.fullmatch(r"\s*\d+(\.\d+)+\S*\s*", lamindb_version):
         raise LaminDBVersionError(
             f"lamindb_version {lamindb_version!r} is not a lamindb version, such as '2.11.0'"
@@ -247,7 +249,7 @@ def ensure_lamindb_requirement(operator: Any, remote: RemoteLaminDB, lamindb_ver
     listed lamindb is not resolved here; the virtualenv checks the version it installed.
     """
     if lamindb_version is not None:
-        lamindb_version = lamindb_version.strip()
+        lamindb_version = str(lamindb_version).strip()
         check_lamindb_version(lamindb_version)
     requirements = list(operator.requirements)
     if not lamindb_requirement_lines(requirements):

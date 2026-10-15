@@ -127,8 +127,9 @@ The lineage operators and decorators accept these arguments, also through a DAG'
     Templated: a mapped task can pin its own version, for example from an upstream task's XCom, and
     gets its own virtualenv (and cache entry) for it. A template is checked once rendered, before
     anything is installed. Auto-wired flow tasks don't copy a templated version, which may refer to
-    the step's own XComs or map index; they install the instance's version unless you declare them
-    yourself.
+    the step's own XComs or map index; they install the instance's version (the latest without a
+    connection) unless you declare them yourself. In DAGs that render templates as native objects,
+    keep versions strings: a number such as `2.10` renders as `2.1`.
 
     ```python
     @task.lamindb_venv(lamindb_version="{{ ti.xcom_pull(task_ids='pick_versions')[ti.map_index] }}")
