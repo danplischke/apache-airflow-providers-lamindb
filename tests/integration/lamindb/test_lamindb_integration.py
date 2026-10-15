@@ -224,3 +224,37 @@ def test_remote_sources_run_in_fresh_interpreter(dag_module, run_id, instance, t
     finish_config = {"reference": reference, "success": True, "instance": instance}
     run_script(flow_script("finish_flow_run", finish_config), tmp_path)
     assert ln.Run.get(uid=flow_uid).status == "completed"
+
+
+def test_step_records_only_params_lamindb_can_store(dag_module, run_id, caplog, capfd):
+    """Values lamindb would skip with a warning that shows them are left out beforehand."""
+    import lamindb as ln
+
+    from airflow.providers.lamindb.utils import runtime
+    from airflow.providers.lamindb.utils.dag_run import dag_source
+
+    class Client:
+        def __repr__(self) -> str:
+            return "Client(credentials='s3cret')"
+
+    def load(count: int, name: str, client, credentials, options: dict, missing=None):
+        return count
+
+    kwargs = start_flow_run_kwargs(dag_module, run_id)
+    flow_run = runtime.start_flow_run(**kwargs)
+    result = runtime.run_step(
+        load,
+        (3, "x", Client(), "s3cret"),
+        {"options": {"a": 1}},
+        kwargs["reference"],
+        dag_source(dag_module.dag),
+        exclude_params=["credentials"],
+    )
+
+    assert result == 3
+    step_run = ln.Run.filter(initiated_by_run=flow_run, entrypoint="load").one()
+    assert step_run.params == {"count": 3, "name": "x", "options": {"a": 1}}
+    output = capfd.readouterr()
+    assert "Not recording parameter 'client' of type Client" in caplog.text
+    assert "s3cret" not in caplog.text + output.out + output.err
+    runtime.finish_flow_run(kwargs["reference"], True)

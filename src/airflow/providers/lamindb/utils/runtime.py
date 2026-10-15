@@ -150,24 +150,73 @@ def finish_flow_run(reference, success, instance=None):
     return flow_run
 
 
-def run_step(fn, args, kwargs, flow_run_reference, source_code, step_reference=None, instance=None):
+def _recordable(key, value):
+    """Whether lamindb can record ``value`` as a run parameter.
+
+    Mirrors lamindb's own check, which skips other values with a warning that includes the value.
+    """
+    try:
+        from lamindb.models import SQLRecord
+        from lamindb.models._feature_manager import infer_convert_dtype_key_value
+    except ImportError:
+        return True  # leave the decision to lamindb
+    if value is None or isinstance(value, SQLRecord) or (isinstance(value, list) and not value):
+        return True
+    try:
+        dtype, _, _ = infer_convert_dtype_key_value(key, value, mute=True)
+    except Exception:
+        return False
+    if dtype in {"cat ? str", "list[cat ? str]"}:
+        return True
+    if dtype.startswith("list[cat"):
+        return all(isinstance(item, SQLRecord) for item in value)
+    return dtype != "?" and not dtype.startswith("cat")
+
+
+def step_params(fn, args, kwargs, exclude_params=()):
+    """The parameters recorded for a call of ``fn``: its bound arguments, including defaults.
+
+    Leaves out the names in ``exclude_params``, which may also be keys of ``**kwargs``, and values
+    lamindb cannot record. Only names and types are logged, never values.
+    """
+    import inspect
+    import logging
+
+    signature = inspect.signature(fn)
+    bound = signature.bind(*args, **kwargs)
+    bound.apply_defaults()
+    excluded = set(exclude_params)
+    params = {name: value for name, value in bound.arguments.items() if name not in excluded}
+    for parameter in signature.parameters.values():
+        if parameter.kind is parameter.VAR_KEYWORD and parameter.name in params:
+            extra = params[parameter.name]
+            params[parameter.name] = {key: value for key, value in extra.items() if key not in excluded}
+    for name, value in list(params.items()):
+        if not _recordable(name, value):
+            del params[name]
+            logging.getLogger("lamindb_airflow").warning(
+                "Not recording parameter %r of type %s: lamindb cannot store it", name, type(value).__name__
+            )
+    return params
+
+
+def run_step(
+    fn, args, kwargs, flow_run_reference, source_code, step_reference=None, instance=None, exclude_params=()
+):
     """Run ``fn`` as a step of the flow run, via ``ln.track`` with ``initiated_by_run``.
 
     Passing the DAG source with the flow transform's key makes lamindb resolve the
-    same ``Transform`` by hash as the flow run, so no pickled state is needed.
+    same ``Transform`` by hash as the flow run, so no pickled state is needed. ``fn``
+    gets ``args`` and ``kwargs`` unchanged; see ``step_params`` for what is recorded.
     """
-    import inspect
-
     ln = connect(instance)
     flow_run = require_flow_run(flow_run_reference)
-    bound = inspect.signature(fn).bind(*args, **kwargs)
-    bound.apply_defaults()
     ln.track(
         key=flow_run.transform.key,
         source_code=source_code,
         kind="script",
         entrypoint=fn.__name__,
-        params=dict(bound.arguments),
+        params=step_params(fn, args, kwargs, exclude_params),
         initiated_by_run=flow_run,
         new_run=True,
         stream_tracking=False,

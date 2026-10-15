@@ -12,10 +12,10 @@ import inspect
 import logging
 import re
 import tempfile
-from collections.abc import Iterable, Iterator
-from contextlib import ExitStack, contextmanager
+from collections.abc import Callable, Iterable, Iterator, Sequence
+from contextlib import ExitStack, contextmanager, suppress
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 from airflow.exceptions import AirflowException, AirflowNotFoundException
 from airflow.providers.lamindb.exceptions import LaminDBVersionError
@@ -48,7 +48,7 @@ def _lamindb_airflow_runtime():
 """
 
 
-def build_remote_step_source(*, user_source: str, callable_name: str, config: dict[str, str | None]) -> str:
+def build_remote_step_source(*, user_source: str, callable_name: str, config: dict[str, Any]) -> str:
     """Append a wrapper to ``user_source`` and rebind ``callable_name`` to it.
 
     The operator's script template then calls the wrapper, which runs the user
@@ -266,6 +266,139 @@ def lamindb_virtualenv_env(operator: Any, remote: RemoteLaminDB) -> Iterator[Non
             operator.env_vars = original
 
 
+ExcludeTemplated = Literal["secrets", "all", "none"]
+"""Which templated arguments a step leaves out of its recorded parameters."""
+
+SECRET_TEMPLATE_NAMES = frozenset({"var", "conn"})
+"""Template variables that read Airflow Variables and Connections, where secrets come from."""
+
+
+def _named_arguments(
+    fn: Callable[..., Any], op_args: Sequence[Any] | None, op_kwargs: dict[str, Any] | None
+) -> Iterator[tuple[str, Any]]:
+    """Yield the parameter name of each argument; ``*args`` and ``**kwargs`` entries as in ``runtime``."""
+    parameters = list(inspect.signature(fn).parameters.values())
+    positional = [p.name for p in parameters if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)]
+    var_positional = next((p.name for p in parameters if p.kind is p.VAR_POSITIONAL), None)
+    for index, value in enumerate(op_args or ()):
+        name = positional[index] if index < len(positional) else var_positional
+        if name is not None:
+            yield name, value
+    yield from (op_kwargs or {}).items()
+
+
+def check_exclude_params(fn: Callable[..., Any], names: Iterable[str]) -> None:
+    """Fail for names that can't be arguments of ``fn``."""
+    parameters = inspect.signature(fn).parameters
+    if any(p.kind is p.VAR_KEYWORD for p in parameters.values()):
+        return
+    unknown = sorted(set(names) - set(parameters))
+    if unknown:
+        raise ValueError(
+            f"lamindb_exclude_params names {unknown}, which are not parameters of {fn.__name__}()"
+        )
+
+
+def _references_template(source: str, jinja_env: Any, secrets_only: bool) -> bool:
+    from jinja2 import TemplateSyntaxError, nodes
+
+    if jinja_env.variable_start_string not in source and jinja_env.block_start_string not in source:
+        return False
+    try:
+        tree = jinja_env.parse(source)
+    except TemplateSyntaxError:
+        return False  # rendering fails with the reason
+    if secrets_only:
+        return any(node.name in SECRET_TEMPLATE_NAMES for node in tree.find_all(nodes.Name))
+    return any(not isinstance(node, (nodes.Output, nodes.TemplateData)) for node in tree.find_all(nodes.Node))
+
+
+def is_templated(
+    value: Any,
+    jinja_env: Any,
+    *,
+    secrets_only: bool,
+    template_ext: Sequence[str] = (),
+    skip_oids: Iterable[int] = (),
+) -> bool:
+    """Whether Airflow renders a template in ``value`` that reads a Variable or Connection, or any template.
+
+    Walks what Airflow renders: strings, files named by ``template_ext``, containers and nested template
+    fields. Values in ``skip_oids``, resolved from XComs for mapped tasks, are not rendered.
+    """
+    skip = set(skip_oids)
+
+    def walk(value: Any) -> bool:
+        if id(value) in skip:
+            return False
+        skip.add(id(value))
+        if isinstance(value, str):
+            source = value
+            if template_ext and value.endswith(tuple(template_ext)):
+                with suppress(Exception):  # rendering fails with the reason
+                    source = jinja_env.loader.get_source(jinja_env, value)[0]
+            return _references_template(source, jinja_env, secrets_only)
+        if isinstance(value, dict):
+            return any(walk(item) for item in value.values())
+        if isinstance(value, (list, tuple, set, frozenset)):
+            return any(walk(item) for item in value)
+        try:
+            fields = list(getattr(value, "template_fields", None) or ())
+        except Exception:
+            return False
+        return any(walk(getattr(value, name, None)) for name in fields)
+
+    return walk(value)
+
+
+def templated_parameters(
+    step: Any, jinja_env: Any, mode: ExcludeTemplated, skip_oids: Iterable[int] = ()
+) -> set[str]:
+    """Parameters of a decorated step whose arguments contain templates of the kind ``mode`` names."""
+    if mode == "none":
+        return set()
+    oids = set(skip_oids)
+    return {
+        name
+        for name, value in _named_arguments(step.python_callable, step.op_args, step.op_kwargs)
+        if is_templated(
+            value,
+            jinja_env,
+            secrets_only=mode == "secrets",
+            template_ext=step.template_ext,
+            skip_oids=oids,
+        )
+    }
+
+
+def _secrets_redact() -> Callable[..., Any] | None:
+    try:
+        from airflow.sdk._shared.secrets_masker import redact
+    except ImportError:
+        try:
+            from airflow.sdk.execution_time.secrets_masker import redact  # type: ignore[no-redef]
+        except ImportError:
+            return None
+    return redact
+
+
+def masked_parameters(
+    fn: Callable[..., Any], op_args: Sequence[Any] | None, op_kwargs: dict[str, Any] | None
+) -> set[str]:
+    """Parameters whose argument Airflow hides in logs: a sensitive name, or a registered secret in it."""
+    redact = _secrets_redact()
+    if redact is None:
+        return set()
+    names = set()
+    for name, value in _named_arguments(fn, op_args, op_kwargs):
+        try:
+            if bool(redact(value, name) != value):
+                names.add(name)
+        except Exception:
+            log.debug("Could not check parameter %r for secrets", name, exc_info=True)
+    return names
+
+
 def check_flow_instance(step: Any, context: Any, instance: str | None) -> None:
     """Fail early if the step would connect to another instance than its DAG run's flow run."""
     from airflow.providers.lamindb.operators.flow import FLOW_INSTANCE_XCOM_KEY, LaminDBFlowInitOperator
@@ -295,9 +428,16 @@ class RemoteLaminDBStepMixin:
         operator does the wiring once fully initialised. Ignored when ``track`` is ``False``.
     :param track: record the call in LaminDB. Pass ``False`` to ship the function
         unchanged, as the plain virtualenv/pod operator would.
+    :param lamindb_exclude_params: names of parameters (or ``**kwargs`` keys) whose arguments are
+        not recorded. The function still gets them.
+    :param lamindb_exclude_templated: which templated arguments are not recorded: ``"secrets"``
+        (default) those whose template reads an Airflow Variable or Connection (``var``, ``conn``),
+        ``"all"`` every templated argument, ``"none"`` none. Arguments Airflow masks in logs are
+        never recorded.
     """
 
-    _lamindb_remote: dict[str, str | None] | None = None
+    _lamindb_remote: dict[str, Any] | None = None
+    _lamindb_templated_params: frozenset[str] = frozenset()
     # only virtualenv steps can point lamindb at a shared cache
     lamindb_cache_dir: str | None = None
 
@@ -308,6 +448,8 @@ class RemoteLaminDBStepMixin:
         lamindb_instance: str | None = None,
         auto_flow: bool = False,
         track: bool = True,
+        lamindb_exclude_params: Sequence[str] = (),
+        lamindb_exclude_templated: ExcludeTemplated = "secrets",
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
@@ -315,6 +457,38 @@ class RemoteLaminDBStepMixin:
         self.lamindb_instance = lamindb_instance
         self.track = track
         self.auto_flow = auto_flow and track
+        if lamindb_exclude_templated not in ("secrets", "all", "none"):
+            raise ValueError(
+                "lamindb_exclude_templated must be 'secrets', 'all' or 'none', "
+                f"not {lamindb_exclude_templated!r}"
+            )
+        if isinstance(lamindb_exclude_params, str):
+            lamindb_exclude_params = [lamindb_exclude_params]
+        self.lamindb_exclude_params = tuple(lamindb_exclude_params)
+        self.lamindb_exclude_templated = lamindb_exclude_templated
+        if track:
+            check_exclude_params(self.python_callable, self.lamindb_exclude_params)  # type: ignore[attr-defined]
+
+    def _do_render_template_fields(
+        self, parent: Any, template_fields: Iterable[str], context: Any, jinja_env: Any, seen_oids: set[int]
+    ) -> None:
+        # called for the task itself both when it's mapped and when it isn't; before rendering, the
+        # arguments still hold their templates
+        if parent is self and self.track:
+            self._lamindb_templated_params = frozenset(
+                templated_parameters(self, jinja_env, self.lamindb_exclude_templated, seen_oids)
+            )
+        super()._do_render_template_fields(  # type: ignore[misc]
+            parent, template_fields, context, jinja_env, seen_oids
+        )
+
+    def _lamindb_exclude_params(self) -> list[str]:
+        masked = masked_parameters(
+            self.python_callable,  # type: ignore[attr-defined]
+            self.op_args,  # type: ignore[attr-defined]
+            self.op_kwargs,  # type: ignore[attr-defined]
+        )
+        return sorted({*self.lamindb_exclude_params, *self._lamindb_templated_params, *masked})
 
     @contextmanager
     def _lamindb_environment(self, remote: RemoteLaminDB) -> Iterator[None]:
@@ -331,6 +505,7 @@ class RemoteLaminDBStepMixin:
             "source_code": dag_source(context["dag"]),
             "step_reference": task_instance_url(context),
             "instance": remote.instance,
+            "exclude_params": self._lamindb_exclude_params(),
         }
         try:
             with self._lamindb_environment(remote):
