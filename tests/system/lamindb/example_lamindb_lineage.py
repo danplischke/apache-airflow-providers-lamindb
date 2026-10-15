@@ -131,7 +131,7 @@ with DAG("lamindb_example_mapped", params={"samples": ["S1", "S2"], "fail_on": "
 
     measure.partial(fail_on="{{ params.fail_on }}").expand(sample=list_samples())
 
-    wire_lamindb_flow(dag_mapped, system_site_packages=True)
+    wire_lamindb_flow(system_site_packages=True)
     # --8<-- [end:howto_lamindb_mapped_steps]
 
 

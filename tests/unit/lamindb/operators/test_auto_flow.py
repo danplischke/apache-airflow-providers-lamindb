@@ -184,3 +184,19 @@ def test_wire_lamindb_flow_reuses_flow_tasks_and_existing_edges() -> None:
     assert {t.task_id: (set(t.upstream_task_ids), set(t.downstream_task_ids)) for t in dag.tasks} == edges
     assert dag.get_task("start").downstream_task_ids == {"a", "auto", "m", "end"}
     dag.check_cycle()
+
+
+def test_wire_lamindb_flow_defaults_to_the_dag_being_defined() -> None:
+    import pytest
+    from airflow.sdk import dag as dag_decorator
+
+    from airflow.providers.lamindb.operators import wire_lamindb_flow
+
+    @dag_decorator
+    def mapped():
+        task.lamindb_venv(noop, task_id="m").expand(x=[1, 2])
+        wire_lamindb_flow()
+
+    assert mapped().get_task(INIT).downstream_task_ids == {"m", FINISH}
+    with pytest.raises(TypeError, match="needs a DAG"):
+        wire_lamindb_flow()
