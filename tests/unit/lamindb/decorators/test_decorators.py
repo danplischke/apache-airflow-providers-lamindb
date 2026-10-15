@@ -783,3 +783,10 @@ def test_literal_lamindb_versions_may_be_numbers() -> None:
     assert _single_task(task.lamindb_venv(lamindb_version=2.11), step).lamindb_version == 2.11
     with pytest.raises(LaminDBVersionError, match=r"lamindb 2\.7 is not supported"):
         _single_task(task.lamindb_venv(lamindb_version=2.7), step)
+
+
+@pytest.mark.parametrize(
+    ("space", "expected"), [(None, None), ("", None), ("  ", None), (" lab ", "lab"), (7, "7")]
+)
+def test_space_names(space, expected) -> None:
+    assert remote.space_name(space) == expected

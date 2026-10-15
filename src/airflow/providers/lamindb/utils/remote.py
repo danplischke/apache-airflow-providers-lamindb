@@ -110,9 +110,9 @@ def lamindb_requirement_lines(requirements: Iterable[Any]) -> list[str]:
     return [line for line in _requirement_lines(requirements) if _LAMINDB_REQUIREMENT.match(line)]
 
 
-def space_name(space: str | None) -> str | None:
-    """The rendered ``lamindb_space``; empty means lamindb's default space."""
-    return space.strip() or None if space else None
+def space_name(space: Any) -> str | None:
+    """The rendered ``lamindb_space`` as a string; empty means lamindb's default space."""
+    return str(space).strip() or None if space is not None else None
 
 
 def is_template(value: Any) -> bool:
