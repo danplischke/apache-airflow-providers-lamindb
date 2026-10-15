@@ -48,11 +48,14 @@ def _lamindb_airflow_runtime():
 """
 
 
-def build_remote_step_source(*, user_source: str, callable_name: str, config: dict[str, Any]) -> str:
+def build_remote_step_source(
+    *, user_source: str, callable_name: str, config: dict[str, Any], runtime_function: str = "run_step"
+) -> str:
     """Append a wrapper to ``user_source`` and rebind ``callable_name`` to it.
 
     The operator's script template then calls the wrapper, which runs the user
-    function via ``runtime.run_step`` with ``config`` as keyword arguments.
+    function via ``runtime.<runtime_function>`` (``run_step`` records it, ``run_connected``
+    only connects) with ``config`` as keyword arguments.
     """
     return (
         user_source.rstrip()
@@ -61,7 +64,7 @@ def build_remote_step_source(*, user_source: str, callable_name: str, config: di
         + f"""
 
 def _lamindb_airflow_step(*args, **kwargs):
-    return _lamindb_airflow_runtime().run_step(_lamindb_airflow_user_fn, args, kwargs, **{config!r})
+    return _lamindb_airflow_runtime().{runtime_function}(_lamindb_airflow_user_fn, args, kwargs, **{config!r})
 
 
 _lamindb_airflow_user_fn = {callable_name}
@@ -428,6 +431,9 @@ class RemoteLaminDBStepMixin:
         operator does the wiring once fully initialised. Ignored when ``track`` is ``False``.
     :param track: record the call in LaminDB. Pass ``False`` to ship the function
         unchanged, as the plain virtualenv/pod operator would.
+    :param connect: with ``track=False``, still connect to the instance before the function
+        runs, without recording anything: virtualenvs get lamindb and the connection's
+        credentials as for tracked steps, pods connect with their own credentials.
     :param lamindb_exclude_params: names of parameters (or ``**kwargs`` keys) whose arguments are
         not recorded. The function still gets them.
     :param lamindb_exclude_templated: which templated arguments are not recorded: ``"secrets"``
@@ -437,6 +443,7 @@ class RemoteLaminDBStepMixin:
     """
 
     _lamindb_remote: dict[str, Any] | None = None
+    _lamindb_runtime_function = "run_step"
     _lamindb_templated_params: frozenset[str] = frozenset()
     # only virtualenv steps can point lamindb at a shared cache
     lamindb_cache_dir: str | None = None
@@ -448,6 +455,7 @@ class RemoteLaminDBStepMixin:
         lamindb_instance: str | None = None,
         auto_flow: bool = False,
         track: bool = True,
+        connect: bool = False,
         lamindb_exclude_params: Sequence[str] = (),
         lamindb_exclude_templated: ExcludeTemplated = "secrets",
         **kwargs: Any,
@@ -456,6 +464,7 @@ class RemoteLaminDBStepMixin:
         self.lamindb_conn_id = lamindb_conn_id
         self.lamindb_instance = lamindb_instance
         self.track = track
+        self.connect = connect
         self.auto_flow = auto_flow and track
         if lamindb_exclude_templated not in ("secrets", "all", "none"):
             raise ValueError(
@@ -496,17 +505,23 @@ class RemoteLaminDBStepMixin:
         yield
 
     def execute(self, context: Any) -> Any:
-        if not self.track:
+        if not self.track and not self.connect:
             return super().execute(context)  # type: ignore[misc]
         remote = RemoteLaminDB.resolve(self.lamindb_conn_id, self.lamindb_instance, self.lamindb_cache_dir)
-        check_flow_instance(self, context, remote.instance)
-        self._lamindb_remote = {
-            "flow_run_reference": context_flow_run_reference(context),
-            "source_code": dag_source(context["dag"]),
-            "step_reference": task_instance_url(context),
-            "instance": remote.instance,
-            "exclude_params": self._lamindb_exclude_params(),
-        }
+        if self.track:
+            check_flow_instance(self, context, remote.instance)
+            self._lamindb_runtime_function = "run_step"
+            self._lamindb_remote = {
+                "flow_run_reference": context_flow_run_reference(context),
+                "source_code": dag_source(context["dag"]),
+                "step_reference": task_instance_url(context),
+                "instance": remote.instance,
+                "exclude_params": self._lamindb_exclude_params(),
+            }
+        else:
+            # not part of the flow run, so it may connect to any instance
+            self._lamindb_runtime_function = "run_connected"
+            self._lamindb_remote = {"instance": remote.instance}
         try:
             with self._lamindb_environment(remote):
                 return super().execute(context)  # type: ignore[misc]
@@ -521,4 +536,5 @@ class RemoteLaminDBStepMixin:
             user_source=user_source,
             callable_name=self.python_callable.__name__,  # type: ignore[attr-defined]
             config=self._lamindb_remote,
+            runtime_function=self._lamindb_runtime_function,
         )

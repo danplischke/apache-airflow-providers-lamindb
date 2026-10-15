@@ -150,6 +150,12 @@ def finish_flow_run(reference, success, instance=None):
     return flow_run
 
 
+def run_connected(fn, args, kwargs, instance=None):
+    """Call ``fn`` connected to ``instance``, without recording anything."""
+    connect(instance)
+    return fn(*args, **kwargs)
+
+
 def _recordable(key, value):
     """Whether lamindb can record ``value`` as a run parameter.
 

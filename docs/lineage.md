@@ -170,8 +170,25 @@ log or return it.
 
 ## Untracked tasks
 
-Pass `track=False` to run a function as the plain Airflow equivalent (`@task.virtualenv` or
-`@task.kubernetes`): no step run, no flow wiring, and lamindb is not added to `requirements`.
+A LaminDB task runs in one of three modes:
+
+| | Step run | Flow run needed | Connected to the instance |
+|---|---|---|---|
+| default (`track=True`) | yes | yes | yes |
+| `track=False, connect=True` | no | no | yes |
+| `track=False` | no | no | no: the plain `@task.virtualenv` or `@task.kubernetes` |
+
+With `connect=True`, a task that only reads or writes records gets the same setup as a step, without
+lineage: a virtualenv gets lamindb (see `lamindb_version`) and the connection's credentials, and both
+connect to the instance before the function runs. A pod connects with its own credentials, as for
+steps. `auto_flow` is ignored, and the task may connect to another instance than the DAG's flow run,
+for example one per mapped task through a templated `lamindb_instance`.
+
+```python title="tests/system/lamindb/example_lamindb_lineage.py"
+--8<-- "tests/system/lamindb/example_lamindb_lineage.py:howto_lamindb_connect_only"
+```
+
+Plain `track=False` runs the function unchanged, and lamindb is not added to `requirements`.
 
 ## How the steps are recorded
 

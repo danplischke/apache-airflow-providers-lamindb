@@ -109,6 +109,9 @@ def lamindb_venv_task(
     - ``track``: record the call in LaminDB. Default ``True``; with ``False`` the
       function runs exactly as under ``@task.virtualenv``, and lamindb is not added
       to ``requirements``.
+    - ``connect``: with ``track=False``, still install lamindb and connect to the
+      instance with the connection's credentials before the function runs, without
+      recording a step or needing a flow run. Default ``False``.
     - ``lamindb_exclude_params``: names of parameters (or ``**kwargs`` keys) not to
       record; the function still gets them.
     - ``lamindb_exclude_templated``: ``"secrets"`` (default) doesn't record arguments

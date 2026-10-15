@@ -96,3 +96,17 @@ with (
         .partial(credentials="{{ var.value.lims_credentials }}")
         .expand(sample=["S2", "S3"])
     )
+
+
+# connect=True with track=False: connected to the instance, but nothing is recorded and no flow run
+# is needed.
+with DAG("lamindb_example_connect") as dag_connect:
+    # --8<-- [start:howto_lamindb_connect_only]
+    @task.lamindb_venv(system_site_packages=True, track=False, connect=True)
+    def count_artifacts() -> int:
+        import lamindb as ln
+
+        return ln.Artifact.filter().count()
+
+    count_artifacts()
+    # --8<-- [end:howto_lamindb_connect_only]
