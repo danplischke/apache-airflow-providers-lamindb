@@ -110,9 +110,9 @@ def lamindb_requirement_lines(requirements: Iterable[Any]) -> list[str]:
     return [line for line in _requirement_lines(requirements) if _LAMINDB_REQUIREMENT.match(line)]
 
 
-def space_name(space: str | None) -> str | None:
-    """The rendered ``lamindb_space``; empty means lamindb's default space."""
-    return space.strip() or None if space else None
+def space_name(space: Any) -> str | None:
+    """The rendered ``lamindb_space`` as a string; empty means lamindb's default space."""
+    return str(space).strip() or None if space is not None else None
 
 
 def is_template(value: Any) -> bool:
@@ -123,10 +123,12 @@ def is_template(value: Any) -> bool:
 def check_lamindb_version(lamindb_version: str | None) -> None:
     """Fail for a lamindb version older than ``runtime.MIN_LAMINDB_VERSION``, the oldest one supported.
 
-    Templates pass; they are checked once rendered, before anything is installed.
+    Templates pass; they are checked once rendered, before anything is installed. Other values are
+    checked as strings, as DAGs that render templates as native objects may produce numbers.
     """
-    if not lamindb_version or is_template(lamindb_version):
+    if lamindb_version is None or lamindb_version == "" or is_template(lamindb_version):
         return
+    lamindb_version = str(lamindb_version)
     if not re.fullmatch(r"\s*\d+(\.\d+)+\S*\s*", lamindb_version):
         raise LaminDBVersionError(
             f"lamindb_version {lamindb_version!r} is not a lamindb version, such as '2.11.0'"
@@ -252,7 +254,7 @@ def ensure_lamindb_requirement(operator: Any, remote: RemoteLaminDB, lamindb_ver
     listed lamindb is not resolved here; the virtualenv checks the version it installed.
     """
     if lamindb_version is not None:
-        lamindb_version = lamindb_version.strip()
+        lamindb_version = str(lamindb_version).strip()
         check_lamindb_version(lamindb_version)
     requirements = list(operator.requirements)
     if not lamindb_requirement_lines(requirements):
@@ -410,14 +412,19 @@ def _secrets_redact() -> Callable[..., Any] | None:
 def masked_parameters(
     fn: Callable[..., Any], op_args: Sequence[Any] | None, op_kwargs: dict[str, Any] | None
 ) -> set[str]:
-    """Parameters whose argument Airflow hides in logs: a sensitive name, or a registered secret in it."""
+    """Parameters whose argument contains a secret Airflow masks in logs, such as a Connection password.
+
+    Only values count: Airflow matches sensitive names by substring, so ``tokenizer`` or
+    ``secretory_cells`` would count as secret. lamindb already redacts parameters with sensitive
+    names, matching whole words.
+    """
     redact = _secrets_redact()
     if redact is None:
         return set()
     names = set()
     for name, value in _named_arguments(fn, op_args, op_kwargs):
         try:
-            if bool(redact(value, name) != value):
+            if bool(redact(value) != value):
                 names.add(name)
         except Exception:
             log.debug("Could not check parameter %r for secrets", name, exc_info=True)
@@ -463,8 +470,8 @@ class RemoteLaminDBStepMixin:
         not recorded. The function still gets them.
     :param lamindb_exclude_templated: which templated arguments are not recorded: ``"secrets"``
         (default) those whose template reads an Airflow Variable or Connection (``var``, ``conn``),
-        ``"all"`` every templated argument, ``"none"`` none. Arguments Airflow masks in logs are
-        never recorded.
+        ``"all"`` every templated argument, ``"none"`` none. Arguments that contain a secret Airflow
+        masks in logs are never recorded.
     """
 
     _lamindb_remote: dict[str, Any] | None = None

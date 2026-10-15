@@ -161,8 +161,9 @@ The lineage operators and decorators accept these arguments, also through a DAG'
     Templated: a mapped task can pin its own version, for example from an upstream task's XCom, and
     gets its own virtualenv (and cache entry) for it. A template is checked once rendered, before
     anything is installed. Auto-wired flow tasks don't copy a templated version, which may refer to
-    the step's own XComs or map index; they install the instance's version unless you declare them
-    yourself.
+    the step's own XComs or map index; they install the instance's version (the latest without a
+    connection) unless you declare them yourself. In DAGs that render templates as native objects,
+    keep versions strings: a number such as `2.10` renders as `2.1`.
 
     ```python
     @task.lamindb_venv(lamindb_version="{{ ti.xcom_pull(task_ids='pick_versions')[ti.map_index] }}")
@@ -196,10 +197,12 @@ are left out:
   `"{{ var.value.lims_token }}"` or `{"auth": "Bearer {{ conn.lims.password }}"}`. Other templates,
   such as `"{{ ds }}"` or `"{{ params.sample }}"`, are recorded. `lamindb_exclude_templated="all"`
   leaves out every templated argument, and `"none"` records them.
-- Arguments Airflow hides in its logs: those whose parameter name is sensitive, such as `password` or
-  `api_key`, and those that contain a secret Airflow knows of, such as a Connection's password.
+- Arguments that contain a secret Airflow masks in its logs, such as a Connection's password or a
+  Variable with a sensitive name, wherever the value came from.
 - The parameters listed in `lamindb_exclude_params`, which may also name keys of `**kwargs`. Unknown
   names fail when the DAG is parsed.
+- lamindb itself records parameters with sensitive names, such as `password`, `api_key` or
+  `access_token`, as `***REDACTED***`. It matches whole words, so `tokenizer` is recorded as is.
 - Values lamindb cannot store, such as client objects. The task log names them and their type, but
   not their value.
 
