@@ -52,7 +52,16 @@ class LaminDBSetup:
     3. The virtualenv is built and lamindb installed, or the pod started.
     4. In the virtualenv or pod, the [`bootstrap_source`][] runs, then lamindb connects, then the
        task's function runs.
+
+    Airflow stores ``default_args`` in the serialized DAG through ``repr()``. The default ``repr``
+    names the class, so the DAG doesn't get a new version on every parse; a subclass that takes
+    settings should include them in its ``repr``, so that changing them makes a new DAG version.
     """
+
+    def __repr__(self) -> str:
+        # Airflow serializes default_args with repr(); the default one contains the object's address,
+        # which would make every parse of the DAG a new DAG version
+        return f"{type(self).__module__}.{type(self).__qualname__}()"
 
     def bootstrap_source(self) -> str:
         """Python source that runs in the virtualenv or pod before lamindb is imported.

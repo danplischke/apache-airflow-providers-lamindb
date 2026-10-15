@@ -951,3 +951,21 @@ def test_literal_lamindb_versions_may_be_numbers() -> None:
 )
 def test_space_names(space, expected) -> None:
     assert remote.space_name(space) == expected
+
+
+def test_dags_with_a_lamindb_setup_serialize_the_same_on_every_parse() -> None:
+    """Airflow 3 versions DAGs by their serialized form; an object address in it changes every parse."""
+    import json
+
+    from airflow.serialization.serialized_objects import DagSerialization
+
+    def serialized() -> str:
+        @dag(default_args={"lamindb_setup": SiteSetup()})
+        def test_dag():
+            task.lamindb_venv(step)()
+
+        return json.dumps(DagSerialization.to_dict(test_dag()), sort_keys=True, default=str)
+
+    first = serialized()
+    assert first == serialized()
+    assert "test_decorators.SiteSetup()" in first
