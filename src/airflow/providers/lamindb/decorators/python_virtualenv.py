@@ -14,6 +14,7 @@ from airflow.providers.lamindb.utils.remote import (
     RemoteLaminDBStepMixin,
     check_lamindb_version,
     ensure_lamindb_requirement,
+    is_template,
     lamindb_requirement_lines,
     lamindb_virtualenv_env,
 )
@@ -41,6 +42,7 @@ class LaminDBVenvDecoratedOperator(RemoteLaminDBStepMixin, _PythonVirtualenvDeco
         *_PythonVirtualenvDecoratedOperator.template_fields,
         "lamindb_conn_id",
         "lamindb_instance",
+        "lamindb_version",
         "lamindb_cache_dir",
     )
 
@@ -71,9 +73,13 @@ class LaminDBVenvDecoratedOperator(RemoteLaminDBStepMixin, _PythonVirtualenvDeco
                 self,
                 lamindb_conn_id=self.lamindb_conn_id,
                 lamindb_instance=self.lamindb_instance,
-                lamindb_version=self.lamindb_version,
+                # a template may refer to the step's own XComs or map index; the flow tasks fall
+                # back to the instance's version instead
+                lamindb_version=None if is_template(self.lamindb_version) else self.lamindb_version,
                 lamindb_cache_dir=self.lamindb_cache_dir,
-                requirements=lamindb_requirement_lines(self.requirements),
+                requirements=[
+                    line for line in lamindb_requirement_lines(self.requirements) if not is_template(line)
+                ],
                 **{name: getattr(self, name) for name in _SHARED_VENV_ARGS if hasattr(self, name)},
             )
 
@@ -100,7 +106,8 @@ def lamindb_venv_task(
     - ``lamindb_instance``: instance slug to connect to; overrides the connection's. Templated.
     - ``lamindb_version``: version of ``lamindb-core`` added to ``requirements`` unless
       you list lamindb yourself, 2.8.1 or newer; defaults to the instance's version on
-      LaminHub (with a connection), else the latest.
+      LaminHub (with a connection), else the latest. Templated, e.g. per mapped task;
+      auto-wired flow tasks don't copy a templated version.
     - ``lamindb_cache_dir``: absolute path of a lamindb cache shared between tasks, set as
       ``LAMIN_CACHE_DIR``; overrides the connection's ``cache_dir`` extra. Templated.
     - ``auto_flow``: wire ``init >> step >> finish`` with the DAG's flow operators,
