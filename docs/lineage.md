@@ -148,10 +148,12 @@ are left out:
   `"{{ var.value.lims_token }}"` or `{"auth": "Bearer {{ conn.lims.password }}"}`. Other templates,
   such as `"{{ ds }}"` or `"{{ params.sample }}"`, are recorded. `lamindb_exclude_templated="all"`
   leaves out every templated argument, and `"none"` records them.
-- Arguments Airflow hides in its logs: those whose parameter name is sensitive, such as `password` or
-  `api_key`, and those that contain a secret Airflow knows of, such as a Connection's password.
+- Arguments that contain a secret Airflow masks in its logs, such as a Connection's password or a
+  Variable with a sensitive name, wherever the value came from.
 - The parameters listed in `lamindb_exclude_params`, which may also name keys of `**kwargs`. Unknown
   names fail when the DAG is parsed.
+- lamindb itself records parameters with sensitive names, such as `password`, `api_key` or
+  `access_token`, as `***REDACTED***`. It matches whole words, so `tokenizer` is recorded as is.
 - Values lamindb cannot store, such as client objects. The task log names them and their type, but
   not their value.
 
