@@ -129,8 +129,8 @@ def lamindb_venv_task(
       record; the function still gets them.
     - ``lamindb_exclude_templated``: ``"secrets"`` (default) doesn't record arguments
       whose template reads an Airflow Variable or Connection (``var``, ``conn``),
-      ``"all"`` no templated argument, ``"none"`` records them all. Arguments Airflow
-      masks in logs are never recorded.
+      ``"all"`` no templated argument, ``"none"`` records them all. Arguments that
+      contain a secret Airflow masks in logs are never recorded.
 
     The worker needs no lamindb.
     """

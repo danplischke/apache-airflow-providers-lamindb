@@ -720,3 +720,66 @@ def test_flow_init_starts_the_flow_run_in_its_space(make_context, lamindb_connec
     assert init._runtime_kwargs(make_context())["space"] == "lab"
     init.lamindb_space = "  "  # rendered empty: lamindb's default space
     assert init._runtime_kwargs(make_context())["space"] is None
+
+
+def test_sensitive_looking_names_are_still_recorded(fake_lamindb: MagicMock, make_context) -> None:
+    """Airflow matches sensitive names by substring; only values Airflow knows to be secret count."""
+
+    def analyze(tokenizer, secretory_cells, max_tokens):
+        return tokenizer
+
+    fake_lamindb.flow_run = MagicMock()
+
+    @dag
+    def test_dag():
+        task.lamindb_venv(lamindb_conn_id=None)(analyze)("bpe", ["acinar"], 512)
+
+    op = test_dag().get_task("analyze")
+    context = make_context()
+    op.render_template_fields(context)
+    context["ti"].xcom_pull.return_value = None
+
+    def fake_venv_execute(self, context):
+        namespace: dict = {}
+        exec(self.get_python_source(), namespace)
+        return namespace["analyze"](*self.op_args, **self.op_kwargs)
+
+    with (
+        patch.object(remote, "dag_source", return_value="# dag source"),
+        patch.object(type(op).__mro__[2], "execute", fake_venv_execute),
+    ):
+        op.execute(context)
+    assert fake_lamindb.track.call_args.kwargs["params"] == {
+        "tokenizer": "bpe",
+        "secretory_cells": ["acinar"],
+        "max_tokens": 512,
+    }
+
+
+@pytest.mark.parametrize(
+    ("pin", "expected"), [(2.11, "lamindb-core==2.11"), ("2.11.0", "lamindb-core==2.11.0")]
+)
+def test_natively_rendered_lamindb_version(
+    fake_lamindb: MagicMock, make_context, lamindb_connection, pin, expected
+):
+    fake_lamindb.flow_run = MagicMock()
+
+    @dag(render_template_as_native_obj=True, params={"pin": pin})
+    def test_dag():
+        task.lamindb_venv(lamindb_version="{{ params.pin }}")(step)()
+
+    op = test_dag().get_task("step")
+    context = make_context()
+    context["params"] = {"pin": pin}
+    op.render_template_fields(context)
+    assert op.lamindb_version == pin
+    context["ti"].xcom_pull.return_value = None
+
+    _, seen = _execute_in_fake_venv(op, context)
+    assert seen["requirements"][0] == expected
+
+
+def test_literal_lamindb_versions_may_be_numbers() -> None:
+    assert _single_task(task.lamindb_venv(lamindb_version=2.11), step).lamindb_version == 2.11
+    with pytest.raises(LaminDBVersionError, match=r"lamindb 2\.7 is not supported"):
+        _single_task(task.lamindb_venv(lamindb_version=2.7), step)
