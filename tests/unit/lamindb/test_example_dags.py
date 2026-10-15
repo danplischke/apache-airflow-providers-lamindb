@@ -29,6 +29,7 @@ def test_example_dags_import(dagbag):
         "lamindb_example_mapped",
         "lamindb_example_ok",
         "lamindb_example_params",
+        "lamindb_example_setup",
     ]
 
 

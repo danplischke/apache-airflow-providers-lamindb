@@ -60,6 +60,7 @@ def dags():
         module.dag_params,
         module.dag_connect,
         module.dag_mapped,
+        module.dag_setup,
     ):
         for task in dag.tasks:
             if isinstance(task, MappedOperator) and hasattr(task.operator_class, "lamindb_cache_dir"):
@@ -164,3 +165,20 @@ def test_mapped_steps(dags, conf, dag_state, flow_status, steps):
     assert flow.status == flow_status
     step_runs = ln.Run.filter(initiated_by_run=flow, entrypoint="measure")
     assert {run.params["sample"]: run.status for run in step_runs} == steps
+
+
+def test_lamindb_setup_prepares_steps_and_flow_tasks(dags, monkeypatch):
+    import lamindb as ln
+
+    monkeypatch.setenv("AIRFLOW_VAR_SITE_TOKEN", "s3cret-token")
+    dr = dags.dag_setup.test()
+    assert str(dr.state) == "success"  # the step asserts what the setup prepared
+
+    flow = ln.Run.filter(
+        reference=f"lamindb_example_setup/{dr.run_id}", reference_type="airflow_dag_run"
+    ).one()
+    assert flow.status == "completed"
+    assert (
+        dags.dag_setup.get_task("lamindb_flow_init").lamindb_setup
+        is dags.dag_setup.default_args["lamindb_setup"]
+    )

@@ -8,6 +8,8 @@ LaminDB only runs inside the virtualenvs, so the worker needs no lamindb. The ex
 
 from __future__ import annotations
 
+import textwrap
+
 from airflow.sdk import DAG, task
 
 from airflow.providers.lamindb.operators.flow import (
@@ -15,6 +17,7 @@ from airflow.providers.lamindb.operators.flow import (
     LaminDBFlowInitOperator,
     wire_lamindb_flow,
 )
+from airflow.providers.lamindb.utils.remote import LaminDBSetup
 
 # Init/finish wrap the steps; Airflow wires them to the steps' roots and leaves.
 with DAG("lamindb_example_ok") as dag_ok:
@@ -130,3 +133,35 @@ with DAG("lamindb_example_mapped", params={"samples": ["S1", "S2"], "fail_on": "
 
     wire_lamindb_flow(dag_mapped, system_site_packages=True)
     # --8<-- [end:howto_lamindb_mapped_steps]
+
+
+# A deployment's own setup for every LaminDB task of a DAG, auto-wired flow tasks included.
+# --8<-- [start:howto_lamindb_setup]
+class SiteSetup(LaminDBSetup):
+    def bootstrap_source(self) -> str:
+        # runs in the virtualenv before lamindb is imported, e.g. to install a certificate bundle
+        return textwrap.dedent(
+            """
+            import os, sys
+            os.environ["SITE_LAMINDB_PRELOADED"] = str("lamindb" in sys.modules)
+            """
+        )
+
+    def execution_env(self, context) -> dict[str, str]:
+        # resolved on the worker when the task runs, never rendered into template fields
+        from airflow.sdk import Variable
+
+        return {"SITE_TOKEN": Variable.get("site_token")}
+
+
+with DAG("lamindb_example_setup", default_args={"lamindb_setup": SiteSetup()}) as dag_setup:
+
+    @task.lamindb_venv(system_site_packages=True, auto_flow=True)
+    def use_site_setup() -> None:
+        import os
+
+        assert os.environ["SITE_LAMINDB_PRELOADED"] == "False"
+        assert os.environ["SITE_TOKEN"]
+
+    use_site_setup()
+# --8<-- [end:howto_lamindb_setup]
