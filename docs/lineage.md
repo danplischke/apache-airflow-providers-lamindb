@@ -117,6 +117,21 @@ The lineage operators and decorators accept these arguments, also through a DAG'
 `lamindb_instance`
 :   The instance slug `owner/name`; overrides the connection's.
 
+`lamindb_space`
+:   The name or uid of a [space](https://docs.lamin.ai/permissions) to record in, instead of
+    lamindb's default. Templated; an empty rendered value means the default. On the flow init
+    operator, it's the space of the flow run, and of the DAG file's transform when that is first
+    recorded; a transform keeps its space when later flow runs are in another one. Steps record in the
+    flow run's space and so do the records their function saves, unless the step sets its own
+    `lamindb_space`. With `connect=True`, it's the space of the records the function saves. An unknown
+    space, or one you have no access to, fails the task before anything is recorded; there is no
+    fallback to the default space. A retried flow init keeps its run's space and fails if it's given
+    another one. Auto-wired flow tasks copy a step's literal space, not a templated one.
+
+    LaminHub enforces access to spaces; the provider has no permission checks of its own. A step in
+    another space than its flow run needs access to both, and artifacts saved in a space need a
+    storage location in it (see lamindb's `NoStorageLocationForSpace`).
+
 `lamindb_version` (virtualenvs only)
 :   The lamindb version to install, 2.8.1 or newer. Defaults to the instance's version on LaminHub,
     so that the virtualenv speaks the instance's schema, else the latest. The virtualenvs install

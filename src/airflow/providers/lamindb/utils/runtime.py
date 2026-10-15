@@ -24,6 +24,9 @@ MAX_REFERENCE_LENGTH = 255
 # version pins on the worker; anything older fails deliberately
 MIN_LAMINDB_VERSION = "2.8.1"
 
+ALL_SPACE_ID = 1
+"""Id of the ``all`` space every instance has: the default, without access restrictions."""
+
 STATUS_STARTED = -1
 STATUS_RESTARTED = -2
 STATUS_COMPLETED = 0
@@ -99,18 +102,43 @@ def finish_run(run, success):
     run.save()
 
 
-def start_flow_run(reference, path, entrypoint, params, instance=None):
+def resolve_space(space):
+    """Return the ``Space`` named (or with the uid) ``space``; ``None`` for no space."""
+    import lamindb as ln
+
+    if space is None:
+        return None
+    record = ln.Space.filter(ln.Q(name=space) | ln.Q(uid=space)).one_or_none()
+    if record is None:
+        raise LookupError(f"LaminDB space {space!r} does not exist, or you have no access to it.")
+    return record
+
+
+def _reset_context(ln):
+    """Leave the process clean for in-process runners like ``dag.test()``."""
+    ln.context._run = None
+    ln.context._space = None
+
+
+def start_flow_run(reference, path, entrypoint, params, instance=None, space=None):
     """Start (or restart, on retry) the flow run for a DAG run; return it.
 
     Uses ``ln.track`` on the DAG file so the flow run belongs to a versioned
     ``Transform`` of the DAG source. Idempotent per DAG run: a retry of the init
-    task restarts the existing run instead of creating a second one.
+    task restarts the existing run instead of creating a second one. With ``space``,
+    the transform (if new) and the run are created in that space.
     """
     from pathlib import Path
 
     ln = connect(instance)
+    space_record = resolve_space(space)
     existing = get_flow_run(reference)
     if existing is not None:
+        if space_record is not None and existing.space_id != space_record.id:
+            raise RuntimeError(
+                f"The flow run of {reference!r} is in another space than {space!r}; "
+                "it keeps its space when the init task is retried."
+            )
         existing.started_at = datetime.now(timezone.utc)
         existing.finished_at = None
         existing._status_code = STATUS_RESTARTED
@@ -122,12 +150,19 @@ def start_flow_run(reference, path, entrypoint, params, instance=None):
             "LaminDB global run context is already set in this process; "
             "cannot start a flow run. Call ln.finish() first."
         )
+    space_kwargs = {"space": space_record} if space_record is not None else {}
     try:
-        ln.track(path=path, entrypoint=entrypoint, params=params, new_run=True, stream_tracking=False)
+        ln.track(
+            path=path,
+            entrypoint=entrypoint,
+            params=params,
+            new_run=True,
+            stream_tracking=False,
+            **space_kwargs,
+        )
         run = ln.context.run
     finally:
-        # leave the process clean for in-process runners like dag.test()
-        ln.context._run = None
+        _reset_context(ln)
     if run is None:
         raise RuntimeError("ln.track() did not create a run (read-only connection?)")
     transform = run.transform
@@ -150,10 +185,17 @@ def finish_flow_run(reference, success, instance=None):
     return flow_run
 
 
-def run_connected(fn, args, kwargs, instance=None):
-    """Call ``fn`` connected to ``instance``, without recording anything."""
-    connect(instance)
-    return fn(*args, **kwargs)
+def run_connected(fn, args, kwargs, instance=None, space=None):
+    """Call ``fn`` connected to ``instance``, without recording anything.
+
+    With ``space``, records ``fn`` saves are created in that space by default.
+    """
+    ln = connect(instance)
+    ln.context._space = resolve_space(space)
+    try:
+        return fn(*args, **kwargs)
+    finally:
+        _reset_context(ln)
 
 
 def _recordable(key, value):
@@ -207,35 +249,51 @@ def step_params(fn, args, kwargs, exclude_params=()):
 
 
 def run_step(
-    fn, args, kwargs, flow_run_reference, source_code, step_reference=None, instance=None, exclude_params=()
+    fn,
+    args,
+    kwargs,
+    flow_run_reference,
+    source_code,
+    step_reference=None,
+    instance=None,
+    exclude_params=(),
+    space=None,
 ):
     """Run ``fn`` as a step of the flow run, via ``ln.track`` with ``initiated_by_run``.
 
     Passing the DAG source with the flow transform's key makes lamindb resolve the
     same ``Transform`` by hash as the flow run, so no pickled state is needed. ``fn``
     gets ``args`` and ``kwargs`` unchanged; see ``step_params`` for what is recorded.
+    The step run, and records ``fn`` saves, are in ``space``, else in the flow run's.
     """
     ln = connect(instance)
     flow_run = require_flow_run(flow_run_reference)
-    ln.track(
-        key=flow_run.transform.key,
-        source_code=source_code,
-        kind="script",
-        entrypoint=fn.__name__,
-        params=step_params(fn, args, kwargs, exclude_params),
-        initiated_by_run=flow_run,
-        new_run=True,
-        stream_tracking=False,
-    )
-    run = ln.context.run
-    if step_reference and len(step_reference) <= MAX_REFERENCE_LENGTH:
-        run.reference = step_reference
-        run.reference_type = STEP_RUN_REFERENCE_TYPE
+    space_record = resolve_space(space)
+    if space_record is None and flow_run.space_id not in (None, ALL_SPACE_ID):
+        space_record = flow_run.space
+    space_kwargs = {"space": space_record} if space_record is not None else {}
     try:
-        result = fn(*args, **kwargs)
-    except BaseException:
-        finish_run(run, False)
-        raise
-    finish_run(run, True)
-    ln.context._run = None
-    return result
+        ln.track(
+            key=flow_run.transform.key,
+            source_code=source_code,
+            kind="script",
+            entrypoint=fn.__name__,
+            params=step_params(fn, args, kwargs, exclude_params),
+            initiated_by_run=flow_run,
+            new_run=True,
+            stream_tracking=False,
+            **space_kwargs,
+        )
+        run = ln.context.run
+        if step_reference and len(step_reference) <= MAX_REFERENCE_LENGTH:
+            run.reference = step_reference
+            run.reference_type = STEP_RUN_REFERENCE_TYPE
+        try:
+            result = fn(*args, **kwargs)
+        except BaseException:
+            finish_run(run, False)
+            raise
+        finish_run(run, True)
+        return result
+    finally:
+        _reset_context(ln)
