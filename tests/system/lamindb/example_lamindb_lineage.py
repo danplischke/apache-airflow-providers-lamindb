@@ -13,6 +13,7 @@ from airflow.sdk import DAG, task
 from airflow.providers.lamindb.operators.flow import (
     LaminDBFlowFinishOperator,
     LaminDBFlowInitOperator,
+    wire_lamindb_flow,
 )
 
 # Init/finish wrap the steps; Airflow wires them to the steps' roots and leaves.
@@ -110,3 +111,22 @@ with DAG("lamindb_example_connect") as dag_connect:
 
     count_artifacts()
     # --8<-- [end:howto_lamindb_connect_only]
+
+
+# Mapped steps: wire_lamindb_flow adds the flow tasks around every LaminDB step, mapped or not.
+with DAG("lamindb_example_mapped", params={"samples": ["S1", "S2"], "fail_on": ""}) as dag_mapped:
+    # --8<-- [start:howto_lamindb_mapped_steps]
+    @task
+    def list_samples(**context) -> list[str]:
+        return context["params"]["samples"]
+
+    @task.lamindb_venv(system_site_packages=True)
+    def measure(sample: str, fail_on: str = "") -> int:
+        if sample == fail_on:
+            raise ValueError(f"measuring {sample} failed on purpose")
+        return len(sample)
+
+    measure.partial(fail_on="{{ params.fail_on }}").expand(sample=list_samples())
+
+    wire_lamindb_flow(system_site_packages=True)
+    # --8<-- [end:howto_lamindb_mapped_steps]

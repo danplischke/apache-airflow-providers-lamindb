@@ -72,7 +72,26 @@ ones that have no downstream. Every task in the block, LaminDB step or not, runs
 ```
 
 Airflow does not track mapped tasks (`.expand()`) in the context; add them with
-`with init >> finish as scope: ... scope.add_task(mapped)` if they are a root or leaf.
+`with init >> finish as scope: ... scope.add_task(mapped)` if they are a root or leaf, or use
+[`wire_lamindb_flow`](#mapped-steps).
+
+## Mapped steps
+
+`wire_lamindb_flow()`, called once after the steps, wires every LaminDB step of the DAG between the
+flow tasks, including mapped ones (`.expand()` and `.expand_kwargs()`), which neither `auto_flow` nor
+`with init >> finish:` wire on their own. It uses the DAG's flow operators, or adds them with the
+arguments you pass it.
+
+```python title="tests/system/lamindb/example_lamindb_lineage.py"
+--8<-- "tests/system/lamindb/example_lamindb_lineage.py:howto_lamindb_mapped_steps"
+```
+
+- Each map index is its own step run. Finish waits for all of them, and marks the flow run errored if
+  any failed; a retried map index records a new step run.
+- A map over nothing runs no steps; the flow run completes.
+- Steps in task groups are wired too. Edges that exist already, from `auto_flow` or
+  `with init >> finish:`, are kept, so the helper never adds a task or an edge twice.
+- Untracked tasks (`track=False`) stay outside the flow.
 
 ## Auto-wiring
 
@@ -89,7 +108,7 @@ instead.
 
 Caveats:
 
-- Mapped steps (`.expand()`) are not auto-wired.
+- Mapped steps (`.expand()`) are not auto-wired; use [`wire_lamindb_flow`](#mapped-steps).
 - Flow operators declared *after* an auto-wiring step clash with the auto-added task id; declare them
   first.
 - Finish waits for auto-wired steps only.

@@ -138,3 +138,65 @@ def test_mapped_steps_are_not_auto_wired() -> None:
     # unmapping on the worker must not add tasks either
     dag.get_task("a").unmap({"op_kwargs": {"x": 1}})
     assert set(dag.task_ids) == {"a"}
+
+
+def test_wire_lamindb_flow_wires_mapped_and_unmapped_steps() -> None:
+    from airflow.providers.lamindb.operators import wire_lamindb_flow
+
+    with DAG("d", schedule=None) as dag:
+        produce = task(noop, task_id="produce")()
+        a = task.lamindb_venv(noop, task_id="a")(produce)
+        m = task.lamindb_venv(noop, task_id="m").expand(x=a)
+        with TaskGroup("group"):
+            k = task.lamindb_venv(noop, task_id="k").expand_kwargs([{"x": 1}, {"x": 2}])
+        m >> k
+        task.lamindb_venv(noop, task_id="connected", track=False, connect=True)()
+        task.lamindb_venv(noop, task_id="untracked_mapped", track=False).expand(x=[1])
+        task(noop, task_id="plain").expand(x=[1])
+
+        init, finish = wire_lamindb_flow(dag, system_site_packages=True)
+
+    steps = {"a", "m", "group.k"}
+    assert init.downstream_task_ids == steps | {FINISH}
+    assert finish.upstream_task_ids == steps | {INIT}
+    assert init.system_site_packages is finish.system_site_packages is True
+    assert produce.operator.upstream_task_ids == set()  # plain tasks stay outside the flow
+    assert dag.get_task("m").is_mapped
+
+
+def test_wire_lamindb_flow_reuses_flow_tasks_and_existing_edges() -> None:
+    from airflow.providers.lamindb.operators import wire_lamindb_flow
+
+    with DAG("d", schedule=None) as dag:
+        with LaminDBFlowInitOperator(task_id="start") >> LaminDBFlowFinishOperator(task_id="end"):
+            a = task.lamindb_venv(noop, task_id="a")()
+        task.lamindb_venv(noop, task_id="auto", auto_flow=True)()
+        task.lamindb_venv(noop, task_id="m").expand(x=[1, 2])
+        a >> dag.get_task("m")
+
+        first = wire_lamindb_flow(dag)
+        edges = {t.task_id: (set(t.upstream_task_ids), set(t.downstream_task_ids)) for t in dag.tasks}
+        second = wire_lamindb_flow(dag)
+
+    assert first == second
+    assert [t.task_id for t in first] == ["start", "end"]
+    assert {t.task_id for t in dag.tasks} == {"start", "end", "a", "auto", "m"}
+    assert {t.task_id: (set(t.upstream_task_ids), set(t.downstream_task_ids)) for t in dag.tasks} == edges
+    assert dag.get_task("start").downstream_task_ids == {"a", "auto", "m", "end"}
+    dag.check_cycle()
+
+
+def test_wire_lamindb_flow_defaults_to_the_dag_being_defined() -> None:
+    import pytest
+    from airflow.sdk import dag as dag_decorator
+
+    from airflow.providers.lamindb.operators import wire_lamindb_flow
+
+    @dag_decorator
+    def mapped():
+        task.lamindb_venv(noop, task_id="m").expand(x=[1, 2])
+        wire_lamindb_flow()
+
+    assert mapped().get_task(INIT).downstream_task_ids == {"m", FINISH}
+    with pytest.raises(TypeError, match="needs a DAG"):
+        wire_lamindb_flow()
