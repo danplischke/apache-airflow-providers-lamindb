@@ -2,7 +2,7 @@
 
 ::: airflow.providers.lamindb.operators.flow
     options:
-      members: [LaminDBFlowInitOperator, LaminDBFlowFinishOperator]
+      members: [LaminDBFlowInitOperator, LaminDBFlowFinishOperator, wire_lamindb_flow]
       toc_label: operators.flow
 
 ::: airflow.providers.lamindb.decorators.python_virtualenv
