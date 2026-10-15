@@ -562,3 +562,37 @@ def test_task_lamindb_k8s_connect_only_uses_the_pod_credentials(
         in seen["source"]
     )
     assert "api-key" not in repr(seen)
+
+
+def test_sensitive_looking_names_are_still_recorded(fake_lamindb: MagicMock, make_context) -> None:
+    """Airflow matches sensitive names by substring; only values Airflow knows to be secret count."""
+
+    def analyze(tokenizer, secretory_cells, max_tokens):
+        return tokenizer
+
+    fake_lamindb.flow_run = MagicMock()
+
+    @dag
+    def test_dag():
+        task.lamindb_venv(lamindb_conn_id=None)(analyze)("bpe", ["acinar"], 512)
+
+    op = test_dag().get_task("analyze")
+    context = make_context()
+    op.render_template_fields(context)
+    context["ti"].xcom_pull.return_value = None
+
+    def fake_venv_execute(self, context):
+        namespace: dict = {}
+        exec(self.get_python_source(), namespace)
+        return namespace["analyze"](*self.op_args, **self.op_kwargs)
+
+    with (
+        patch.object(remote, "dag_source", return_value="# dag source"),
+        patch.object(type(op).__mro__[2], "execute", fake_venv_execute),
+    ):
+        op.execute(context)
+    assert fake_lamindb.track.call_args.kwargs["params"] == {
+        "tokenizer": "bpe",
+        "secretory_cells": ["acinar"],
+        "max_tokens": 512,
+    }
