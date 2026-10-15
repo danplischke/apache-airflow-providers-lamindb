@@ -110,9 +110,23 @@ def lamindb_requirement_lines(requirements: Iterable[Any]) -> list[str]:
     return [line for line in _requirement_lines(requirements) if _LAMINDB_REQUIREMENT.match(line)]
 
 
+def is_template(value: Any) -> bool:
+    """Whether ``value`` is a string with Jinja markup, known only once Airflow renders it."""
+    return isinstance(value, str) and ("{{" in value or "{%" in value)
+
+
 def check_lamindb_version(lamindb_version: str | None) -> None:
-    """Fail for a lamindb version older than ``runtime.MIN_LAMINDB_VERSION``, the oldest one supported."""
-    if lamindb_version and not runtime.lamindb_version_supported(lamindb_version):
+    """Fail for a lamindb version older than ``runtime.MIN_LAMINDB_VERSION``, the oldest one supported.
+
+    Templates pass; they are checked once rendered, before anything is installed.
+    """
+    if not lamindb_version or is_template(lamindb_version):
+        return
+    if not re.fullmatch(r"\s*\d+(\.\d+)+\S*\s*", lamindb_version):
+        raise LaminDBVersionError(
+            f"lamindb_version {lamindb_version!r} is not a lamindb version, such as '2.11.0'"
+        )
+    if not runtime.lamindb_version_supported(lamindb_version):
         raise LaminDBVersionError(
             f"lamindb {lamindb_version} is not supported: apache-airflow-providers-lamindb needs lamindb "
             f"{runtime.MIN_LAMINDB_VERSION} or newer."
@@ -232,6 +246,9 @@ def ensure_lamindb_requirement(operator: Any, remote: RemoteLaminDB, lamindb_ver
     else to any supported version. The remote side must speak the instance's schema version. A
     listed lamindb is not resolved here; the virtualenv checks the version it installed.
     """
+    if lamindb_version is not None:
+        lamindb_version = lamindb_version.strip()
+        check_lamindb_version(lamindb_version)
     requirements = list(operator.requirements)
     if not lamindb_requirement_lines(requirements):
         lamindb_version = lamindb_version or remote.instance_lamindb_version()

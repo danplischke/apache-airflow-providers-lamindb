@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -129,9 +130,15 @@ def test_lamindb_requirements(version: str | None, expected: list[str]) -> None:
     assert lamindb_requirements(version) == expected
 
 
-@pytest.mark.parametrize("version", ["2.8.0", "2.6.0", "1.0", "latest"])
+@pytest.mark.parametrize("version", ["2.8.0", "2.6.0", "1.0"])
 def test_lamindb_requirements_reject_unsupported_versions(version: str) -> None:
     with pytest.raises(LaminDBVersionError, match=f"lamindb {version} is not supported"):
+        lamindb_requirements(version)
+
+
+@pytest.mark.parametrize("version", ["latest", "None", "2", ">=2.11"])
+def test_lamindb_requirements_reject_malformed_versions(version: str) -> None:
+    with pytest.raises(LaminDBVersionError, match=f"'{re.escape(version)}' is not a lamindb version"):
         lamindb_requirements(version)
 
 

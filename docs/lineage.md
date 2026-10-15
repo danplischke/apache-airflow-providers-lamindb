@@ -124,6 +124,20 @@ The lineage operators and decorators accept these arguments, also through a DAG'
     size of the full `lamindb`; for lamindb before 2.10 with pandas below 3, as lamindb requires. List
     `lamindb` in `requirements` if your steps need all of it, for example `bionty` or `anndata`.
 
+    Templated: a mapped task can pin its own version, for example from an upstream task's XCom, and
+    gets its own virtualenv (and cache entry) for it. A template is checked once rendered, before
+    anything is installed. Auto-wired flow tasks don't copy a templated version, which may refer to
+    the step's own XComs or map index; they install the instance's version unless you declare them
+    yourself.
+
+    ```python
+    @task.lamindb_venv(lamindb_version="{{ ti.xcom_pull(task_ids='pick_versions')[ti.map_index] }}")
+    def process(sample: str) -> None: ...
+
+
+    process.expand(sample=["S1", "S2"])
+    ```
+
 Lineage needs lamindb 2.8.1 or newer, and anything older fails deliberately. An older
 `lamindb_version` fails when the DAG is parsed. An instance on an older lamindb fails the task
 before its virtualenv is built. A step or flow task whose virtualenv or pod has an older lamindb,
