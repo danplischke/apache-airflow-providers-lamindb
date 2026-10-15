@@ -558,7 +558,7 @@ def test_task_lamindb_k8s_connect_only_uses_the_pod_credentials(
         op.execute(make_context())
 
     assert (
-        "run_connected(_lamindb_airflow_user_fn, args, kwargs, **{'instance': 'owner/name'})"
+        "run_connected(_lamindb_airflow_user_fn, args, kwargs, **{'instance': 'owner/name', 'space': None})"
         in seen["source"]
     )
     assert "api-key" not in repr(seen)
@@ -673,3 +673,50 @@ def test_dags_with_templated_lamindb_versions_serialize() -> None:
 
     serialized = DagSerialization.to_dict(test_dag())
     assert "{{ params.pin }}" in str(serialized)
+
+
+def test_lamindb_space_is_templated_and_reaches_the_step(
+    fake_lamindb: MagicMock, make_context, lamindb_connection
+) -> None:
+    fake_lamindb.flow_run = MagicMock()
+    op = _single_task(task.lamindb_venv(lamindb_space="{{ params.space }}"), step)
+    context = make_context()
+    context["params"] = {"space": " lab "}
+    op.render_template_fields(context)
+    context["ti"].xcom_pull.return_value = None
+
+    _execute_in_fake_venv(op, context)
+
+    fake_lamindb.Space.filter.assert_called_once()
+    assert (
+        fake_lamindb.track.call_args.kwargs["space"] is fake_lamindb.Space.filter.return_value.one_or_none()
+    )
+
+
+def test_lamindb_space_from_default_args_reaches_steps_and_flow_operators() -> None:
+    from airflow.providers.lamindb.operators.flow import LaminDBFlowInitOperator
+
+    @dag(default_args={"lamindb_space": "lab"})
+    def test_dag():
+        LaminDBFlowInitOperator()
+        task.lamindb_venv(step)()
+
+    built = test_dag()
+    assert built.get_task("step").lamindb_space == "lab"
+    assert built.get_task("lamindb_flow_init").lamindb_space == "lab"
+    assert "lamindb_space" in built.get_task("lamindb_flow_init").template_fields
+
+
+@pytest.mark.parametrize(("space", "flow_space"), [("lab", "lab"), ("{{ params.space }}", None)])
+def test_auto_flow_copies_only_a_literal_space(space: str, flow_space: str | None) -> None:
+    op = _single_task(task.lamindb_venv(auto_flow=True, lamindb_space=space), step)
+    assert op.get_dag().get_task("lamindb_flow_init").lamindb_space == flow_space
+
+
+def test_flow_init_starts_the_flow_run_in_its_space(make_context, lamindb_connection) -> None:
+    from airflow.providers.lamindb.operators.flow import LaminDBFlowInitOperator
+
+    init = LaminDBFlowInitOperator(task_id="init", lamindb_space="lab")
+    assert init._runtime_kwargs(make_context())["space"] == "lab"
+    init.lamindb_space = "  "  # rendered empty: lamindb's default space
+    assert init._runtime_kwargs(make_context())["space"] is None

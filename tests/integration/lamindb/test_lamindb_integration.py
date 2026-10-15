@@ -284,3 +284,45 @@ def test_connect_only_source_records_nothing(instance, tmp_path):
     assert result == runs_before  # connected to the instance
     assert ln.Run.filter().count() == runs_before
     assert ln.Transform.filter().count() == transforms_before
+
+
+@pytest.fixture(scope="module")
+def lab_space():
+    import lamindb as ln
+
+    return ln.Space.filter(name="lab").one_or_none() or ln.Space(name="lab").save()
+
+
+def test_flow_steps_and_their_records_are_created_in_the_space(dag_module, run_id, lab_space):
+    import lamindb as ln
+
+    from airflow.providers.lamindb.utils import runtime
+    from airflow.providers.lamindb.utils.dag_run import dag_source
+
+    def save_record(name: str) -> str:
+        return ln.Record(name=name).save().uid
+
+    kwargs = start_flow_run_kwargs(dag_module, run_id)
+    flow_run = runtime.start_flow_run(**kwargs, space="lab")
+    assert flow_run.space == lab_space
+    assert ln.context.space is None  # not left over for the next task
+
+    # inherited from the flow run
+    uid = runtime.run_step(
+        save_record, (f"in-lab-{run_id}",), {}, kwargs["reference"], dag_source(dag_module.dag)
+    )
+    step_run = ln.Run.filter(initiated_by_run=flow_run, entrypoint="save_record").one()
+    assert step_run.space == lab_space
+    assert ln.Record.get(uid=uid).space == lab_space
+
+    # connect-only, without a run
+    uid = runtime.run_connected(save_record, (f"connected-{run_id}",), {}, space="lab")
+    assert ln.Record.get(uid=uid).space == lab_space
+    uid = runtime.run_connected(save_record, (f"default-{run_id}",), {})
+    assert ln.Record.get(uid=uid).space_id == runtime.ALL_SPACE_ID
+
+    with pytest.raises(LookupError, match="'missing' does not exist"):
+        runtime.run_step(
+            save_record, ("x",), {}, kwargs["reference"], dag_source(dag_module.dag), space="missing"
+        )
+    runtime.finish_flow_run(kwargs["reference"], True)

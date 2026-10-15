@@ -21,6 +21,7 @@ from airflow.providers.lamindb.utils.remote import (
     check_lamindb_version,
     ensure_lamindb_requirement,
     lamindb_virtualenv_env,
+    space_name,
 )
 from airflow.providers.standard.operators.python import PythonVirtualenvOperator
 from airflow.sdk import TriggerRule
@@ -55,6 +56,9 @@ class _LaminDBFlowOperator(PythonVirtualenvOperator):
         ``LAMIN_CURRENT_INSTANCE``, ``~/.lamin``) instead. Templated.
     :param lamindb_instance: instance slug (``owner/name``) to connect to; overrides the
         connection's instance. Templated.
+    :param lamindb_space: name or uid of the space the flow run (and the DAG file's transform,
+        when first recorded) is created in; steps default to it. Templated; only used by the init
+        operator.
     :param lamindb_version: lamindb version to install, 2.8.1 or newer. Defaults to the
         instance's version on LaminHub (with a connection), else the latest. Templated.
     :param lamindb_cache_dir: absolute path of a lamindb cache shared between tasks, set as
@@ -65,6 +69,7 @@ class _LaminDBFlowOperator(PythonVirtualenvOperator):
         *PythonVirtualenvOperator.template_fields,
         "lamindb_conn_id",
         "lamindb_instance",
+        "lamindb_space",
         "lamindb_version",
         "lamindb_cache_dir",
     )
@@ -75,6 +80,7 @@ class _LaminDBFlowOperator(PythonVirtualenvOperator):
         *,
         lamindb_conn_id: str | None = LaminDBHook.default_conn_name,
         lamindb_instance: str | None = None,
+        lamindb_space: str | None = None,
         lamindb_version: str | None = None,
         lamindb_cache_dir: str | None = None,
         **kwargs: Any,
@@ -84,6 +90,7 @@ class _LaminDBFlowOperator(PythonVirtualenvOperator):
         super().__init__(python_callable=lamindb_airflow_flow_task, **kwargs)
         self.lamindb_conn_id = lamindb_conn_id
         self.lamindb_instance = lamindb_instance
+        self.lamindb_space = lamindb_space
         self.lamindb_version = lamindb_version
         self.lamindb_cache_dir = lamindb_cache_dir
 
@@ -134,6 +141,7 @@ class LaminDBFlowInitOperator(_LaminDBFlowOperator):
         is_setup: bool = True,
         lamindb_conn_id: str | None = LaminDBHook.default_conn_name,
         lamindb_instance: str | None = None,
+        lamindb_space: str | None = None,
         lamindb_version: str | None = None,
         lamindb_cache_dir: str | None = None,
         **kwargs: Any,
@@ -142,6 +150,7 @@ class LaminDBFlowInitOperator(_LaminDBFlowOperator):
             task_id=task_id,
             lamindb_conn_id=lamindb_conn_id,
             lamindb_instance=lamindb_instance,
+            lamindb_space=lamindb_space,
             lamindb_version=lamindb_version,
             lamindb_cache_dir=lamindb_cache_dir,
             **kwargs,
@@ -156,6 +165,7 @@ class LaminDBFlowInitOperator(_LaminDBFlowOperator):
             "path": context["dag"].fileloc,
             "entrypoint": dag_id,
             "params": flow_run_params(context),
+            "space": space_name(self.lamindb_space),
         }
 
     def _after_execute(self, context: Any, remote: RemoteLaminDB) -> None:
@@ -185,6 +195,7 @@ class LaminDBFlowFinishOperator(_LaminDBFlowOperator):
         is_teardown: bool = True,
         lamindb_conn_id: str | None = LaminDBHook.default_conn_name,
         lamindb_instance: str | None = None,
+        lamindb_space: str | None = None,
         lamindb_version: str | None = None,
         lamindb_cache_dir: str | None = None,
         **kwargs: Any,
@@ -195,6 +206,7 @@ class LaminDBFlowFinishOperator(_LaminDBFlowOperator):
             task_id=task_id,
             lamindb_conn_id=lamindb_conn_id,
             lamindb_instance=lamindb_instance,
+            lamindb_space=lamindb_space,
             lamindb_version=lamindb_version,
             lamindb_cache_dir=lamindb_cache_dir,
             **kwargs,
