@@ -405,14 +405,19 @@ def _secrets_redact() -> Callable[..., Any] | None:
 def masked_parameters(
     fn: Callable[..., Any], op_args: Sequence[Any] | None, op_kwargs: dict[str, Any] | None
 ) -> set[str]:
-    """Parameters whose argument Airflow hides in logs: a sensitive name, or a registered secret in it."""
+    """Parameters whose argument contains a secret Airflow masks in logs, such as a Connection password.
+
+    Only values count: Airflow matches sensitive names by substring, so ``tokenizer`` or
+    ``secretory_cells`` would count as secret. lamindb already redacts parameters with sensitive
+    names, matching whole words.
+    """
     redact = _secrets_redact()
     if redact is None:
         return set()
     names = set()
     for name, value in _named_arguments(fn, op_args, op_kwargs):
         try:
-            if bool(redact(value, name) != value):
+            if bool(redact(value) != value):
                 names.add(name)
         except Exception:
             log.debug("Could not check parameter %r for secrets", name, exc_info=True)
@@ -455,8 +460,8 @@ class RemoteLaminDBStepMixin:
         not recorded. The function still gets them.
     :param lamindb_exclude_templated: which templated arguments are not recorded: ``"secrets"``
         (default) those whose template reads an Airflow Variable or Connection (``var``, ``conn``),
-        ``"all"`` every templated argument, ``"none"`` none. Arguments Airflow masks in logs are
-        never recorded.
+        ``"all"`` every templated argument, ``"none"`` none. Arguments that contain a secret Airflow
+        masks in logs are never recorded.
     """
 
     _lamindb_remote: dict[str, Any] | None = None
