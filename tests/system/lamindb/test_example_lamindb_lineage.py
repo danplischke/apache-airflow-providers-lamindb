@@ -167,9 +167,12 @@ def test_mapped_steps(dags, conf, dag_state, flow_status, steps):
     assert {run.params["sample"]: run.status for run in step_runs} == steps
 
 
-def test_lamindb_setup_prepares_steps_and_flow_tasks(dags, monkeypatch):
+def test_the_configured_setup_prepares_steps_and_flow_tasks(dags, monkeypatch):
     import lamindb as ln
 
+    from airflow.providers.lamindb.utils.remote import resolve_setup
+
+    monkeypatch.setenv("AIRFLOW__LAMINDB__SETUP_CLASS", "system.lamindb.site_setup.SiteSetup")
     monkeypatch.setenv("AIRFLOW_VAR_SITE_TOKEN", "s3cret-token")
     dr = dags.dag_setup.test()
     assert str(dr.state) == "success"  # the step asserts what the setup prepared
@@ -179,6 +182,6 @@ def test_lamindb_setup_prepares_steps_and_flow_tasks(dags, monkeypatch):
     ).one()
     assert flow.status == "completed"
     assert (
-        dags.dag_setup.get_task("lamindb_flow_init").lamindb_setup
-        is dags.dag_setup.default_args["lamindb_setup"]
+        type(resolve_setup(dags.dag_setup.get_task("lamindb_flow_init").lamindb_setup)).__name__
+        == "SiteSetup"
     )

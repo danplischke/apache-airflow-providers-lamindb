@@ -8,6 +8,8 @@ Only lamindb has to be installed remotely; nothing is pickled by reference.
 
 from __future__ import annotations
 
+import functools
+import importlib
 import inspect
 import logging
 import re
@@ -39,11 +41,12 @@ LAMINDB_CORE_COMPANIONS_PANDAS_2 = ("numpy", "pandas>=2.0.0,<3", "pandera>=0.24.
 class LaminDBSetup:
     """Deployment-specific preparation of the virtualenvs and pods that run lamindb.
 
-    Subclass it and pass an instance as ``lamindb_setup`` to the LaminDB tasks, best through the DAG's
-    ``default_args``: then every LaminDB task gets it, including flow tasks that ``auto_flow`` or
-    [`wire_lamindb_flow`][airflow.providers.lamindb.operators.flow.wire_lamindb_flow] add, and
-    wiring fails when a step and its DAG's flow tasks have different setups. The default methods do
-    nothing.
+    Subclass it and name the subclass in the ``[lamindb] setup_class`` Airflow option, e.g.
+    ``AIRFLOW__LAMINDB__SETUP_CLASS=mycompany.airflow.SiteSetup``: then every LaminDB task of the
+    installation uses it, loaded once per process. A DAG or task overrides it with a
+    ``lamindb_setup`` instance, in ``default_args`` or as an argument; ``LaminDBSetup()`` itself does
+    nothing, so it opts out. Wiring fails when a step and its DAG's flow tasks end up with different
+    setups.
 
     In a task, the steps run in this order:
 
@@ -78,7 +81,8 @@ class LaminDBSetup:
         task's template fields. The provider's own lamindb variables (``LAMIN_SETTINGS_DIR``,
         ``LAMIN_API_KEY``, ``LAMIN_CACHE_DIR``) take precedence, and a task's own ``env_vars`` take
         precedence over both. ``context`` is the task's Airflow context. Pods get their environment
-        from the pod spec, so a pod step fails if this returns anything.
+        from the pod spec, so a pod step fails if this returns anything; return ``{}`` for them,
+        e.g. when ``context["task"]`` is a ``KubernetesPodOperator``.
         """
         return {}
 
@@ -504,22 +508,51 @@ def task_setting(task: Any, name: str) -> Any:
     return getattr(task, name, None)
 
 
+@functools.cache
+def _load_setup(path: str) -> LaminDBSetup:
+    """Import and instantiate a ``LaminDBSetup`` subclass once per process, so tasks share it."""
+    module_name, _, class_name = path.rpartition(".")
+    try:
+        setup_class = getattr(importlib.import_module(module_name), class_name)
+    except (ImportError, AttributeError, ValueError) as e:
+        raise AirflowException(f"[lamindb] setup_class {path!r} can't be imported: {e}") from e
+    if not (isinstance(setup_class, type) and issubclass(setup_class, LaminDBSetup)):
+        raise AirflowException(f"[lamindb] setup_class {path!r} is not a subclass of LaminDBSetup")
+    return setup_class()
+
+
+def configured_setup() -> LaminDBSetup | None:
+    """The installation's ``LaminDBSetup``: the ``[lamindb] setup_class`` Airflow option, if set."""
+    from airflow.sdk.configuration import conf
+
+    path = (conf.get("lamindb", "setup_class", fallback="") or "").strip()
+    return _load_setup(path) if path else None
+
+
+def resolve_setup(setup: LaminDBSetup | None) -> LaminDBSetup | None:
+    """A task's ``lamindb_setup``, else the installation's."""
+    return setup if setup is not None else configured_setup()
+
+
 def check_same_setup(step: Any, *flow_tasks: Any) -> None:
     """Fail if a step's ``lamindb_setup`` differs from its flow tasks', which would then skip it."""
-    setup = task_setting(step, "lamindb_setup")
+    setup = resolve_setup(task_setting(step, "lamindb_setup"))
     for flow_task in flow_tasks:
-        if task_setting(flow_task, "lamindb_setup") != setup:
+        if resolve_setup(task_setting(flow_task, "lamindb_setup")) != setup:
             raise AirflowException(
                 f"LaminDB step {step.task_id!r} and flow task {flow_task.task_id!r} have different "
-                "lamindb_setup. Pass it to all LaminDB tasks, e.g. through the DAG's default_args."
+                "lamindb_setup. Set it for the whole DAG, through default_args or the [lamindb] "
+                "setup_class option."
             )
 
 
 def setup_execution_env(setup: LaminDBSetup | None, context: Any) -> dict[str, str]:
+    setup = resolve_setup(setup)
     return dict(setup.execution_env(context)) if setup is not None else {}
 
 
 def setup_bootstrap_source(setup: LaminDBSetup | None) -> str:
+    setup = resolve_setup(setup)
     return setup.bootstrap_source() if setup is not None else ""
 
 
@@ -595,6 +628,8 @@ class RemoteLaminDBStepMixin:
         self.track = track
         self.connect = connect
         self.lamindb_setup = lamindb_setup
+        if track or connect:
+            resolve_setup(lamindb_setup)  # a broken [lamindb] setup_class fails when the DAG is parsed
         self.auto_flow = auto_flow and track
         if lamindb_exclude_templated not in ("secrets", "all", "none"):
             raise ValueError(

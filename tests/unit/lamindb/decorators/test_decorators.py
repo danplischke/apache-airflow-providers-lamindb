@@ -969,3 +969,89 @@ def test_dags_with_a_lamindb_setup_serialize_the_same_on_every_parse() -> None:
     first = serialized()
     assert first == serialized()
     assert "test_decorators.SiteSetup()" in first
+
+
+class ConfiguredSetup(remote.LaminDBSetup):
+    """Stands for an installation's [lamindb] setup_class."""
+
+    def bootstrap_source(self) -> str:
+        return "import os\nos.environ['SITE_CONFIGURED'] = '1'"
+
+    def execution_env(self, context) -> dict[str, str]:
+        return {"SITE_CONFIGURED_TOKEN": "configured"}
+
+
+@pytest.fixture
+def configured_setup(monkeypatch) -> remote.LaminDBSetup:
+    monkeypatch.setenv("AIRFLOW__LAMINDB__SETUP_CLASS", f"{__name__}.ConfiguredSetup")
+    setup = remote.configured_setup()
+    assert type(setup).__name__ == "ConfiguredSetup"
+    return setup
+
+
+def test_the_configured_setup_prepares_every_lamindb_task(
+    fake_lamindb: MagicMock, make_context, lamindb_connection, configured_setup
+) -> None:
+    fake_lamindb.flow_run = MagicMock()
+    op = _single_task(task.lamindb_venv(auto_flow=True), step)
+    assert op.lamindb_setup is None  # resolved when the task runs, not stored on it
+    context = make_context()
+    context["ti"].xcom_pull.return_value = None
+
+    with patch.object(remote, "dag_source", return_value="# dag source"):
+        _, seen = _execute_connected(op, context)
+
+    assert "SITE_CONFIGURED" in seen["source"]
+    assert seen["env_vars"]["SITE_CONFIGURED_TOKEN"] == "configured"
+    init = op.get_dag().get_task("lamindb_flow_init")
+    assert remote.setup_bootstrap_source(init.lamindb_setup).endswith("os.environ['SITE_CONFIGURED'] = '1'")
+    assert remote.configured_setup() is configured_setup  # loaded once per process
+
+
+def test_dags_and_tasks_override_the_configured_setup(configured_setup) -> None:
+    from airflow.providers.lamindb.operators.flow import wire_lamindb_flow
+
+    site = SiteSetup()
+
+    @dag(default_args={"lamindb_setup": site})
+    def overridden():
+        task.lamindb_venv(load).partial(credentials="c", day="d").expand(user=["a"])
+        wire_lamindb_flow()
+
+    built = overridden()
+    assert remote.resolve_setup(built.get_task("lamindb_flow_init").lamindb_setup) is site
+
+    opted_out = _single_task(task.lamindb_venv(lamindb_setup=remote.LaminDBSetup()), step)
+    assert remote.setup_bootstrap_source(opted_out.lamindb_setup) == ""
+    assert remote.setup_execution_env(opted_out.lamindb_setup, {}) == {}
+
+
+def test_a_step_overriding_the_configured_setup_alone_fails_when_wired(configured_setup) -> None:
+    @dag
+    def one_step_differs():
+        task.lamindb_venv(auto_flow=True)(step)()
+        task.lamindb_venv(auto_flow=True, lamindb_setup=SiteSetup(), task_id="other")(step)()
+
+    with pytest.raises(AirflowException, match="step 'other' and flow task 'lamindb_flow_init'"):
+        one_step_differs()
+
+
+@pytest.mark.parametrize(
+    ("path", "error"),
+    [
+        ("no_such_module.Setup", "can't be imported"),
+        (f"{__name__}.NoSuchClass", "can't be imported"),
+        ("NoDots", "can't be imported"),
+        (f"{__name__}.step", "is not a subclass of LaminDBSetup"),
+    ],
+)
+def test_a_broken_setup_class_fails_when_the_dag_is_parsed(monkeypatch, path: str, error: str) -> None:
+    from airflow.providers.lamindb.operators.flow import LaminDBFlowInitOperator
+
+    monkeypatch.setenv("AIRFLOW__LAMINDB__SETUP_CLASS", path)
+    with pytest.raises(AirflowException, match=error):
+        _single_task(task.lamindb_venv, step)
+    with pytest.raises(AirflowException, match=error):
+        LaminDBFlowInitOperator(task_id="init")
+    # untracked tasks don't use the setup
+    _single_task(task.lamindb_venv(track=False), step)

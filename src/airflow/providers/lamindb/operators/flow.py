@@ -23,6 +23,7 @@ from airflow.providers.lamindb.utils.remote import (
     check_same_setup,
     ensure_lamindb_requirement,
     lamindb_virtualenv_env,
+    resolve_setup,
     setup_bootstrap_source,
     setup_execution_env,
     space_name,
@@ -101,6 +102,7 @@ class _LaminDBFlowOperator(PythonVirtualenvOperator):
         self.lamindb_version = lamindb_version
         self.lamindb_cache_dir = lamindb_cache_dir
         self.lamindb_setup = lamindb_setup
+        resolve_setup(lamindb_setup)  # a broken [lamindb] setup_class fails when the DAG is parsed
 
     def get_python_source(self) -> str:
         return build_remote_flow_source(
