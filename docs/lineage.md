@@ -139,6 +139,37 @@ def curate(data: dict) -> None: ...
 All LaminDB tasks of a DAG run must use the same instance as its flow run; a step that connects to
 another instance fails before it starts.
 
+## Recorded parameters
+
+A step records the arguments of its function, including defaults, as the step run's `params`. These
+are left out:
+
+- Arguments whose template reads an Airflow Variable or Connection, such as
+  `"{{ var.value.lims_token }}"` or `{"auth": "Bearer {{ conn.lims.password }}"}`. Other templates,
+  such as `"{{ ds }}"` or `"{{ params.sample }}"`, are recorded. `lamindb_exclude_templated="all"`
+  leaves out every templated argument, and `"none"` records them.
+- Arguments that contain a secret Airflow masks in its logs, such as a Connection's password or a
+  Variable with a sensitive name, wherever the value came from.
+- The parameters listed in `lamindb_exclude_params`, which may also name keys of `**kwargs`. Unknown
+  names fail when the DAG is parsed.
+- lamindb itself records parameters with sensitive names, such as `password`, `api_key` or
+  `access_token`, as `***REDACTED***`. It matches whole words, so `tokenizer` is recorded as is.
+- Values lamindb cannot store, such as client objects. The task log names them and their type, but
+  not their value.
+
+The function still gets every argument unchanged. The check applies to the whole argument, so a
+secret anywhere inside a dict leaves out the dict. It looks at templates only: a secret that reaches
+the step another way, for example as the XCom of an upstream task that read it, is recorded unless you
+list its parameter in `lamindb_exclude_params`.
+
+```python title="tests/system/lamindb/example_lamindb_lineage.py"
+--8<-- "tests/system/lamindb/example_lamindb_lineage.py:howto_lamindb_recorded_params"
+```
+
+Leaving an argument out of the lineage doesn't hide it elsewhere: Airflow shows rendered arguments in
+the task's *Rendered Template* view, masking only those it knows to be secret, and the function may
+log or return it.
+
 ## Untracked tasks
 
 Pass `track=False` to run a function as the plain Airflow equivalent (`@task.virtualenv` or

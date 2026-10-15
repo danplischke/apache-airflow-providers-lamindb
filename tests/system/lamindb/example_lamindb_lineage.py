@@ -74,3 +74,25 @@ with DAG("lamindb_example_auto_flow") as dag_auto_flow:
 
     venv_double(venv_extract(count=4))
     # --8<-- [end:howto_lamindb_auto_flow]
+
+
+# Arguments that read Airflow Variables or Connections through templates are not recorded.
+with (
+    DAG("lamindb_example_params", params={"sample": "S1"}) as dag_params,
+    LaminDBFlowInitOperator(system_site_packages=True)
+    >> LaminDBFlowFinishOperator(system_site_packages=True) as flow,
+):
+    # --8<-- [start:howto_lamindb_recorded_params]
+    @task.lamindb_venv(system_site_packages=True, lamindb_exclude_params=["session"])
+    def fetch(sample: str, credentials: str, session: str = "default") -> dict:
+        return {"sample": sample, "credentials_length": len(credentials)}
+
+    # records only sample: credentials reads a Variable, and session is excluded
+    fetch("{{ params.sample }}", "{{ var.value.lims_credentials }}")
+    # --8<-- [end:howto_lamindb_recorded_params]
+
+    flow.add_task(
+        fetch.override(task_id="fetch_mapped")
+        .partial(credentials="{{ var.value.lims_credentials }}")
+        .expand(sample=["S2", "S3"])
+    )
