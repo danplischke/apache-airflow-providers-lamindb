@@ -84,23 +84,23 @@ def test_venv_step_creates_flow_tasks_with_its_settings() -> None:
             noop,
             task_id="a",
             auto_flow=True,
-            requirements=["pandas", "lamindb-core==2.9.0"],
+            requirements=["pandas", "lamindb-core==2.11.0"],
             python_version="3.11",
             system_site_packages=False,
             lamindb_conn_id="lamindb_other",
             lamindb_instance="owner/name",
-            lamindb_version="2.9.0",
+            lamindb_version="2.11.0",
         )()
 
     for task_id, cls in ((INIT, LaminDBFlowInitOperator), (FINISH, LaminDBFlowFinishOperator)):
         op = dag.get_task(task_id)
         assert type(op) is cls
-        assert op.requirements == ["lamindb-core==2.9.0"]
+        assert op.requirements == ["lamindb-core==2.11.0"]
         assert op.python_version == "3.11"
         assert op.system_site_packages is False
         assert op.lamindb_conn_id == "lamindb_other"
         assert op.lamindb_instance == "owner/name"
-        assert op.lamindb_version == "2.9.0"
+        assert op.lamindb_version == "2.11.0"
 
 
 def test_dag_default_args_reach_lamindb_arguments() -> None:

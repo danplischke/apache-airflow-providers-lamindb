@@ -7,6 +7,7 @@ import pytest
 from airflow.exceptions import AirflowException
 from airflow.sdk import dag, task
 
+from airflow.providers.lamindb.exceptions import LaminDBVersionError
 from airflow.providers.lamindb.utils import remote
 
 
@@ -47,15 +48,20 @@ def test_task_lamindb_venv_keeps_xcom_args_and_dependencies() -> None:
 
 
 def test_task_lamindb_venv_builds_operator() -> None:
-    op = _single_task(task.lamindb_venv(requirements=["pandas"], lamindb_version="2.9.0"), step)
+    op = _single_task(task.lamindb_venv(requirements=["pandas"], lamindb_version="2.11.1"), step)
     assert type(op).__name__ == "LaminDBVenvDecoratedOperator"
     assert op.custom_operator_name == "@task.lamindb_venv"
     assert op.requirements == ["pandas"]  # lamindb is added when the task runs
-    assert op.lamindb_version == "2.9.0"
+    assert op.lamindb_version == "2.11.1"
     assert op.lamindb_conn_id == "lamindb_default"
     assert {"requirements", "lamindb_conn_id", "lamindb_instance", "lamindb_cache_dir"} <= set(
         op.template_fields
     )
+
+
+def test_task_lamindb_venv_rejects_older_lamindb_when_the_dag_is_parsed() -> None:
+    with pytest.raises(LaminDBVersionError, match=r"lamindb 2\.8\.0 is not supported"):
+        _single_task(task.lamindb_venv(lamindb_version="2.8.0"), step)
 
 
 def test_task_lamindb_venv_passes_the_cache_dir_to_the_flow_operators() -> None:
@@ -103,7 +109,7 @@ def test_remote_step_ships_wrapped_source_only_during_execute(
     assert kwargs["entrypoint"] == "step"
     assert kwargs["initiated_by_run"] is fake_lamindb.flow_run
     assert op.get_python_source() == plain
-    assert seen["requirements"] == ["pandas", "lamindb-core==2.10.0", "numpy", "pandera>=0.24.0"]
+    assert seen["requirements"] == ["pandas", "lamindb-core==2.11.0", "numpy", "pandera>=0.24.0"]
     assert seen["env_vars"]["LAMIN_API_KEY"] == "api-key"
     assert seen["settings_dir_existed"]
     assert op.env_vars is None
@@ -143,7 +149,7 @@ def test_step_without_connection_uses_lamindb_configuration(fake_lamindb: MagicM
     assert result == 1
     fake_lamindb.connect.assert_not_called()
     assert seen["env_vars"] == {}
-    assert seen["requirements"][0] == "lamindb-core"
+    assert seen["requirements"][0] == "lamindb-core>=2.8.1"
 
 
 def test_untracked_steps_are_plain_tasks() -> None:

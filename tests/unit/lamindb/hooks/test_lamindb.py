@@ -9,7 +9,7 @@ import pytest
 import respx
 from airflow.sdk import Connection
 
-from airflow.providers.lamindb.exceptions import LaminDBApiError
+from airflow.providers.lamindb.exceptions import LaminDBApiError, LaminDBVersionError
 from airflow.providers.lamindb.hooks.lamindb import (
     DBWRITE_REGISTRY,
     DEFAULT_HUB_API_URL,
@@ -237,14 +237,23 @@ class TestRetries:
             hook.get_instance()
         assert err.value.http_status_code == 502
         assert err.value.detail == "bad gateway"
+        assert err.value.transient
 
     def test_does_not_retry_client_errors(self, hook, mock_api):
         route = mock_api.get(f"{HUB}/instances/owner/name/settings").mock(
             return_value=httpx.Response(404, json={"detail": "not found"})
         )
-        with pytest.raises(LaminDBApiError, match="404"):
+        with pytest.raises(LaminDBApiError, match="404") as err:
             hook.get_instance()
         assert route.call_count == 1
+        assert not err.value.transient
+
+    @pytest.mark.parametrize(("status", "transient"), [(429, True), (501, True), (400, False), (403, False)])
+    def test_transient_status_codes(self, hook, mock_api, status, transient):
+        mock_api.get(f"{HUB}/instances/owner/name/settings").mock(return_value=httpx.Response(status))
+        with pytest.raises(LaminDBApiError) as err:
+            LaminDBHook("lamindb_test", retry_backoff=0, retries=0).get_instance()
+        assert err.value.transient is transient
 
     def test_retries_transport_errors(self, hook, mock_api):
         route = mock_api.get(f"{HUB}/instances/owner/name/settings").mock(
@@ -442,6 +451,37 @@ class TestTestConnection:
         assert "forbidden" in message
 
 
+class TestLamindbVersion:
+    @staticmethod
+    def _settings(mock_api, lamindb_version):
+        mock_api.get(f"{HUB}/instances/owner/name/settings").mock(
+            return_value=httpx.Response(200, json={**SETTINGS, "lamindb_version": lamindb_version})
+        )
+
+    @pytest.mark.parametrize("lamindb_version", ["2.8.1", "2.10.4", "2.11.0", "3.0.0", None, ""])
+    def test_supported_and_unknown_versions_pass(self, hook, mock_api, lamindb_version):
+        self._settings(mock_api, lamindb_version)
+        assert hook.get_instance().lamindb_version == lamindb_version
+
+    @pytest.mark.parametrize("lamindb_version", ["2.8.0", "1.17.0"])
+    def test_older_instances_fail(self, hook, mock_api, lamindb_version):
+        self._settings(mock_api, lamindb_version)
+        with pytest.raises(LaminDBVersionError, match=f"owner/name runs lamindb {lamindb_version}, but"):
+            hook.get_instance()
+        ok, message = hook.test_connection()
+        assert not ok
+        assert "needs lamindb 2.8.1 or newer" in message
+
+    async def test_older_instances_fail_async(self, connection, mock_api):
+        self._settings(mock_api, "2.8.0")
+        hook = LaminDBHook("lamindb_test", retry_backoff=0)
+        try:
+            with pytest.raises(LaminDBVersionError, match=r"needs lamindb 2\.8\.1 or newer"):
+                await hook.aget_instance()
+        finally:
+            await hook.aclose()
+
+
 class TestAsync:
     async def test_async_queries(self, connection, mock_api):
         hook = LaminDBHook("lamindb_test", retry_backoff=0)
@@ -472,6 +512,7 @@ class TestAsync:
     async def test_async_error(self, connection, mock_api):
         hook = LaminDBHook("lamindb_test", retry_backoff=0, retries=0)
         mock_api.get(f"{HUB}/instances/owner/name/settings").mock(side_effect=httpx.ReadTimeout("slow"))
-        with pytest.raises(LaminDBApiError, match="slow"):
+        with pytest.raises(LaminDBApiError, match="slow") as err:
             await hook.aget_instance()
+        assert err.value.transient  # a network error
         await hook.aclose()

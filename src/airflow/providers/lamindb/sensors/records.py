@@ -4,6 +4,7 @@ from collections.abc import Sequence
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any
 
+from airflow.providers.lamindb.exceptions import LaminDBApiError
 from airflow.providers.lamindb.hooks.lamindb import LaminDBHook
 from airflow.providers.lamindb.triggers.records import (
     LaminDBRecordSensorTrigger,
@@ -25,7 +26,8 @@ class LaminDBRecordSensor(BaseSensorOperator):
     """
     Wait until records matching a filter exist in a LaminDB registry.
 
-    Returns the matching records (newest first, at most ``limit``), which are pushed to XCom.
+    Returns the matching records (newest first, at most ``limit``), which are pushed to XCom. Network
+    errors, rate limiting and LaminHub server errors don't end the wait; the sensor checks again later.
 
     For more information on how to use this sensor, take a look at the
     [guide](https://danplischke.github.io/apache-airflow-providers-lamindb/sensors/#lamindbrecordsensor).
@@ -92,6 +94,11 @@ class LaminDBRecordSensor(BaseSensorOperator):
         hook = self.hook
         try:
             records = hook.query_records(self.registry, self._query(), order_by=["-id"], limit=self.limit)
+        except LaminDBApiError as err:
+            if not err.transient:
+                raise
+            self.log.warning("LaminHub is unavailable, checking again later: %s", err)
+            return PokeReturnValue(is_done=False)
         finally:
             hook.close()
         matching = ready_records(records, wait_for_upload=self._wait_for_upload)

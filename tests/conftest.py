@@ -58,6 +58,7 @@ def fake_lamindb(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
     returns ``fake_lamindb.flow_run`` (None until a test sets it).
     """
     fake = MagicMock()
+    fake.__version__ = "2.11.0"
     fake.context = _FakeRunContext()
     fake.flow_run = None
 

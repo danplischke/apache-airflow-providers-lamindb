@@ -215,6 +215,12 @@ class TestBranchStatusSensorTrigger:
         events = [e.payload async for e in trigger(hook).run()]
         assert events == [{"status": "error", "message": "boom"}]
 
+    async def test_keeps_waiting_through_transient_errors(self, trigger):
+        hook = FakeHook(records={"core.branch": {10: branch(10, "release-1", -1)}})
+        hook.fail_next = [LaminDBApiError("unavailable", http_status_code=503, transient=True)] * 2
+        events = [e.payload async for e in trigger(hook).run()]
+        assert [e["status"] for e in events] == ["success"]
+
     def test_serialize(self):
         trigger = LaminDBBranchStatusSensorTrigger(5, target_status=["review"], failure_status=[])
         classpath, kwargs = trigger.serialize()

@@ -297,20 +297,23 @@ class LaminDBBranchStatusSensorTrigger(BaseTrigger):
                 try:
                     branch = await hook.aget_branch(self.branch)
                 except (LaminDBApiError, ValueError) as err:
-                    yield TriggerEvent({"status": "error", "message": str(err)})
-                    return
-                outcome = evaluate_branch_status(branch, self.target_status, self.failure_status)
-                if outcome is not None:
-                    summary = branch_summary(branch)
-                    yield TriggerEvent(
-                        {
-                            "status": outcome,
-                            "branch": summary,
-                            "message": f"Branch {self.branch!r} has status {summary['status']!r}",  # type: ignore[index]
-                        }
-                    )
-                    return
-                self.log.info("Branch %r has not reached any of %s yet", self.branch, self.target_status)
+                    if not (isinstance(err, LaminDBApiError) and err.transient):
+                        yield TriggerEvent({"status": "error", "message": str(err)})
+                        return
+                    self.log.warning("LaminHub is unavailable, checking again later: %s", err)
+                else:
+                    outcome = evaluate_branch_status(branch, self.target_status, self.failure_status)
+                    if outcome is not None:
+                        summary = branch_summary(branch)
+                        yield TriggerEvent(
+                            {
+                                "status": outcome,
+                                "branch": summary,
+                                "message": f"Branch {self.branch!r} has status {summary['status']!r}",  # type: ignore[index]
+                            }
+                        )
+                        return
+                    self.log.info("Branch %r has not reached any of %s yet", self.branch, self.target_status)
                 await asyncio.sleep(self.poll_interval)
         finally:
             await hook.aclose()

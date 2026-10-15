@@ -39,7 +39,7 @@ and to the hook's `query_records`. They convert it to the JSON form of the
 There is a field enum for each core registry: `ArtifactField`, `CollectionField`, `RunField`,
 `TransformField`, `RecordField`, `ULabelField`, `FeatureField`, `SchemaField`,
 `ProjectField`, `ReferenceField`, `StorageField`, `BranchField`, `SpaceField` and
-`UserField`. The enums list the fields of LaminDB 2.10; use strings for other fields, for example of
+`UserField`. The enums list the fields of LaminDB 2.11; use strings for other fields, for example of
 `bionty` registries: `F("ontology_id")`.
 
 `LaminDBRegistry` lists the registries for the `registry` argument, for example

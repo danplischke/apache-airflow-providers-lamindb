@@ -11,13 +11,14 @@ from typing import TYPE_CHECKING, Any
 import httpx
 
 from airflow.providers.lamindb import __version__
-from airflow.providers.lamindb.exceptions import LaminDBApiError
+from airflow.providers.lamindb.exceptions import LaminDBApiError, LaminDBVersionError
 from airflow.providers.lamindb.utils.filters import (
     FilterLike,
     combine_filters,
     normalize_filter,
     normalize_order_by,
 )
+from airflow.providers.lamindb.utils.runtime import MIN_LAMINDB_VERSION, lamindb_version_supported
 from airflow.sdk import BaseHook
 
 if TYPE_CHECKING:
@@ -169,7 +170,8 @@ class LaminDBHook(BaseHook):
     The connection's password is a Lamin API key; it is exchanged for a short-lived access token that
     is refreshed automatically. Without an API key, requests are anonymous, which works for public
     instances. The instance (``owner/name``) is read from the connection's ``instance`` extra and can
-    be overridden per hook.
+    be overridden per hook. Instances on lamindb older than 2.8.1 are rejected with
+    [`LaminDBVersionError`][airflow.providers.lamindb.exceptions.LaminDBVersionError].
 
     :param lamindb_conn_id: Airflow connection of type ``lamindb``. ``None`` means anonymous access
         with default settings, which requires ``instance`` to be passed.
@@ -298,6 +300,7 @@ class LaminDBHook(BaseHook):
                 f"LaminHub API request {method} {url} failed with status {response.status_code}: {detail}",
                 http_status_code=response.status_code,
                 detail=detail,
+                transient=response.status_code == 429 or response.status_code >= 500,
             )
         if not response.content:
             return None
@@ -325,7 +328,9 @@ class LaminDBHook(BaseHook):
                 response = client.request(method, url, params=params, json=json, headers=headers)
             except httpx.TransportError as err:
                 if not isinstance(err, retry_errors) or attempt >= self.retries:
-                    raise LaminDBApiError(f"LaminHub API request {method} {url} failed: {err}") from err
+                    raise LaminDBApiError(
+                        f"LaminHub API request {method} {url} failed: {err}", transient=True
+                    ) from err
                 time.sleep(self._backoff(attempt))
                 attempt += 1
                 continue
@@ -361,7 +366,9 @@ class LaminDBHook(BaseHook):
                 response = await client.request(method, url, params=params, json=json, headers=headers)
             except httpx.TransportError as err:
                 if not isinstance(err, retry_errors) or attempt >= self.retries:
-                    raise LaminDBApiError(f"LaminHub API request {method} {url} failed: {err}") from err
+                    raise LaminDBApiError(
+                        f"LaminHub API request {method} {url} failed: {err}", transient=True
+                    ) from err
                 await asyncio.sleep(self._backoff(attempt))
                 attempt += 1
                 continue
@@ -414,7 +421,7 @@ class LaminDBHook(BaseHook):
         if not isinstance(settings, dict) or not settings.get("id"):
             raise LaminDBApiError(f"Unexpected settings response for instance {config.owner}/{config.name}.")
         kept = {key: settings.get(key) for key in _KEPT_SETTINGS}
-        return LaminDBInstance(
+        instance = LaminDBInstance(
             owner=kept["owner"] or config.owner,
             name=kept["name"] or config.name,
             id=str(kept["id"]),
@@ -424,6 +431,14 @@ class LaminDBHook(BaseHook):
             public=kept["public"],
             lamindb_version=kept["lamindb_version"],
         )
+        # an unknown version passes; lineage tasks check the lamindb they install instead
+        if instance.lamindb_version and not lamindb_version_supported(instance.lamindb_version):
+            raise LaminDBVersionError(
+                f"The LaminDB instance {instance.slug} runs lamindb {instance.lamindb_version}, but "
+                f"apache-airflow-providers-lamindb needs lamindb {MIN_LAMINDB_VERSION} or newer. "
+                "Migrate the instance first."
+            )
+        return instance
 
     @staticmethod
     def _records_request(
@@ -484,7 +499,12 @@ class LaminDBHook(BaseHook):
         return self._get_config().cache_dir
 
     def get_instance(self) -> LaminDBInstance:
-        """Return the configured instance (resolves its id and regional API URL on first use)."""
+        """
+        Return the configured instance (resolves its id and regional API URL on first use).
+
+        Raises [`LaminDBVersionError`][airflow.providers.lamindb.exceptions.LaminDBVersionError] if the
+        instance runs lamindb older than 2.8.1.
+        """
         if self._instance is None:
             config = self._get_config()
             settings = self._send("GET", self._settings_url(config))

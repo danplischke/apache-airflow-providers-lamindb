@@ -46,6 +46,13 @@ def test_compat_job_covers_the_airflow_floor() -> None:
     assert min(tested) == floor
 
 
+def test_readme_links_work_on_pypi() -> None:
+    # README.md is the PyPI description, where links relative to the repository don't resolve
+    targets = re.findall(r"\]\(([^)\s]+)\)", (ROOT / "README.md").read_text())
+    assert targets
+    assert [t for t in targets if not t.startswith(("https://", "http://", "#"))] == []
+
+
 @pytest.mark.parametrize("path", READ_BY_TESTS)
 def test_sdist_ships_the_files_the_tests_read(path: str) -> None:
     included = PYPROJECT["tool"]["hatch"]["build"]["targets"]["sdist"]["only-include"]

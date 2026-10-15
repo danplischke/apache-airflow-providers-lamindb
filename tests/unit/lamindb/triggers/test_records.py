@@ -4,7 +4,7 @@ from typing import Any
 
 import pytest
 
-from airflow.providers.lamindb.exceptions import LaminDBApiError
+from airflow.providers.lamindb.exceptions import LaminDBApiError, LaminDBVersionError
 from airflow.providers.lamindb.triggers.records import (
     LaminDBArtifactEventTrigger,
     LaminDBRecordEventTrigger,
@@ -433,11 +433,20 @@ class TestRecordSensorTrigger:
         events = [e.payload async for e in trigger(hook, min_count=2).run()]
         assert events == [{"status": "success", "records": [artifact(2), artifact(1)]}]
 
-    async def test_error(self, trigger):
+    @pytest.mark.parametrize(
+        "error", [LaminDBApiError("forbidden"), LaminDBVersionError("owner/name runs lamindb 2.8.0")]
+    )
+    async def test_error(self, trigger, error):
         hook = FakeHook()
-        hook.fail_next = [LaminDBApiError("forbidden")]
+        hook.fail_next = [error]
         events = [e.payload async for e in trigger(hook).run()]
-        assert events == [{"status": "error", "message": "forbidden"}]
+        assert events == [{"status": "error", "message": str(error)}]
+
+    async def test_keeps_waiting_through_transient_errors(self, trigger):
+        hook = FakeHook(records={"core.artifact": {1: artifact(1)}})
+        hook.fail_next = [LaminDBApiError("unavailable", http_status_code=503, transient=True)] * 2
+        events = [e.payload async for e in trigger(hook).run()]
+        assert events == [{"status": "success", "records": [artifact(1)]}]
 
     def test_serialize(self):
         trigger = LaminDBRecordSensorTrigger("core.run", {"name": {"eq": "x"}}, branch=None, min_count=2)

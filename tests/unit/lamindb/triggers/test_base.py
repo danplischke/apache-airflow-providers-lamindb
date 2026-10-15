@@ -5,7 +5,7 @@ from typing import Any
 import pytest
 from airflow.triggers.base import TriggerEvent
 
-from airflow.providers.lamindb.exceptions import LaminDBApiError
+from airflow.providers.lamindb.exceptions import LaminDBApiError, LaminDBVersionError
 from airflow.providers.lamindb.triggers import base
 from airflow.providers.lamindb.triggers.base import LaminDBDbWriteEventTrigger
 from airflow.providers.lamindb.triggers.cursors import AssetCursorStore, RecordCursorStore
@@ -209,6 +209,18 @@ class TestPolling:
 
         assert [e["dbwrite"]["id"] for e in events] == [1]
         assert sleeps["delays"] == [20, 40, 10]
+
+    async def test_older_instances_are_never_polled(self, fake_hook_factory, sleeps):
+        # raising instead would make the triggerer restart the watcher at once, in a tight loop
+        trigger = EchoTrigger(poll_interval=10)
+        hook = fake_hook_factory(trigger, FakeHook(writes=[dbwrite(1, "INSERT", "t", 1)]))
+        error = LaminDBVersionError("The LaminDB instance owner/name runs lamindb 2.8.0")
+        hook.fail_next = [error, error]
+        sleeps["callbacks"].append(lambda: None)
+
+        assert await collect(trigger) == []
+        assert hook.dbwrite_queries == []
+        assert sleeps["delays"] == [20, 40]
 
     async def test_cursor_in_lamindb(self, fake_hook_factory, sleeps):
         trigger = EchoTrigger(cursor_store=RecordCursorStore(commit_delay=0))

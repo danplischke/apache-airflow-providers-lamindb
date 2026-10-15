@@ -17,9 +17,8 @@ from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
 from typing import Any
 
-from packaging.version import InvalidVersion, Version
-
 from airflow.exceptions import AirflowException, AirflowNotFoundException
+from airflow.providers.lamindb.exceptions import LaminDBVersionError
 from airflow.providers.lamindb.hooks.lamindb import LaminDBHook, parse_instance_slug
 from airflow.providers.lamindb.utils import runtime
 from airflow.providers.lamindb.utils.dag_run import context_flow_run_reference, dag_source, task_instance_url
@@ -29,11 +28,12 @@ log = logging.getLogger(__name__)
 _LAMINDB_REQUIREMENT = re.compile(r"^\s*lamindb(?P<core>[-_.]core)?\s*($|[\[<>=!~;@\s])", re.IGNORECASE)
 _REQUIREMENT_NAME = re.compile(r"^\s*([A-Za-z0-9][A-Za-z0-9._-]*)")
 _REQUIREMENT_COMMENT = re.compile(r"(^|\s)#.*$")
+_EXACT_PIN = re.compile(r"==\s*(\d[^,;\s]*)")
 
-LAMINDB_CORE_MIN_VERSION = Version("2.6.1")
-"""First lamindb release that is also published as ``lamindb-core``."""
 LAMINDB_CORE_COMPANIONS = ("numpy", "pandas>=2.0.0", "pandera>=0.24.0")
 """Packages ``lamindb-core`` needs for querying runs but does not declare (they come with ``lamindb``)."""
+LAMINDB_CORE_COMPANIONS_PANDAS_2 = ("numpy", "pandas>=2.0.0,<3", "pandera>=0.24.0")
+"""The same for lamindb before 2.10, which requires pandas below 3."""
 
 
 def _runtime_loader_source() -> str:
@@ -107,35 +107,53 @@ def lamindb_requirement_lines(requirements: Iterable[Any]) -> list[str]:
     return [line for line in _requirement_lines(requirements) if _LAMINDB_REQUIREMENT.match(line)]
 
 
+def check_lamindb_version(lamindb_version: str | None) -> None:
+    """Fail for a lamindb version older than ``runtime.MIN_LAMINDB_VERSION``, the oldest one supported."""
+    if lamindb_version and not runtime.lamindb_version_supported(lamindb_version):
+        raise LaminDBVersionError(
+            f"lamindb {lamindb_version} is not supported: apache-airflow-providers-lamindb needs lamindb "
+            f"{runtime.MIN_LAMINDB_VERSION} or newer."
+        )
+
+
+def lamindb_core_companions(lamindb_version: str | None = None) -> tuple[str, ...]:
+    """The packages ``lamindb-core`` needs here for ``lamindb_version``; ``None`` for the latest."""
+    if lamindb_version and not runtime.lamindb_version_at_least(lamindb_version, "2.10"):
+        return LAMINDB_CORE_COMPANIONS_PANDAS_2
+    return LAMINDB_CORE_COMPANIONS
+
+
 def lamindb_requirements(lamindb_version: str | None = None) -> list[str]:
     """Requirements that install lamindb in a virtualenv, pinned to ``lamindb_version`` if given.
 
     ``lamindb-core`` plus the packages it needs for this provider: about half the size of the full
-    ``lamindb`` distribution. Versions before ``lamindb-core`` existed install ``lamindb``.
+    ``lamindb`` distribution. Unpinned, any version from ``runtime.MIN_LAMINDB_VERSION`` on; older
+    versions fail.
     """
-    if lamindb_version is not None:
-        try:
-            if Version(lamindb_version) < LAMINDB_CORE_MIN_VERSION:
-                return [f"lamindb=={lamindb_version}"]
-        except InvalidVersion:
-            pass
-    core = f"lamindb-core=={lamindb_version}" if lamindb_version else "lamindb-core"
-    return [core, *LAMINDB_CORE_COMPANIONS]
+    check_lamindb_version(lamindb_version)
+    if lamindb_version:
+        return [f"lamindb-core=={lamindb_version}", *lamindb_core_companions(lamindb_version)]
+    return [f"lamindb-core>={runtime.MIN_LAMINDB_VERSION}", *lamindb_core_companions()]
 
 
 def add_lamindb_requirement(requirements: list[str], lamindb_version: str | None = None) -> None:
     """Append lamindb to ``requirements`` unless the full ``lamindb`` is listed already.
 
-    A listed ``lamindb-core`` is kept and only completed with the packages it does not declare.
-    Multi-line elements (a rendered requirements file) are searched line by line; a nested
-    ``-r other.txt`` is not, so list lamindb directly or pass ``lamindb_version`` then.
+    A listed ``lamindb-core`` is kept and only completed with the packages it does not declare, for
+    its version if pinned with ``==``. Multi-line elements (a rendered requirements file) are searched
+    line by line; a nested ``-r other.txt`` is not, so list lamindb directly or pass ``lamindb_version``
+    then.
     """
     lines = list(_requirement_lines(requirements))
     lamindb = [m for line in lines if (m := _LAMINDB_REQUIREMENT.match(line))]
     if any(not m.group("core") for m in lamindb):
         return
     listed = {_requirement_name(line) for line in lines}
-    to_add = list(LAMINDB_CORE_COMPANIONS) if lamindb else lamindb_requirements(lamindb_version)
+    if lamindb:
+        pins = [pin[1] for m in lamindb if (pin := _EXACT_PIN.search(m.string))]
+        to_add = list(lamindb_core_companions(pins[0] if pins else None))
+    else:
+        to_add = lamindb_requirements(lamindb_version)
     requirements.extend(r for r in to_add if _requirement_name(r) not in listed)
 
 
@@ -185,11 +203,16 @@ class RemoteLaminDB:
             ) from e
 
     def instance_lamindb_version(self) -> str | None:
-        """The instance's lamindb version according to LaminHub, or None if unknown."""
+        """The instance's lamindb version according to LaminHub, or None if unknown.
+
+        Raises ``LaminDBVersionError`` for instances on lamindb older than the provider supports.
+        """
         if self._hook is None:
             return None
         try:
             return self._hook.get_instance().lamindb_version
+        except LaminDBVersionError:
+            raise
         except Exception as e:
             log.warning(
                 "Could not look up the lamindb version of %s, installing the latest: %s", self.instance, e
@@ -203,7 +226,8 @@ def ensure_lamindb_requirement(operator: Any, remote: RemoteLaminDB, lamindb_ver
     """Add lamindb to a virtualenv operator's ``requirements`` unless listed.
 
     Pinned to ``lamindb_version``, else to the instance's version on LaminHub (with a connection),
-    else unpinned. The remote side must speak the instance's schema version.
+    else to any supported version. The remote side must speak the instance's schema version. A
+    listed lamindb is not resolved here; the virtualenv checks the version it installed.
     """
     requirements = list(operator.requirements)
     if not lamindb_requirement_lines(requirements):

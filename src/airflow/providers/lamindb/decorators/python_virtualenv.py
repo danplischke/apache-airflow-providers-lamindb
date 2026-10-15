@@ -11,6 +11,7 @@ from airflow.providers.lamindb.operators.flow import wire_flow_tasks
 from airflow.providers.lamindb.utils.remote import (
     RemoteLaminDB,
     RemoteLaminDBStepMixin,
+    check_lamindb_version,
     ensure_lamindb_requirement,
     lamindb_requirement_lines,
     lamindb_virtualenv_env,
@@ -52,6 +53,7 @@ class LaminDBVenvDecoratedOperator(RemoteLaminDBStepMixin, _PythonVirtualenvDeco
         lamindb_cache_dir: str | None = None,
         **kwargs: Any,
     ) -> None:
+        check_lamindb_version(lamindb_version)
         super().__init__(lamindb_conn_id=lamindb_conn_id, lamindb_instance=lamindb_instance, **kwargs)
         self.lamindb_version = lamindb_version
         self.lamindb_cache_dir = lamindb_cache_dir
@@ -88,8 +90,8 @@ def lamindb_venv_task(
       Templated, e.g. from an upstream task's XCom.
     - ``lamindb_instance``: instance slug to connect to; overrides the connection's. Templated.
     - ``lamindb_version``: version of ``lamindb-core`` added to ``requirements`` unless
-      you list lamindb yourself; defaults to the instance's version on LaminHub (with a
-      connection), else the latest.
+      you list lamindb yourself, 2.8.1 or newer; defaults to the instance's version on
+      LaminHub (with a connection), else the latest.
     - ``lamindb_cache_dir``: absolute path of a lamindb cache shared between tasks, set as
       ``LAMIN_CACHE_DIR``; overrides the connection's ``cache_dir`` extra. Templated.
     - ``auto_flow``: wire ``init >> step >> finish`` with the DAG's flow operators,

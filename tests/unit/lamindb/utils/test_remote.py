@@ -8,6 +8,7 @@ import pytest
 import respx
 from airflow.exceptions import AirflowNotFoundException
 
+from airflow.providers.lamindb.exceptions import LaminDBVersionError
 from airflow.providers.lamindb.hooks.lamindb import DEFAULT_HUB_API_URL, LaminDBHook
 from airflow.providers.lamindb.utils.remote import (
     RemoteLaminDB,
@@ -72,6 +73,8 @@ def test_remote_flow_source_calls_runtime_and_returns_run_uid(fake_lamindb: Magi
 
 
 CORE_COMPANIONS = ["numpy", "pandas>=2.0.0", "pandera>=0.24.0"]
+# lamindb before 2.10 requires pandas below 3
+PANDAS_2_COMPANIONS = ["numpy", "pandas>=2.0.0,<3", "pandera>=0.24.0"]
 
 
 @pytest.mark.parametrize(
@@ -82,7 +85,9 @@ CORE_COMPANIONS = ["numpy", "pandas>=2.0.0", "pandera>=0.24.0"]
         (["lamindb"], ["lamindb"]),
         (["lamindb[bionty]>=1"], ["lamindb[bionty]>=1"]),
         (["LaminDB==1.0"], ["LaminDB==1.0"]),
-        (["lamindb-core==2.8.0"], ["lamindb-core==2.8.0", *CORE_COMPANIONS]),
+        (["lamindb-core==2.9.0"], ["lamindb-core==2.9.0", *PANDAS_2_COMPANIONS]),
+        (["lamindb-core == 2.10.0"], ["lamindb-core == 2.10.0", *CORE_COMPANIONS]),
+        (["lamindb-core>=2.8.1"], ["lamindb-core>=2.8.1", *CORE_COMPANIONS]),
         (["lamindb_core", "Pandas"], ["lamindb_core", "Pandas", "numpy", "pandera>=0.24.0"]),
         (["lamindb_setup"], ["lamindb_setup", "lamindb-core==9.9", *CORE_COMPANIONS]),
         (
@@ -105,21 +110,29 @@ def test_add_lamindb_requirement(requirements: list[str], expected: list[str]) -
 
 
 def test_lamindb_requirement_lines() -> None:
-    requirements = ["pandas\nlamindb[bionty]==1.3.0  # pinned\n-r lamindb.txt", "lamindb-core"]
-    assert lamindb_requirement_lines(requirements) == ["lamindb[bionty]==1.3.0", "lamindb-core"]
+    requirements = ["pandas\nlamindb[bionty]==2.11.0  # pinned\n-r lamindb.txt", "lamindb-core"]
+    assert lamindb_requirement_lines(requirements) == ["lamindb[bionty]==2.11.0", "lamindb-core"]
 
 
 @pytest.mark.parametrize(
     ("version", "expected"),
     [
-        (None, ["lamindb-core", *CORE_COMPANIONS]),
-        ("2.6.1", ["lamindb-core==2.6.1", *CORE_COMPANIONS]),
-        ("2.6.0", ["lamindb==2.6.0"]),  # before lamindb-core was published
-        ("1.0", ["lamindb==1.0"]),
+        (None, ["lamindb-core>=2.8.1", *CORE_COMPANIONS]),
+        ("2.8.1", ["lamindb-core==2.8.1", *PANDAS_2_COMPANIONS]),
+        ("2.9.2", ["lamindb-core==2.9.2", *PANDAS_2_COMPANIONS]),
+        ("2.10.0", ["lamindb-core==2.10.0", *CORE_COMPANIONS]),
+        ("2.11.0", ["lamindb-core==2.11.0", *CORE_COMPANIONS]),
+        ("3.0.1", ["lamindb-core==3.0.1", *CORE_COMPANIONS]),
     ],
 )
 def test_lamindb_requirements(version: str | None, expected: list[str]) -> None:
     assert lamindb_requirements(version) == expected
+
+
+@pytest.mark.parametrize("version", ["2.8.0", "2.6.0", "1.0", "latest"])
+def test_lamindb_requirements_reject_unsupported_versions(version: str) -> None:
+    with pytest.raises(LaminDBVersionError, match=f"lamindb {version} is not supported"):
+        lamindb_requirements(version)
 
 
 @pytest.fixture
@@ -167,15 +180,25 @@ def test_missing_connection_is_an_error(monkeypatch) -> None:
 
 def test_instance_lamindb_version_reuses_the_resolved_connection(connection) -> None:
     settings_url = f"{DEFAULT_HUB_API_URL}/instances/owner/name/settings"
-    settings = {"id": "abc", "api_url": "https://api.example.com", "lamindb_version": "2.9.0"}
+    settings = {"id": "abc", "api_url": "https://api.example.com", "lamindb_version": "2.11.0"}
     with (
         respx.mock() as router,
         patch.object(LaminDBHook, "get_connection", wraps=LaminDBHook.get_connection) as get_connection,
     ):
         router.post(f"{DEFAULT_HUB_API_URL}/account/jwt").respond(json={"accessToken": "token"})
         router.get(settings_url).respond(json=settings)
-        assert RemoteLaminDB.resolve("lamindb_test", None).instance_lamindb_version() == "2.9.0"
+        assert RemoteLaminDB.resolve("lamindb_test", None).instance_lamindb_version() == "2.11.0"
     get_connection.assert_called_once()
+
+
+def test_instance_lamindb_version_rejects_older_instances(connection) -> None:
+    settings = {"id": "abc", "api_url": "https://api.example.com", "lamindb_version": "2.8.0"}
+    with respx.mock() as router:
+        router.post(f"{DEFAULT_HUB_API_URL}/account/jwt").respond(json={"accessToken": "token"})
+        router.get(f"{DEFAULT_HUB_API_URL}/instances/owner/name/settings").respond(json=settings)
+        # not the "install the latest" fallback of lookup errors
+        with pytest.raises(LaminDBVersionError, match=r"owner/name runs lamindb 2\.8\.0"):
+            RemoteLaminDB.resolve("lamindb_test", None).instance_lamindb_version()
 
 
 def test_instance_lamindb_version_falls_back_to_latest(connection, caplog) -> None:

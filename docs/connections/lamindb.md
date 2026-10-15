@@ -46,7 +46,8 @@ Cache directory (`cache_dir` extra, optional)
 The flow operators and `@task.lamindb_venv` steps pass the connection to lamindb in their virtualenv:
 the API key as `LAMIN_API_KEY` and a temporary, empty `LAMIN_SETTINGS_DIR`, so lamindb never reads
 the worker's `~/.lamin`. Both are set only while the task runs and are never rendered. With a
-connection, the virtualenv installs the instance's lamindb version unless `lamindb_version` is given.
+connection, the virtualenv installs the instance's lamindb version unless `lamindb_version` is given;
+either must be 2.8.1 or newer.
 
 `@task.lamindb_k8s` pods only get the instance from the connection. Mount the API key from a
 Kubernetes secret, because environment variables of a pod are readable in its spec.
@@ -118,5 +119,6 @@ hook.query_records("core.artifact", F(ArtifactField.SUFFIX) == ".csv", order_by=
 See [Filters](../filters.md) for building filters.
 
 Testing the connection runs [`LaminDBHook.test_connection`][airflow.providers.lamindb.hooks.lamindb.LaminDBHook.test_connection],
-which resolves the instance and reads its database write log. Airflow disables connection testing by
-default; enable it with `[core] test_connection = Enabled`.
+which resolves the instance and reads its database write log. It fails for instances on lamindb older
+than 2.8.1, which the provider doesn't support. Airflow disables connection testing by default; enable
+it with `[core] test_connection = Enabled`.
