@@ -16,11 +16,16 @@ from airflow.providers.lamindb.utils.dag_run import (
     flow_run_params,
 )
 from airflow.providers.lamindb.utils.remote import (
+    LaminDBSetup,
     RemoteLaminDB,
     build_remote_flow_source,
     check_lamindb_version,
+    check_same_setup,
     ensure_lamindb_requirement,
     lamindb_virtualenv_env,
+    resolve_setup,
+    setup_bootstrap_source,
+    setup_execution_env,
     space_name,
 )
 from airflow.providers.standard.operators.python import PythonVirtualenvOperator
@@ -63,6 +68,8 @@ class _LaminDBFlowOperator(PythonVirtualenvOperator):
         instance's version on LaminHub (with a connection), else the latest. Templated.
     :param lamindb_cache_dir: absolute path of a lamindb cache shared between tasks, set as
         ``LAMIN_CACHE_DIR``; overrides the connection's ``cache_dir`` extra. Templated.
+    :param lamindb_setup: a [`LaminDBSetup`][airflow.providers.lamindb.utils.remote.LaminDBSetup]
+        that prepares the virtualenv; the steps of the DAG must have the same one.
     """
 
     template_fields: Sequence[str] = (
@@ -83,6 +90,7 @@ class _LaminDBFlowOperator(PythonVirtualenvOperator):
         lamindb_space: str | None = None,
         lamindb_version: str | None = None,
         lamindb_cache_dir: str | None = None,
+        lamindb_setup: LaminDBSetup | None = None,
         **kwargs: Any,
     ) -> None:
         check_lamindb_version(lamindb_version)
@@ -93,10 +101,14 @@ class _LaminDBFlowOperator(PythonVirtualenvOperator):
         self.lamindb_space = lamindb_space
         self.lamindb_version = lamindb_version
         self.lamindb_cache_dir = lamindb_cache_dir
+        self.lamindb_setup = lamindb_setup
+        resolve_setup(lamindb_setup)  # a broken [lamindb] setup_class fails when the DAG is parsed
 
     def get_python_source(self) -> str:
         return build_remote_flow_source(
-            function_name=self.python_callable.__name__, runtime_function=self._runtime_function
+            function_name=self.python_callable.__name__,
+            runtime_function=self._runtime_function,
+            bootstrap=setup_bootstrap_source(self.lamindb_setup),
         )
 
     def _runtime_kwargs(self, context: Any) -> dict[str, Any]:
@@ -109,10 +121,13 @@ class _LaminDBFlowOperator(PythonVirtualenvOperator):
         self.op_kwargs = {
             "lamindb_airflow_config": {"instance": remote.instance, **self._runtime_kwargs(context)}
         }
-        with lamindb_virtualenv_env(self, remote):
+        with lamindb_virtualenv_env(self, remote, self._setup_env(context)):
             result = super().execute(context)
         self._after_execute(context, remote)
         return result
+
+    def _setup_env(self, context: Any) -> dict[str, str]:
+        return setup_execution_env(self.lamindb_setup, context)
 
     def _after_execute(self, context: Any, remote: RemoteLaminDB) -> None:
         pass
@@ -144,6 +159,7 @@ class LaminDBFlowInitOperator(_LaminDBFlowOperator):
         lamindb_space: str | None = None,
         lamindb_version: str | None = None,
         lamindb_cache_dir: str | None = None,
+        lamindb_setup: LaminDBSetup | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(
@@ -153,6 +169,7 @@ class LaminDBFlowInitOperator(_LaminDBFlowOperator):
             lamindb_space=lamindb_space,
             lamindb_version=lamindb_version,
             lamindb_cache_dir=lamindb_cache_dir,
+            lamindb_setup=lamindb_setup,
             **kwargs,
         )
         if is_setup:
@@ -198,6 +215,7 @@ class LaminDBFlowFinishOperator(_LaminDBFlowOperator):
         lamindb_space: str | None = None,
         lamindb_version: str | None = None,
         lamindb_cache_dir: str | None = None,
+        lamindb_setup: LaminDBSetup | None = None,
         **kwargs: Any,
     ) -> None:
         if not is_teardown:
@@ -209,10 +227,23 @@ class LaminDBFlowFinishOperator(_LaminDBFlowOperator):
             lamindb_space=lamindb_space,
             lamindb_version=lamindb_version,
             lamindb_cache_dir=lamindb_cache_dir,
+            lamindb_setup=lamindb_setup,
             **kwargs,
         )
         if is_teardown:
             self.as_teardown()
+
+    def _setup_env(self, context: Any) -> dict[str, str]:
+        # closing the flow run matters more than the setup's environment: without it the run would
+        # stay started, e.g. when execution_env() can't read a Variable
+        try:
+            return super()._setup_env(context)
+        except Exception:
+            self.log.warning(
+                "lamindb_setup.execution_env() failed; closing the flow run without its variables",
+                exc_info=True,
+            )
+            return {}
 
     def _runtime_kwargs(self, context: Any) -> dict[str, Any]:
         return {
@@ -241,6 +272,7 @@ def wire_flow_tasks(step: BaseOperator, **flow_kwargs: Any) -> None:
     if finish is None:
         finish = LaminDBFlowFinishOperator(dag=dag, task_group=dag.task_group, **flow_kwargs)
         init >> finish
+    check_same_setup(step, init, finish)
     init >> step >> finish
 
 
@@ -266,19 +298,27 @@ def wire_lamindb_flow(
 
     Call it once, after the steps are declared; without ``dag``, inside a ``with DAG(...)`` block or
     a ``@dag`` function, for the DAG being defined. Uses the DAG's flow operators, or adds them with
-    ``flow_kwargs`` (any ``LaminDBFlowInitOperator`` argument except the task id) if it has none.
+    ``flow_kwargs`` (any ``LaminDBFlowInitOperator`` argument except the task id) if it has none;
+    they get the steps' ``lamindb_setup`` unless ``flow_kwargs`` has one. Fails if a step's
+    ``lamindb_setup`` differs from its flow tasks'.
+
     Each step gets one edge from init and one to finish, so finish waits for every map index of a
     mapped step; existing edges are kept, so calling it again or combining it with ``auto_flow`` or
     ``with init >> finish:`` adds nothing twice. Untracked tasks (``track=False``) are skipped.
 
     Returns the flow init and finish tasks.
     """
+    from airflow.providers.lamindb.utils.remote import task_setting
+
     if dag is None:
         from airflow.sdk.definitions._internal.contextmanager import DagContext
 
         dag = DagContext.get_current_dag()
         if dag is None:
             raise TypeError("wire_lamindb_flow() needs a DAG: pass one, or call it while defining the DAG")
+    steps = [task for task in dag.tasks if _is_tracked_step(task)]
+    if steps and "lamindb_setup" not in flow_kwargs:
+        flow_kwargs["lamindb_setup"] = task_setting(steps[0], "lamindb_setup")
     init = next((t for t in dag.tasks if isinstance(t, LaminDBFlowInitOperator)), None)
     finish = next((t for t in dag.tasks if isinstance(t, LaminDBFlowFinishOperator)), None)
     if init is None:
@@ -287,9 +327,8 @@ def wire_lamindb_flow(
         finish = LaminDBFlowFinishOperator(dag=dag, task_group=dag.task_group, **flow_kwargs)
     if finish.task_id not in init.downstream_task_ids:
         init >> finish
-    for step in dag.tasks:
-        if not _is_tracked_step(step):
-            continue
+    for step in steps:
+        check_same_setup(step, init, finish)
         if step.task_id not in init.downstream_task_ids:
             init >> step
         if finish.task_id not in step.downstream_task_ids:

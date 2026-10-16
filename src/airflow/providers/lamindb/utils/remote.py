@@ -8,10 +8,12 @@ Only lamindb has to be installed remotely; nothing is pickled by reference.
 
 from __future__ import annotations
 
+import functools
 import inspect
 import logging
 import re
 import tempfile
+import textwrap
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from contextlib import ExitStack, contextmanager, suppress
 from dataclasses import dataclass, field
@@ -36,6 +38,67 @@ LAMINDB_CORE_COMPANIONS_PANDAS_2 = ("numpy", "pandas>=2.0.0,<3", "pandera>=0.24.
 """The same for lamindb before 2.10, which requires pandas below 3."""
 
 
+class LaminDBSetup:
+    """Deployment-specific preparation of the virtualenvs and pods that run lamindb.
+
+    Subclass it and name the subclass in the ``[lamindb] setup_class`` Airflow option, e.g.
+    ``AIRFLOW__LAMINDB__SETUP_CLASS=mycompany.airflow.SiteSetup``: then every LaminDB task of the
+    installation uses it, loaded once per process. A DAG or task overrides it with a
+    ``lamindb_setup`` instance, in ``default_args`` or as an argument; ``LaminDBSetup()`` itself does
+    nothing, so it opts out. Wiring fails when a step needs another setup than its DAG's flow tasks
+    run; a step that opts out needs none. Setups are equal when their class and ``repr`` are.
+
+    In a task, the steps run in this order:
+
+    1. Airflow renders the templates.
+    2. The worker resolves the lamindb connection and calls [`execution_env`][].
+    3. The virtualenv is built and lamindb installed, or the pod started.
+    4. In the virtualenv or pod, the [`bootstrap_source`][] runs, then lamindb connects, then the
+       task's function runs.
+
+    Airflow stores ``default_args`` in the serialized DAG through ``repr()``. The default ``repr``
+    names the class, so the DAG doesn't get a new version on every parse; a subclass that takes
+    settings should include them in its ``repr``, so that changing them makes a new DAG version.
+    """
+
+    def __repr__(self) -> str:
+        # Airflow serializes default_args with repr(); the default one contains the object's address,
+        # which would make every parse of the DAG a new DAG version
+        return f"{type(self).__module__}.{type(self).__qualname__}()"
+
+    def __eq__(self, other: object) -> bool:
+        # setups are equal when their repr is: task groups deep-copy their default_args, and steps
+        # may each create their own instance of the same setup
+        if not isinstance(other, LaminDBSetup):
+            return NotImplemented
+        return type(self) is type(other) and repr(self) == repr(other)
+
+    def __hash__(self) -> int:
+        return hash((type(self), repr(self)))
+
+    def bootstrap_source(self) -> str:
+        """Python source that runs in the virtualenv or pod before lamindb is imported.
+
+        For example to point Python at a custom certificate bundle. It runs as its own module, so it
+        may be indented or start with ``from __future__``, and its names don't leak into the task's
+        script. In a virtualenv it runs before Airflow unpickles the function's arguments; in a pod,
+        after.
+        """
+        return ""
+
+    def execution_env(self, context: Any) -> dict[str, str]:
+        """Environment variables for a task's virtualenv, resolved on the worker when the task runs.
+
+        For example values of Airflow Variables or Connections: they are never rendered into the
+        task's template fields. Keys and values must be strings. The provider's own lamindb variables
+        (``LAMIN_SETTINGS_DIR``, ``LAMIN_API_KEY``, ``LAMIN_CACHE_DIR``) take precedence, and a task's
+        own ``env_vars`` take precedence over both. ``context`` is the task's Airflow context. Pod
+        steps don't call it: pods get their environment from the pod spec. When it fails, the flow
+        finish task logs it and still closes the flow run.
+        """
+        return {}
+
+
 def _runtime_loader_source() -> str:
     return f"""
 
@@ -49,16 +112,22 @@ def _lamindb_airflow_runtime():
 
 
 def build_remote_step_source(
-    *, user_source: str, callable_name: str, config: dict[str, Any], runtime_function: str = "run_step"
+    *,
+    user_source: str,
+    callable_name: str,
+    config: dict[str, Any],
+    runtime_function: str = "run_step",
+    bootstrap: str = "",
 ) -> str:
     """Append a wrapper to ``user_source`` and rebind ``callable_name`` to it.
 
     The operator's script template then calls the wrapper, which runs the user
     function via ``runtime.<runtime_function>`` (``run_step`` records it, ``run_connected``
-    only connects) with ``config`` as keyword arguments.
+    only connects) with ``config`` as keyword arguments. ``bootstrap`` runs first.
     """
     return (
-        user_source.rstrip()
+        _bootstrap_source(bootstrap)
+        + user_source.rstrip()
         + "\n"
         + _runtime_loader_source()
         + f"""
@@ -73,13 +142,26 @@ _lamindb_airflow_user_fn = {callable_name}
     )
 
 
-def build_remote_flow_source(*, function_name: str, runtime_function: str) -> str:
+def _bootstrap_source(bootstrap: str) -> str:
+    """Run ``bootstrap`` as its own module, so it may be indented or start with ``from __future__``."""
+    bootstrap = textwrap.dedent(bootstrap).strip()
+    if not bootstrap:
+        return ""
+    return (
+        "# lamindb_setup.bootstrap_source()\n"
+        f"exec(compile({bootstrap!r}, '<lamindb_setup.bootstrap_source>', 'exec', dont_inherit=True), "
+        "{'__name__': 'lamindb_setup_bootstrap'})\n\n\n"
+    )
+
+
+def build_remote_flow_source(*, function_name: str, runtime_function: str, bootstrap: str = "") -> str:
     """Define ``function_name(lamindb_airflow_config)`` calling ``runtime.<runtime_function>``.
 
-    The generated function returns the run uid.
+    The generated function returns the run uid. ``bootstrap`` runs first.
     """
     return (
-        _runtime_loader_source()
+        _bootstrap_source(bootstrap)
+        + _runtime_loader_source()
         + f"""
 
 def {function_name}(lamindb_airflow_config):
@@ -264,16 +346,19 @@ def ensure_lamindb_requirement(operator: Any, remote: RemoteLaminDB, lamindb_ver
 
 
 @contextmanager
-def lamindb_virtualenv_env(operator: Any, remote: RemoteLaminDB) -> Iterator[None]:
+def lamindb_virtualenv_env(
+    operator: Any, remote: RemoteLaminDB, setup_env: dict[str, str] | None = None
+) -> Iterator[None]:
     """Point a virtualenv operator's lamindb at the connection instead of the worker's ``~/.lamin``.
 
     The virtualenv gets a temporary ``LAMIN_SETTINGS_DIR`` and the connection's ``LAMIN_API_KEY``,
-    plus ``LAMIN_CACHE_DIR`` if ``remote.cache_dir`` is set (also without a connection).
-    They are set while executing only (``env_vars`` is not templated, so the key is never rendered),
-    and explicit ``env_vars`` of the operator take precedence.
+    plus ``LAMIN_CACHE_DIR`` if ``remote.cache_dir`` is set (also without a connection), on top of
+    ``setup_env`` from ``LaminDBSetup.execution_env``. They are set while executing only
+    (``env_vars`` is not templated, so the key is never rendered), and explicit ``env_vars`` of the
+    operator take precedence.
     """
     with ExitStack() as stack:
-        env: dict[str, str] = {}
+        env: dict[str, str] = dict(setup_env or {})
         if remote.conn_id is not None:
             env["LAMIN_SETTINGS_DIR"] = stack.enter_context(
                 tempfile.TemporaryDirectory(prefix="lamindb-airflow-")
@@ -431,6 +516,88 @@ def masked_parameters(
     return names
 
 
+def task_setting(task: Any, name: str) -> Any:
+    """An argument of a task as it will run.
+
+    Mapped tasks get theirs when Airflow unmaps them: from ``partial``, else from the ``default_args``
+    of their task group (which include its parent groups') over the DAG's, as Airflow merges them.
+    """
+    from airflow.sdk.definitions.mappedoperator import MappedOperator
+
+    if not isinstance(task, MappedOperator):
+        return getattr(task, name, None)
+    if name in task.partial_kwargs:
+        return task.partial_kwargs[name]
+    dag = task.get_dag()
+    default_args = dict(dag.default_args or {}) if dag else {}
+    if task.task_group is not None:
+        default_args.update(task.task_group.default_args or {})
+    return default_args.get(name)
+
+
+@functools.cache
+def configured_setup() -> LaminDBSetup | None:
+    """The installation's ``LaminDBSetup``: the ``[lamindb] setup_class`` Airflow option, if set.
+
+    Read and instantiated once per process, so all tasks share the instance.
+    """
+    from airflow.sdk.configuration import conf
+    from airflow.sdk.module_loading import import_string
+
+    path = (conf.get("lamindb", "setup_class", fallback="") or "").strip()
+    if not path:
+        return None
+    try:
+        setup_class = import_string(path)
+    except ImportError as e:
+        raise AirflowException(f"[lamindb] setup_class {path!r} can't be imported: {e}") from e
+    if not (isinstance(setup_class, type) and issubclass(setup_class, LaminDBSetup)):
+        raise AirflowException(f"[lamindb] setup_class {path!r} is not a subclass of LaminDBSetup")
+    return setup_class()
+
+
+def resolve_setup(setup: LaminDBSetup | None) -> LaminDBSetup | None:
+    """A task's ``lamindb_setup``, else the installation's."""
+    return setup if setup is not None else configured_setup()
+
+
+def check_same_setup(step: Any, *flow_tasks: Any) -> None:
+    """Fail if a step's ``lamindb_setup`` differs from its flow tasks', which would then skip it.
+
+    A step without one, or with the no-op ``LaminDBSetup()``, needs nothing from its flow tasks.
+    """
+    setup = resolve_setup(task_setting(step, "lamindb_setup"))
+    if setup is None or type(setup) is LaminDBSetup:
+        return
+    for flow_task in flow_tasks:
+        if resolve_setup(task_setting(flow_task, "lamindb_setup")) != setup:
+            raise AirflowException(
+                f"LaminDB step {step.task_id!r} and flow task {flow_task.task_id!r} have different "
+                "lamindb_setup. Set it for the whole DAG, through default_args or the [lamindb] "
+                "setup_class option."
+            )
+
+
+def setup_execution_env(setup: LaminDBSetup | None, context: Any) -> dict[str, str]:
+    setup = resolve_setup(setup)
+    if setup is None:
+        return {}
+    env = dict(setup.execution_env(context))
+    invalid = sorted(
+        repr(key) for key, value in env.items() if not isinstance(key, str) or not isinstance(value, str)
+    )
+    if invalid:
+        raise TypeError(
+            f"{setup!r}.execution_env() must return strings; the values of {', '.join(invalid)} are not"
+        )
+    return env
+
+
+def setup_bootstrap_source(setup: LaminDBSetup | None) -> str:
+    setup = resolve_setup(setup)
+    return setup.bootstrap_source() if setup is not None else ""
+
+
 def check_flow_instance(step: Any, context: Any, instance: str | None) -> None:
     """Fail early if the step would connect to another instance than its DAG run's flow run."""
     from airflow.providers.lamindb.operators.flow import FLOW_INSTANCE_XCOM_KEY, LaminDBFlowInitOperator
@@ -466,6 +633,8 @@ class RemoteLaminDBStepMixin:
     :param connect: with ``track=False``, still connect to the instance before the function
         runs, without recording anything: virtualenvs get lamindb and the connection's
         credentials as for tracked steps, pods connect with their own credentials.
+    :param lamindb_setup: a [`LaminDBSetup`][airflow.providers.lamindb.utils.remote.LaminDBSetup]
+        that prepares the virtualenv or pod; give all LaminDB tasks of a DAG the same one.
     :param lamindb_exclude_params: names of parameters (or ``**kwargs`` keys) whose arguments are
         not recorded. The function still gets them.
     :param lamindb_exclude_templated: which templated arguments are not recorded: ``"secrets"``
@@ -489,6 +658,7 @@ class RemoteLaminDBStepMixin:
         auto_flow: bool = False,
         track: bool = True,
         connect: bool = False,
+        lamindb_setup: LaminDBSetup | None = None,
         lamindb_exclude_params: Sequence[str] = (),
         lamindb_exclude_templated: ExcludeTemplated = "secrets",
         **kwargs: Any,
@@ -499,6 +669,9 @@ class RemoteLaminDBStepMixin:
         self.lamindb_space = lamindb_space
         self.track = track
         self.connect = connect
+        self.lamindb_setup = lamindb_setup
+        if track or connect:
+            resolve_setup(lamindb_setup)  # a broken [lamindb] setup_class fails when the DAG is parsed
         self.auto_flow = auto_flow and track
         if lamindb_exclude_templated not in ("secrets", "all", "none"):
             raise ValueError(
@@ -537,8 +710,8 @@ class RemoteLaminDBStepMixin:
         return space_name(self.lamindb_space)
 
     @contextmanager
-    def _lamindb_environment(self, remote: RemoteLaminDB) -> Iterator[None]:
-        """Prepare the remote environment; pods bring lamindb and credentials in their image."""
+    def _lamindb_environment(self, remote: RemoteLaminDB, context: Any) -> Iterator[None]:
+        """Prepare the remote environment; pods bring lamindb, credentials and environment in their spec."""
         yield
 
     def execute(self, context: Any) -> Any:
@@ -561,7 +734,7 @@ class RemoteLaminDBStepMixin:
             self._lamindb_runtime_function = "run_connected"
             self._lamindb_remote = {"instance": remote.instance, "space": self._lamindb_space()}
         try:
-            with self._lamindb_environment(remote):
+            with self._lamindb_environment(remote, context):
                 return super().execute(context)  # type: ignore[misc]
         finally:
             self._lamindb_remote = None
@@ -575,4 +748,5 @@ class RemoteLaminDBStepMixin:
             callable_name=self.python_callable.__name__,  # type: ignore[attr-defined]
             config=self._lamindb_remote,
             runtime_function=self._lamindb_runtime_function,
+            bootstrap=setup_bootstrap_source(self.lamindb_setup),
         )

@@ -31,3 +31,13 @@ def lamindb_connection(monkeypatch):
     monkeypatch.setenv("AIRFLOW_CONN_LAMINDB_DEFAULT", json.dumps(conn))
     monkeypatch.setattr(RemoteLaminDB, "instance_lamindb_version", lambda self: INSTANCE_LAMINDB_VERSION)
     return conn
+
+
+@pytest.fixture(autouse=True)
+def _fresh_configured_setup():
+    """The [lamindb] setup_class is read once per process; tests change it through the environment."""
+    from airflow.providers.lamindb.utils.remote import configured_setup
+
+    configured_setup.cache_clear()
+    yield
+    configured_setup.cache_clear()
