@@ -264,15 +264,17 @@ DAGs don't mention it. The class is loaded once per process; an import path that
 the DAGs when they are parsed.
 
 - `bootstrap_source()` returns Python source that runs in the virtualenv or pod before lamindb is
-  imported. In a virtualenv it runs before Airflow unpickles the function's arguments; in a pod,
-  after.
+  imported. It runs as its own module, so it may be indented or start with `from __future__`, and its
+  names don't leak into the task's script. In a virtualenv it runs before Airflow unpickles the
+  function's arguments; in a pod, after.
 - `execution_env(context)` returns environment variables for the virtualenv. It's called on the
   worker when the task runs, after the templates are rendered and the connection resolved, and the
   values are set only while the task runs, never in its template fields. The provider's own
   variables (`LAMIN_SETTINGS_DIR`, `LAMIN_API_KEY`, `LAMIN_CACHE_DIR`) take precedence, and the task's
-  own `env_vars` over both; each task's `env_vars` are restored afterwards, also when it fails. Pods
-  get their environment from the pod spec, so a pod step fails if this returns anything: return `{}`
-  when `context["task"]` is a `KubernetesPodOperator`.
+  own `env_vars` over both; each task's `env_vars` are restored afterwards, also when it fails. Keys
+  and values must be strings. Pod steps don't call it: pods get their environment from the pod spec,
+  e.g. its `secrets`. If it fails in the flow finish task, that task logs it and still closes the flow
+  run.
 - Steps, connect-only tasks and flow operators all run it, including flow tasks that `auto_flow` or
   `wire_lamindb_flow` add.
 
@@ -295,11 +297,14 @@ with DAG("sequencing", default_args={"lamindb_setup": SequencingSetup()}):
 def plain_step() -> None: ...
 ```
 
-Override it for a whole DAG, through `default_args`, rather than for one step: wiring fails when a
-step and its flow tasks end up with different setups, since the flow tasks would otherwise run without
-what the step needs. Airflow stores `default_args` in the serialized DAG through `repr()`;
-`LaminDBSetup`'s names the class, and a subclass that takes settings should include them in its
-`repr`.
+A step may opt out on its own, since it then needs nothing from its flow tasks. To give steps
+another setup, override it for the whole DAG, through `default_args` (task groups' `default_args`
+count too): wiring fails when a step needs another setup than its flow tasks run, since they would
+otherwise run without it.
+
+Setups are the same when their class and `repr` are, so each task may create its own instance.
+`LaminDBSetup`'s `repr` names the class; a subclass that takes settings should include them in its
+`repr`, which Airflow also uses to store `default_args` in the serialized DAG.
 
 Keep deployment specifics, such as package indexes, cache paths and secret names, in your subclass.
 

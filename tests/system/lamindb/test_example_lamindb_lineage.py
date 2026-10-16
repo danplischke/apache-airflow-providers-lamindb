@@ -167,12 +167,14 @@ def test_mapped_steps(dags, conf, dag_state, flow_status, steps):
     assert {run.params["sample"]: run.status for run in step_runs} == steps
 
 
-def test_the_configured_setup_prepares_steps_and_flow_tasks(dags, monkeypatch):
+def test_the_configured_setup_prepares_steps_and_flow_tasks(dags, monkeypatch, request):
     import lamindb as ln
 
-    from airflow.providers.lamindb.utils.remote import resolve_setup
+    from airflow.providers.lamindb.utils.remote import configured_setup, resolve_setup
 
     monkeypatch.setenv("AIRFLOW__LAMINDB__SETUP_CLASS", "system.lamindb.site_setup.SiteSetup")
+    configured_setup.cache_clear()  # read once per process, and the DAGs were parsed without it
+    request.addfinalizer(configured_setup.cache_clear)
     monkeypatch.setenv("AIRFLOW_VAR_SITE_TOKEN", "s3cret-token")
     dr = dags.dag_setup.test()
     assert str(dr.state) == "success"  # the step asserts what the setup prepared

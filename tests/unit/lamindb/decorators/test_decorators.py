@@ -786,7 +786,7 @@ def test_lamindb_setup_prepares_the_flow_operators(make_context, lamindb_connect
     with patch.object(type(init).__mro__[2], "execute", fake_venv_execute):
         init.execute(context)
 
-    assert seen["source"].startswith("# lamindb_setup.bootstrap_source()\nimport os")
+    assert seen["source"].startswith("# lamindb_setup.bootstrap_source()\nexec(compile(")
     assert seen["env_vars"]["SITE_TOKEN"] == "s3cret-token"
     assert init.env_vars is None
 
@@ -820,40 +820,36 @@ def test_steps_and_flow_tasks_with_different_setups_fail_when_wired() -> None:
 
     @dag
     def helper_dag():
-        LaminDBFlowInitOperator(lamindb_setup=SiteSetup())
-        task.lamindb_venv(load).partial(credentials="c", day="d").expand(user=["a"])
+        LaminDBFlowInitOperator()  # without the setup the step needs
+        task.lamindb_venv(lamindb_setup=SiteSetup())(load).partial(credentials="c", day="d").expand(
+            user=["a"]
+        )
 
     with pytest.raises(AirflowException, match="step 'load' and flow task 'lamindb_flow_init'"):
         wire_lamindb_flow(helper_dag())
 
 
-def test_pod_steps_run_the_bootstrap_but_refuse_an_execution_env(
+def test_pod_steps_run_the_bootstrap_but_not_execution_env(
     fake_lamindb: MagicMock, make_context, lamindb_connection
 ) -> None:
+    """Pods get their environment from the pod spec; a setup written for virtualenvs mustn't break them."""
     pytest.importorskip("airflow.providers.cncf.kubernetes")
-
-    class BootstrapOnly(remote.LaminDBSetup):
-        def bootstrap_source(self) -> str:
-            return "import os"
-
+    setup = SiteSetup()
+    op = _single_task(
+        task.lamindb_k8s(image="python:3.12", track=False, connect=True, lamindb_setup=setup), step
+    )
     seen = {}
 
     def fake_pod_execute(self, context):
         seen["source"] = self.get_python_source()
+        seen["env_vars"] = self.env_vars
 
-    for setup, fails in ((BootstrapOnly(), False), (SiteSetup(), True)):
-        op = _single_task(
-            task.lamindb_k8s(image="python:3.12", track=False, connect=True, lamindb_setup=setup), step
-        )
-        with patch.object(type(op).__mro__[2], "execute", fake_pod_execute):
-            if fails:
-                with pytest.raises(
-                    AirflowException, match=r"returned \['LAMIN_API_KEY', 'OVERRIDDEN', 'SITE_TOKEN'\]"
-                ):
-                    op.execute(make_context())
-            else:
-                op.execute(make_context())
-                assert seen["source"].startswith("# lamindb_setup.bootstrap_source()\nimport os")
+    with patch.object(type(op).__mro__[2], "execute", fake_pod_execute):
+        op.execute(make_context())
+
+    assert setup.contexts == []  # execution_env isn't called for pods
+    assert "s3cret-token" not in repr(seen)
+    assert "SITE_BOOTSTRAPPED" in seen["source"]
 
 
 def test_lamindb_setup_from_default_args_reaches_every_lamindb_task() -> None:
@@ -984,6 +980,7 @@ class ConfiguredSetup(remote.LaminDBSetup):
 @pytest.fixture
 def configured_setup(monkeypatch) -> remote.LaminDBSetup:
     monkeypatch.setenv("AIRFLOW__LAMINDB__SETUP_CLASS", f"{__name__}.ConfiguredSetup")
+    remote.configured_setup.cache_clear()
     setup = remote.configured_setup()
     assert type(setup).__name__ == "ConfiguredSetup"
     return setup
@@ -1049,9 +1046,148 @@ def test_a_broken_setup_class_fails_when_the_dag_is_parsed(monkeypatch, path: st
     from airflow.providers.lamindb.operators.flow import LaminDBFlowInitOperator
 
     monkeypatch.setenv("AIRFLOW__LAMINDB__SETUP_CLASS", path)
+    remote.configured_setup.cache_clear()
     with pytest.raises(AirflowException, match=error):
         _single_task(task.lamindb_venv, step)
     with pytest.raises(AirflowException, match=error):
         LaminDBFlowInitOperator(task_id="init")
     # untracked tasks don't use the setup
     _single_task(task.lamindb_venv(track=False), step)
+
+
+def test_equivalent_setups_are_the_same_setup() -> None:
+    """Task groups deep-copy their default_args, and steps may each create their own instance."""
+    from airflow.sdk import TaskGroup
+
+    from airflow.providers.lamindb.operators.flow import wire_lamindb_flow
+
+    assert SiteSetup() == SiteSetup()
+    assert hash(SiteSetup()) == hash(SiteSetup())
+    assert SiteSetup() != ConfiguredSetup()
+    assert remote.LaminDBSetup() != SiteSetup()
+
+    @dag
+    def two_instances():
+        shared = {"lamindb_setup": SiteSetup()}
+        with TaskGroup("a", default_args=shared):
+            task.lamindb_venv(load).partial(credentials="c", day="d").expand(user=["x"])
+        with TaskGroup("b", default_args=shared):
+            task.lamindb_venv(load).partial(credentials="c", day="d").expand(user=["y"])
+        task.lamindb_venv(lamindb_setup=SiteSetup())(step)()
+        wire_lamindb_flow(lamindb_setup=SiteSetup())
+
+    two_instances()
+
+
+def test_mapped_steps_get_their_task_groups_setup() -> None:
+    from airflow.sdk import TaskGroup
+
+    from airflow.providers.lamindb.operators.flow import wire_lamindb_flow
+
+    @dag
+    def grouped():
+        with TaskGroup("g", default_args={"lamindb_setup": SiteSetup()}):
+            task.lamindb_venv(load).partial(credentials="c", day="d").expand(user=["a"])
+
+    built = grouped()
+    mapped = built.get_task("g.load")
+    assert remote.task_setting(mapped, "lamindb_setup") == SiteSetup()
+    assert mapped.unmap({"op_kwargs": {"user": "a"}}).lamindb_setup == SiteSetup()  # what Airflow runs
+    init, finish = wire_lamindb_flow(built)
+    assert init.lamindb_setup == finish.lamindb_setup == SiteSetup()
+
+
+def test_a_single_step_may_opt_out_of_the_setup(configured_setup) -> None:
+    from airflow.providers.lamindb.operators.flow import wire_lamindb_flow
+
+    @dag
+    def opted_out():
+        task.lamindb_venv(auto_flow=True)(step)()
+        task.lamindb_venv(auto_flow=True, lamindb_setup=remote.LaminDBSetup(), task_id="plain")(step)()
+        task.lamindb_venv(lamindb_setup=remote.LaminDBSetup())(load).partial(credentials="c", day="d").expand(
+            user=["a"]
+        )
+        wire_lamindb_flow()
+
+    built = opted_out()
+    assert remote.resolve_setup(built.get_task("lamindb_flow_init").lamindb_setup) is configured_setup
+
+
+@pytest.mark.parametrize(
+    "bootstrap",
+    [
+        "\n        import os\n        os.environ['BOOTSTRAPPED'] = '1'\n    ",  # indented, as in a class
+        "from __future__ import annotations\nimport os\nos.environ['BOOTSTRAPPED'] = '1'",
+    ],
+)
+def test_bootstrap_source_may_be_indented_or_use_future_imports(bootstrap: str, monkeypatch) -> None:
+    monkeypatch.delenv("BOOTSTRAPPED", raising=False)
+    source = remote.build_remote_step_source(
+        user_source="def probe():\n    return 1\n",
+        callable_name="probe",
+        config={},
+        bootstrap=bootstrap,
+    )
+    namespace: dict = {}
+    exec(compile(source, "<script>", "exec"), namespace)
+    assert os.environ["BOOTSTRAPPED"] == "1"
+    assert "os" not in namespace  # the bootstrap runs in its own namespace
+
+
+def test_execution_env_must_return_strings(fake_lamindb: MagicMock, make_context, lamindb_connection) -> None:
+    class NumberSetup(remote.LaminDBSetup):
+        def execution_env(self, context) -> dict[str, str]:
+            return {"RETRIES": 3, "NAME": "ok"}  # type: ignore[dict-item]
+
+    op = _single_task(task.lamindb_venv(track=False, connect=True, lamindb_setup=NumberSetup()), step)
+    with pytest.raises(
+        TypeError, match=r"NumberSetup\(\)\.execution_env\(\) must return strings; the values of 'RETRIES'"
+    ):
+        _execute_connected(op, make_context())
+
+
+@pytest.mark.parametrize(("operator", "fails"), [("init", True), ("finish", False)])
+def test_flow_finish_closes_the_run_even_if_execution_env_fails(
+    make_context, lamindb_connection, operator, fails
+):
+    from airflow.providers.lamindb.operators.flow import LaminDBFlowFinishOperator, LaminDBFlowInitOperator
+
+    class BrokenSetup(remote.LaminDBSetup):
+        def execution_env(self, context) -> dict[str, str]:
+            raise KeyError("site_token")
+
+    operator_class = {"init": LaminDBFlowInitOperator, "finish": LaminDBFlowFinishOperator}[operator]
+    flow_task = operator_class(task_id=operator, lamindb_setup=BrokenSetup())
+    ran = []
+
+    def fake_venv_execute(self, context):
+        ran.append(dict(self.env_vars))
+        return "flowuid"
+
+    with patch.object(type(flow_task).__mro__[2], "execute", fake_venv_execute):
+        if fails:  # without its setup, the steps couldn't run either
+            with pytest.raises(KeyError, match="site_token"):
+                flow_task.execute(make_context())
+        else:
+            flow_task.execute(make_context())
+    assert len(ran) == (0 if fails else 1)
+
+
+def test_a_broken_setup_class_fails_parsing_for_mapped_steps_too(monkeypatch) -> None:
+    monkeypatch.setenv("AIRFLOW__LAMINDB__SETUP_CLASS", "no_such_module.Setup")
+    remote.configured_setup.cache_clear()
+
+    @dag
+    def only_mapped():
+        task.lamindb_venv(load).partial(credentials="c", day="d").expand(user=["a"])
+
+    with pytest.raises(AirflowException, match="can't be imported"):
+        only_mapped()
+
+
+def test_the_setup_class_option_is_read_once_per_process(monkeypatch) -> None:
+    monkeypatch.setenv("AIRFLOW__LAMINDB__SETUP_CLASS", f"{__name__}.ConfiguredSetup")
+    remote.configured_setup.cache_clear()
+    first = remote.configured_setup()
+    monkeypatch.setenv("AIRFLOW__LAMINDB__SETUP_CLASS", f"{__name__}.SiteSetup")
+    assert remote.configured_setup() is first

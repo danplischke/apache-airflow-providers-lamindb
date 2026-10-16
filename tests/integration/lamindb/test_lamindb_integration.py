@@ -345,13 +345,15 @@ def test_bootstrap_runs_before_lamindb_is_imported(dag_module, run_id, instance,
 
     kwargs = start_flow_run_kwargs(dag_module, run_id)
     flow_run = runtime.start_flow_run(**kwargs)
-    bootstrap = "import sys\nLAMINDB_IMPORTED_AT_BOOTSTRAP = 'lamindb' in sys.modules"
+    bootstrap = "import os, sys\nos.environ['LAMINDB_IMPORTED_AT_BOOTSTRAP'] = str('lamindb' in sys.modules)"
     user_source = textwrap.dedent(
         """
         def probe() -> list:
             import sys
 
-            return [LAMINDB_IMPORTED_AT_BOOTSTRAP, "lamindb" in sys.modules]
+            import os
+
+            return [os.environ["LAMINDB_IMPORTED_AT_BOOTSTRAP"] == "True", "lamindb" in sys.modules]
         """
     )
     config = {

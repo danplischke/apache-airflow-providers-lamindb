@@ -121,10 +121,13 @@ class _LaminDBFlowOperator(PythonVirtualenvOperator):
         self.op_kwargs = {
             "lamindb_airflow_config": {"instance": remote.instance, **self._runtime_kwargs(context)}
         }
-        with lamindb_virtualenv_env(self, remote, setup_execution_env(self.lamindb_setup, context)):
+        with lamindb_virtualenv_env(self, remote, self._setup_env(context)):
             result = super().execute(context)
         self._after_execute(context, remote)
         return result
+
+    def _setup_env(self, context: Any) -> dict[str, str]:
+        return setup_execution_env(self.lamindb_setup, context)
 
     def _after_execute(self, context: Any, remote: RemoteLaminDB) -> None:
         pass
@@ -229,6 +232,18 @@ class LaminDBFlowFinishOperator(_LaminDBFlowOperator):
         )
         if is_teardown:
             self.as_teardown()
+
+    def _setup_env(self, context: Any) -> dict[str, str]:
+        # closing the flow run matters more than the setup's environment: without it the run would
+        # stay started, e.g. when execution_env() can't read a Variable
+        try:
+            return super()._setup_env(context)
+        except Exception:
+            self.log.warning(
+                "lamindb_setup.execution_env() failed; closing the flow run without its variables",
+                exc_info=True,
+            )
+            return {}
 
     def _runtime_kwargs(self, context: Any) -> dict[str, Any]:
         return {

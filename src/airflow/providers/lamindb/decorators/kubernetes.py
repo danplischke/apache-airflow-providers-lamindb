@@ -12,6 +12,7 @@ from airflow.providers.lamindb.utils.remote import (
     LaminDBSetup,
     RemoteLaminDBStepMixin,
     is_template,
+    resolve_setup,
 )
 from airflow.sdk.bases.decorator import task_decorator_factory
 
@@ -102,6 +103,9 @@ def lamindb_k8s_task(
             'Install with: pip install "apache-airflow-providers-lamindb[cncf.kubernetes]"'
         ) from e
 
+    # mapped steps aren't initialised when the DAG is parsed; check the [lamindb] setup_class here
+    if kwargs.get("track", True) or kwargs.get("connect", False):
+        resolve_setup(kwargs.get("lamindb_setup"))
     return task_decorator_factory(
         python_callable=python_callable,
         multiple_outputs=multiple_outputs,

@@ -18,6 +18,8 @@ from airflow.providers.lamindb.utils.remote import (
     is_template,
     lamindb_requirement_lines,
     lamindb_virtualenv_env,
+    resolve_setup,
+    setup_execution_env,
 )
 from airflow.providers.standard.decorators.python_virtualenv import _PythonVirtualenvDecoratedOperator
 from airflow.sdk.bases.decorator import task_decorator_factory
@@ -92,9 +94,9 @@ class LaminDBVenvDecoratedOperator(RemoteLaminDBStepMixin, _PythonVirtualenvDeco
             )
 
     @contextmanager
-    def _lamindb_environment(self, remote: RemoteLaminDB, setup_env: dict[str, str]) -> Iterator[None]:
+    def _lamindb_environment(self, remote: RemoteLaminDB, context: Any) -> Iterator[None]:
         ensure_lamindb_requirement(self, remote, self.lamindb_version)
-        with lamindb_virtualenv_env(self, remote, setup_env):
+        with lamindb_virtualenv_env(self, remote, setup_execution_env(self.lamindb_setup, context)):
             yield
 
 
@@ -141,6 +143,9 @@ def lamindb_venv_task(
 
     The worker needs no lamindb.
     """
+    # mapped steps aren't initialised when the DAG is parsed; check the [lamindb] setup_class here
+    if kwargs.get("track", True) or kwargs.get("connect", False):
+        resolve_setup(kwargs.get("lamindb_setup"))
     return task_decorator_factory(
         python_callable=python_callable,
         multiple_outputs=multiple_outputs,
