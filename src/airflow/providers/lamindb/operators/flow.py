@@ -27,7 +27,7 @@ from airflow.providers.standard.operators.python import PythonVirtualenvOperator
 from airflow.sdk import TriggerRule
 
 if TYPE_CHECKING:
-    from airflow.sdk import DAG, BaseOperator
+    from airflow.sdk import BaseOperator
 
 # Airflow's BaseOperatorMeta only wraps __init__ of BaseOperator subclasses and expects
 # the most-derived class to define one, so each operator repeats its own __init__
@@ -235,10 +235,10 @@ class LaminDBFlowFinishOperator(_LaminDBFlowOperator):
 def wire_flow_tasks(step: BaseOperator, **flow_kwargs: Any) -> None:
     """Wire ``init >> step >> finish``, adding the DAG's flow init/finish tasks on first use.
 
-    Called at DAG parse time by step decorators with ``auto_flow=True``. Flow operators
-    already in the DAG are reused, so the first LaminDB step decides their virtualenv
-    and LaminDB settings (``flow_kwargs``). Declare the flow operators yourself before
-    the steps to control them.
+    Called at DAG parse time by steps with ``auto_flow=True``, also mapped ones (see
+    ``LaminDBTaskDecorator``). Flow operators already in the DAG are reused, so the first
+    LaminDB step decides their virtualenv and LaminDB settings (``flow_kwargs``). Declare
+    the flow operators yourself before the steps to control them.
     """
     dag = step.get_dag()
     # tasks unmapped at run time were wired as a mapped task at parse time, if at all
@@ -253,56 +253,3 @@ def wire_flow_tasks(step: BaseOperator, **flow_kwargs: Any) -> None:
         finish = LaminDBFlowFinishOperator(dag=dag, task_group=dag.task_group, **flow_kwargs)
         init >> finish
     init >> step >> finish
-
-
-def _is_tracked_step(task: Any) -> bool:
-    """Whether ``task`` is a LaminDB step that records lineage, mapped or not."""
-    from airflow.providers.lamindb.utils.remote import RemoteLaminDBStepMixin
-    from airflow.sdk.definitions.mappedoperator import MappedOperator
-
-    if isinstance(task, MappedOperator):
-        operator_class = task.operator_class
-        return (
-            isinstance(operator_class, type)
-            and issubclass(operator_class, RemoteLaminDBStepMixin)
-            and task.partial_kwargs.get("track", True)
-        )
-    return isinstance(task, RemoteLaminDBStepMixin) and task.track
-
-
-def wire_lamindb_flow(
-    dag: DAG | None = None, **flow_kwargs: Any
-) -> tuple[LaminDBFlowInitOperator, LaminDBFlowFinishOperator]:
-    """Wire ``init >> step >> finish`` for every LaminDB step of ``dag``, including mapped ones.
-
-    Call it once, after the steps are declared; without ``dag``, inside a ``with DAG(...)`` block or
-    a ``@dag`` function, for the DAG being defined. Uses the DAG's flow operators, or adds them with
-    ``flow_kwargs`` (any ``LaminDBFlowInitOperator`` argument except the task id) if it has none.
-    Each step gets one edge from init and one to finish, so finish waits for every map index of a
-    mapped step; existing edges are kept, so calling it again or combining it with ``auto_flow`` or
-    ``with init >> finish:`` adds nothing twice. Untracked tasks (``track=False``) are skipped.
-
-    Returns the flow init and finish tasks.
-    """
-    if dag is None:
-        from airflow.sdk.definitions._internal.contextmanager import DagContext
-
-        dag = DagContext.get_current_dag()
-        if dag is None:
-            raise TypeError("wire_lamindb_flow() needs a DAG: pass one, or call it while defining the DAG")
-    init = next((t for t in dag.tasks if isinstance(t, LaminDBFlowInitOperator)), None)
-    finish = next((t for t in dag.tasks if isinstance(t, LaminDBFlowFinishOperator)), None)
-    if init is None:
-        init = LaminDBFlowInitOperator(dag=dag, task_group=dag.task_group, **flow_kwargs)
-    if finish is None:
-        finish = LaminDBFlowFinishOperator(dag=dag, task_group=dag.task_group, **flow_kwargs)
-    if finish.task_id not in init.downstream_task_ids:
-        init >> finish
-    for step in dag.tasks:
-        if not _is_tracked_step(step):
-            continue
-        if step.task_id not in init.downstream_task_ids:
-            init >> step
-        if finish.task_id not in step.downstream_task_ids:
-            step >> finish
-    return init, finish

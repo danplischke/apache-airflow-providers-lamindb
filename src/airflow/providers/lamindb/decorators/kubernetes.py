@@ -5,10 +5,14 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from typing import Any
 
+from airflow.providers.lamindb.decorators.base import lamindb_task_decorator_factory
 from airflow.providers.lamindb.hooks.lamindb import LaminDBHook
 from airflow.providers.lamindb.operators.flow import wire_flow_tasks
-from airflow.providers.lamindb.utils.remote import ExcludeTemplated, RemoteLaminDBStepMixin, is_template
-from airflow.sdk.bases.decorator import task_decorator_factory
+from airflow.providers.lamindb.utils.remote import (
+    ExcludeTemplated,
+    RemoteLaminDBStepMixin,
+    flow_lamindb_kwargs,
+)
 
 
 def _lamindb_k8s_decorated_operator_class() -> type:
@@ -49,13 +53,12 @@ def _lamindb_k8s_decorated_operator_class() -> type:
                 **kwargs,
             )
             if self.auto_flow:
-                wire_flow_tasks(
-                    self,
-                    lamindb_conn_id=self.lamindb_conn_id,
-                    lamindb_instance=self.lamindb_instance,
-                    lamindb_space=None if is_template(self.lamindb_space) else self.lamindb_space,
-                    lamindb_branch=None if is_template(self.lamindb_branch) else self.lamindb_branch,
-                )
+                wire_flow_tasks(self, **self.lamindb_flow_kwargs(lambda name: getattr(self, name, None)))
+
+        @classmethod
+        def lamindb_flow_kwargs(cls, setting: Callable[[str], Any]) -> dict[str, Any]:
+            """Arguments of the flow tasks that ``auto_flow`` adds, from the step's ``setting(name)``."""
+            return flow_lamindb_kwargs(setting)
 
     return LaminDBK8sDecoratedOperator
 
@@ -97,7 +100,7 @@ def lamindb_k8s_task(
             'Install with: pip install "apache-airflow-providers-lamindb[cncf.kubernetes]"'
         ) from e
 
-    return task_decorator_factory(
+    return lamindb_task_decorator_factory(
         python_callable=python_callable,
         multiple_outputs=multiple_outputs,
         decorated_operator_class=operator_class,

@@ -14,6 +14,10 @@ def noop(x=None):
     return x
 
 
+def pair(x=None, y=None):
+    return x, y
+
+
 def test_steps_are_not_auto_wired_by_default() -> None:
     with DAG("d", schedule=None) as dag:
         task.lamindb_venv(noop, task_id="a")()
@@ -130,73 +134,68 @@ def test_flow_tasks_resolve_lamindb_when_they_run() -> None:
     assert dag.get_task(INIT).lamindb_conn_id == "lamindb_default"
 
 
-def test_mapped_steps_are_not_auto_wired() -> None:
-    with DAG("d", schedule=None) as dag:
-        task.lamindb_venv(noop, task_id="a", auto_flow=True).expand(x=[1, 2])
-
-    assert set(dag.task_ids) == {"a"}
-    # unmapping on the worker must not add tasks either
-    dag.get_task("a").unmap({"op_kwargs": {"x": 1}})
-    assert set(dag.task_ids) == {"a"}
-
-
-def test_wire_lamindb_flow_wires_mapped_and_unmapped_steps() -> None:
-    from airflow.providers.lamindb.operators import wire_lamindb_flow
-
+def test_mapped_steps_are_auto_wired() -> None:
     with DAG("d", schedule=None) as dag:
         produce = task(noop, task_id="produce")()
-        a = task.lamindb_venv(noop, task_id="a")(produce)
-        m = task.lamindb_venv(noop, task_id="m").expand(x=a)
+        task.lamindb_venv(noop, task_id="m", auto_flow=True, system_site_packages=True).expand(x=produce)
         with TaskGroup("group"):
-            k = task.lamindb_venv(noop, task_id="k").expand_kwargs([{"x": 1}, {"x": 2}])
-        m >> k
-        task.lamindb_venv(noop, task_id="connected", track=False, connect=True)()
-        task.lamindb_venv(noop, task_id="untracked_mapped", track=False).expand(x=[1])
-        task(noop, task_id="plain").expand(x=[1])
+            task.lamindb_venv(noop, task_id="k", auto_flow=True).expand_kwargs([{"x": 1}, {"x": 2}])
+        task.lamindb_venv(pair, task_id="partial", auto_flow=True).partial(x=1).expand(y=[1])
 
-        init, finish = wire_lamindb_flow(dag, system_site_packages=True)
-
-    steps = {"a", "m", "group.k"}
-    assert init.downstream_task_ids == steps | {FINISH}
+    init, finish = dag.get_task(INIT), dag.get_task(FINISH)
+    steps = {"m", "group.k", "partial"}
+    assert init.downstream_task_ids == steps | {FINISH}  # one edge each: finish waits for every map index
     assert finish.upstream_task_ids == steps | {INIT}
-    assert init.system_site_packages is finish.system_site_packages is True
-    assert produce.operator.upstream_task_ids == set()  # plain tasks stay outside the flow
     assert dag.get_task("m").is_mapped
-
-
-def test_wire_lamindb_flow_reuses_flow_tasks_and_existing_edges() -> None:
-    from airflow.providers.lamindb.operators import wire_lamindb_flow
-
-    with DAG("d", schedule=None) as dag:
-        with LaminDBFlowInitOperator(task_id="start") >> LaminDBFlowFinishOperator(task_id="end"):
-            a = task.lamindb_venv(noop, task_id="a")()
-        task.lamindb_venv(noop, task_id="auto", auto_flow=True)()
-        task.lamindb_venv(noop, task_id="m").expand(x=[1, 2])
-        a >> dag.get_task("m")
-
-        first = wire_lamindb_flow(dag)
-        edges = {t.task_id: (set(t.upstream_task_ids), set(t.downstream_task_ids)) for t in dag.tasks}
-        second = wire_lamindb_flow(dag)
-
-    assert first == second
-    assert [t.task_id for t in first] == ["start", "end"]
-    assert {t.task_id for t in dag.tasks} == {"start", "end", "a", "auto", "m"}
-    assert {t.task_id: (set(t.upstream_task_ids), set(t.downstream_task_ids)) for t in dag.tasks} == edges
-    assert dag.get_task("start").downstream_task_ids == {"a", "auto", "m", "end"}
+    assert init.system_site_packages is True  # settings of the first step, as for unmapped steps
+    assert dag.get_task("produce").upstream_task_ids == set()  # plain tasks stay outside the flow
     dag.check_cycle()
 
 
-def test_wire_lamindb_flow_defaults_to_the_dag_being_defined() -> None:
-    import pytest
-    from airflow.sdk import dag as dag_decorator
-
-    from airflow.providers.lamindb.operators import wire_lamindb_flow
-
-    @dag_decorator
-    def mapped():
+def test_mapped_steps_without_auto_flow_or_tracking_are_not_wired() -> None:
+    with DAG("d", schedule=None) as dag:
         task.lamindb_venv(noop, task_id="m").expand(x=[1, 2])
-        wire_lamindb_flow()
+        task.lamindb_venv(noop, task_id="untracked", auto_flow=True, track=False).expand(x=[1])
+        task.lamindb_venv(noop, task_id="connected", auto_flow=True, track=False, connect=True).expand(x=[1])
 
-    assert mapped().get_task(INIT).downstream_task_ids == {"m", FINISH}
-    with pytest.raises(TypeError, match="needs a DAG"):
-        wire_lamindb_flow()
+    assert set(dag.task_ids) == {"m", "untracked", "connected"}
+
+
+def test_mapped_steps_take_auto_flow_from_default_args() -> None:
+    with DAG("d", schedule=None, default_args={"auto_flow": True, "lamindb_space": "lab"}) as dag:
+        task.lamindb_venv(noop, task_id="m").expand(x=[1, 2])
+
+    assert dag.get_task(INIT).downstream_task_ids == {"m", FINISH}
+    assert dag.get_task(INIT).lamindb_space == "lab"
+
+
+def test_mapped_and_unmapped_steps_share_the_flow_tasks() -> None:
+    with (
+        DAG("d", schedule=None) as dag,
+        LaminDBFlowInitOperator(task_id="start") >> LaminDBFlowFinishOperator(task_id="end"),
+    ):
+        task.lamindb_venv(noop, task_id="a", auto_flow=True)()
+        task.lamindb_venv(noop, task_id="m", auto_flow=True).expand(x=[1, 2])
+
+    assert set(dag.task_ids) == {"start", "end", "a", "m"}
+    assert dag.get_task("start").downstream_task_ids == {"a", "m", "end"}
+    assert dag.get_task("end").upstream_task_ids == {"a", "m", "start"}
+    dag.check_cycle()
+
+
+def test_unmapping_on_the_worker_adds_no_tasks() -> None:
+    with DAG("d", schedule=None) as dag:
+        task.lamindb_venv(noop, task_id="m", auto_flow=True).expand(x=[1, 2])
+
+    before = set(dag.task_ids)
+    dag.get_task("m").unmap({"op_kwargs": {"x": 1}})
+    assert set(dag.task_ids) == before == {"m", INIT, FINISH}
+
+
+def test_partial_and_override_keep_the_lamindb_decorator() -> None:
+    from airflow.providers.lamindb.decorators.base import LaminDBTaskDecorator
+
+    decorated = task.lamindb_venv(noop, auto_flow=True)
+    assert isinstance(decorated, LaminDBTaskDecorator)
+    assert isinstance(decorated.partial(x=1), LaminDBTaskDecorator)
+    assert isinstance(decorated.override(task_id="other"), LaminDBTaskDecorator)

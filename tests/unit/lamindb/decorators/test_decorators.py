@@ -839,3 +839,18 @@ def test_lamindb_branch_reaches_pod_steps(fake_lamindb: MagicMock, make_context,
     with patch.object(type(op).__mro__[2], "execute", fake_pod_execute):
         op.execute(make_context())
     assert "'branch': 'feature-x'" in seen["source"]
+
+
+def test_mapped_pod_steps_are_auto_wired() -> None:
+    pytest.importorskip("airflow.providers.cncf.kubernetes")
+
+    @dag
+    def test_dag():
+        task.lamindb_k8s(image="python:3.12", auto_flow=True, lamindb_instance="owner/name")(load).partial(
+            credentials="c", day="d"
+        ).expand(user=["a", "b"])
+
+    built = test_dag()
+    init = built.get_task("lamindb_flow_init")
+    assert init.downstream_task_ids == {"load", "lamindb_flow_finish"}
+    assert init.lamindb_instance == "owner/name"
