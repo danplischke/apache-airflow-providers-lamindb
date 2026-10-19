@@ -5,16 +5,16 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from typing import Any
 
+from airflow.providers.lamindb.decorators.base import lamindb_task_decorator_factory
 from airflow.providers.lamindb.hooks.lamindb import LaminDBHook
 from airflow.providers.lamindb.operators.flow import wire_flow_tasks
 from airflow.providers.lamindb.utils.remote import (
     ExcludeTemplated,
     LaminDBSetup,
     RemoteLaminDBStepMixin,
-    is_template,
+    flow_lamindb_kwargs,
     resolve_setup,
 )
-from airflow.sdk.bases.decorator import task_decorator_factory
 
 
 def _lamindb_k8s_decorated_operator_class() -> type:
@@ -29,6 +29,7 @@ def _lamindb_k8s_decorated_operator_class() -> type:
             "lamindb_conn_id",
             "lamindb_instance",
             "lamindb_space",
+            "lamindb_branch",
         )
 
         # BaseOperatorMeta expects the most-derived class to define __init__; the lamindb
@@ -39,6 +40,7 @@ def _lamindb_k8s_decorated_operator_class() -> type:
             lamindb_conn_id: str | None = LaminDBHook.default_conn_name,
             lamindb_instance: str | None = None,
             lamindb_space: str | None = None,
+            lamindb_branch: str | None = None,
             lamindb_setup: LaminDBSetup | None = None,
             lamindb_exclude_params: Sequence[str] = (),
             lamindb_exclude_templated: ExcludeTemplated = "secrets",
@@ -48,19 +50,19 @@ def _lamindb_k8s_decorated_operator_class() -> type:
                 lamindb_conn_id=lamindb_conn_id,
                 lamindb_instance=lamindb_instance,
                 lamindb_space=lamindb_space,
+                lamindb_branch=lamindb_branch,
                 lamindb_setup=lamindb_setup,
                 lamindb_exclude_params=lamindb_exclude_params,
                 lamindb_exclude_templated=lamindb_exclude_templated,
                 **kwargs,
             )
             if self.auto_flow:
-                wire_flow_tasks(
-                    self,
-                    lamindb_conn_id=self.lamindb_conn_id,
-                    lamindb_instance=self.lamindb_instance,
-                    lamindb_space=None if is_template(self.lamindb_space) else self.lamindb_space,
-                    lamindb_setup=self.lamindb_setup,
-                )
+                wire_flow_tasks(self, **self.lamindb_flow_kwargs(lambda name: getattr(self, name, None)))
+
+        @classmethod
+        def lamindb_flow_kwargs(cls, setting: Callable[[str], Any]) -> dict[str, Any]:
+            """Arguments of the flow tasks that ``auto_flow`` adds, from the step's ``setting(name)``."""
+            return flow_lamindb_kwargs(setting)
 
     return LaminDBK8sDecoratedOperator
 
@@ -75,8 +77,8 @@ def lamindb_k8s_task(
     Accepts every ``@task.kubernetes`` argument, plus ``lamindb_conn_id`` (Airflow
     connection of type ``lamindb``; the pod only gets its instance, not its API key),
     ``lamindb_instance`` (instance slug; overrides the connection's), ``lamindb_space``
-    (space of the step run and the records it saves; defaults to the flow run's; all three
-    templated),
+    and ``lamindb_branch`` (space and branch of the step run and the records it saves; default to
+    the flow run's; all four templated),
     ``auto_flow`` (wire flow operators, which run in a virtualenv on the worker, if the
     DAG has none yet; default ``False``), ``track`` (record the call in LaminDB; with
     ``False`` it runs exactly as under ``@task.kubernetes``), ``connect`` (with ``track=False``,
@@ -106,7 +108,7 @@ def lamindb_k8s_task(
     # mapped steps aren't initialised when the DAG is parsed; check the [lamindb] setup_class here
     if kwargs.get("track", True) or kwargs.get("connect", False):
         resolve_setup(kwargs.get("lamindb_setup"))
-    return task_decorator_factory(
+    return lamindb_task_decorator_factory(
         python_callable=python_callable,
         multiple_outputs=multiple_outputs,
         decorated_operator_class=operator_class,

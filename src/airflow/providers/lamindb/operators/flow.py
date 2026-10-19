@@ -32,7 +32,7 @@ from airflow.providers.standard.operators.python import PythonVirtualenvOperator
 from airflow.sdk import TriggerRule
 
 if TYPE_CHECKING:
-    from airflow.sdk import DAG, BaseOperator
+    from airflow.sdk import BaseOperator
 
 # Airflow's BaseOperatorMeta only wraps __init__ of BaseOperator subclasses and expects
 # the most-derived class to define one, so each operator repeats its own __init__
@@ -61,6 +61,9 @@ class _LaminDBFlowOperator(PythonVirtualenvOperator):
         ``LAMIN_CURRENT_INSTANCE``, ``~/.lamin``) instead. Templated.
     :param lamindb_instance: instance slug (``owner/name``) to connect to; overrides the
         connection's instance. Templated.
+    :param lamindb_branch: name or uid of the branch the flow run is on; steps default to it. The DAG
+        file's transform stays on the branch lamindb finds it on. Templated; only used by the init
+        operator.
     :param lamindb_space: name or uid of the space the flow run (and the DAG file's transform,
         when first recorded) is created in; steps default to it. Templated; only used by the init
         operator.
@@ -77,6 +80,7 @@ class _LaminDBFlowOperator(PythonVirtualenvOperator):
         "lamindb_conn_id",
         "lamindb_instance",
         "lamindb_space",
+        "lamindb_branch",
         "lamindb_version",
         "lamindb_cache_dir",
     )
@@ -88,6 +92,7 @@ class _LaminDBFlowOperator(PythonVirtualenvOperator):
         lamindb_conn_id: str | None = LaminDBHook.default_conn_name,
         lamindb_instance: str | None = None,
         lamindb_space: str | None = None,
+        lamindb_branch: str | None = None,
         lamindb_version: str | None = None,
         lamindb_cache_dir: str | None = None,
         lamindb_setup: LaminDBSetup | None = None,
@@ -99,6 +104,7 @@ class _LaminDBFlowOperator(PythonVirtualenvOperator):
         self.lamindb_conn_id = lamindb_conn_id
         self.lamindb_instance = lamindb_instance
         self.lamindb_space = lamindb_space
+        self.lamindb_branch = lamindb_branch
         self.lamindb_version = lamindb_version
         self.lamindb_cache_dir = lamindb_cache_dir
         self.lamindb_setup = lamindb_setup
@@ -157,6 +163,7 @@ class LaminDBFlowInitOperator(_LaminDBFlowOperator):
         lamindb_conn_id: str | None = LaminDBHook.default_conn_name,
         lamindb_instance: str | None = None,
         lamindb_space: str | None = None,
+        lamindb_branch: str | None = None,
         lamindb_version: str | None = None,
         lamindb_cache_dir: str | None = None,
         lamindb_setup: LaminDBSetup | None = None,
@@ -167,6 +174,7 @@ class LaminDBFlowInitOperator(_LaminDBFlowOperator):
             lamindb_conn_id=lamindb_conn_id,
             lamindb_instance=lamindb_instance,
             lamindb_space=lamindb_space,
+            lamindb_branch=lamindb_branch,
             lamindb_version=lamindb_version,
             lamindb_cache_dir=lamindb_cache_dir,
             lamindb_setup=lamindb_setup,
@@ -183,6 +191,7 @@ class LaminDBFlowInitOperator(_LaminDBFlowOperator):
             "entrypoint": dag_id,
             "params": flow_run_params(context),
             "space": space_name(self.lamindb_space),
+            "branch": space_name(self.lamindb_branch),
         }
 
     def _after_execute(self, context: Any, remote: RemoteLaminDB) -> None:
@@ -213,6 +222,7 @@ class LaminDBFlowFinishOperator(_LaminDBFlowOperator):
         lamindb_conn_id: str | None = LaminDBHook.default_conn_name,
         lamindb_instance: str | None = None,
         lamindb_space: str | None = None,
+        lamindb_branch: str | None = None,
         lamindb_version: str | None = None,
         lamindb_cache_dir: str | None = None,
         lamindb_setup: LaminDBSetup | None = None,
@@ -225,6 +235,7 @@ class LaminDBFlowFinishOperator(_LaminDBFlowOperator):
             lamindb_conn_id=lamindb_conn_id,
             lamindb_instance=lamindb_instance,
             lamindb_space=lamindb_space,
+            lamindb_branch=lamindb_branch,
             lamindb_version=lamindb_version,
             lamindb_cache_dir=lamindb_cache_dir,
             lamindb_setup=lamindb_setup,
@@ -255,10 +266,10 @@ class LaminDBFlowFinishOperator(_LaminDBFlowOperator):
 def wire_flow_tasks(step: BaseOperator, **flow_kwargs: Any) -> None:
     """Wire ``init >> step >> finish``, adding the DAG's flow init/finish tasks on first use.
 
-    Called at DAG parse time by step decorators with ``auto_flow=True``. Flow operators
-    already in the DAG are reused, so the first LaminDB step decides their virtualenv
-    and LaminDB settings (``flow_kwargs``). Declare the flow operators yourself before
-    the steps to control them.
+    Called at DAG parse time by steps with ``auto_flow=True``, also mapped ones (see
+    ``LaminDBTaskDecorator``). Flow operators already in the DAG are reused, so the first
+    LaminDB step decides their virtualenv and LaminDB settings (``flow_kwargs``). Declare
+    the flow operators yourself before the steps to control them.
     """
     dag = step.get_dag()
     # tasks unmapped at run time were wired as a mapped task at parse time, if at all
@@ -274,63 +285,3 @@ def wire_flow_tasks(step: BaseOperator, **flow_kwargs: Any) -> None:
         init >> finish
     check_same_setup(step, init, finish)
     init >> step >> finish
-
-
-def _is_tracked_step(task: Any) -> bool:
-    """Whether ``task`` is a LaminDB step that records lineage, mapped or not."""
-    from airflow.providers.lamindb.utils.remote import RemoteLaminDBStepMixin
-    from airflow.sdk.definitions.mappedoperator import MappedOperator
-
-    if isinstance(task, MappedOperator):
-        operator_class = task.operator_class
-        return (
-            isinstance(operator_class, type)
-            and issubclass(operator_class, RemoteLaminDBStepMixin)
-            and task.partial_kwargs.get("track", True)
-        )
-    return isinstance(task, RemoteLaminDBStepMixin) and task.track
-
-
-def wire_lamindb_flow(
-    dag: DAG | None = None, **flow_kwargs: Any
-) -> tuple[LaminDBFlowInitOperator, LaminDBFlowFinishOperator]:
-    """Wire ``init >> step >> finish`` for every LaminDB step of ``dag``, including mapped ones.
-
-    Call it once, after the steps are declared; without ``dag``, inside a ``with DAG(...)`` block or
-    a ``@dag`` function, for the DAG being defined. Uses the DAG's flow operators, or adds them with
-    ``flow_kwargs`` (any ``LaminDBFlowInitOperator`` argument except the task id) if it has none;
-    they get the steps' ``lamindb_setup`` unless ``flow_kwargs`` has one. Fails if a step's
-    ``lamindb_setup`` differs from its flow tasks'.
-
-    Each step gets one edge from init and one to finish, so finish waits for every map index of a
-    mapped step; existing edges are kept, so calling it again or combining it with ``auto_flow`` or
-    ``with init >> finish:`` adds nothing twice. Untracked tasks (``track=False``) are skipped.
-
-    Returns the flow init and finish tasks.
-    """
-    from airflow.providers.lamindb.utils.remote import task_setting
-
-    if dag is None:
-        from airflow.sdk.definitions._internal.contextmanager import DagContext
-
-        dag = DagContext.get_current_dag()
-        if dag is None:
-            raise TypeError("wire_lamindb_flow() needs a DAG: pass one, or call it while defining the DAG")
-    steps = [task for task in dag.tasks if _is_tracked_step(task)]
-    if steps and "lamindb_setup" not in flow_kwargs:
-        flow_kwargs["lamindb_setup"] = task_setting(steps[0], "lamindb_setup")
-    init = next((t for t in dag.tasks if isinstance(t, LaminDBFlowInitOperator)), None)
-    finish = next((t for t in dag.tasks if isinstance(t, LaminDBFlowFinishOperator)), None)
-    if init is None:
-        init = LaminDBFlowInitOperator(dag=dag, task_group=dag.task_group, **flow_kwargs)
-    if finish is None:
-        finish = LaminDBFlowFinishOperator(dag=dag, task_group=dag.task_group, **flow_kwargs)
-    if finish.task_id not in init.downstream_task_ids:
-        init >> finish
-    for step in steps:
-        check_same_setup(step, init, finish)
-        if step.task_id not in init.downstream_task_ids:
-            init >> step
-        if finish.task_id not in step.downstream_task_ids:
-            step >> finish
-    return init, finish

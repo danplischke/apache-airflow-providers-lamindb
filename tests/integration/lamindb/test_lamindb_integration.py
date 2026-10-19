@@ -368,3 +368,47 @@ def test_bootstrap_runs_before_lamindb_is_imported(dag_module, run_id, instance,
     assert result == [False, True]  # not imported at bootstrap; imported by the time the step ran
     assert ln.Run.filter(initiated_by_run=flow_run, entrypoint="probe").one().status == "completed"
     runtime.finish_flow_run(kwargs["reference"], True)
+
+
+@pytest.fixture(scope="module")
+def feature_branch():
+    import lamindb as ln
+
+    return ln.Branch.filter(name="feature-x").one_or_none() or ln.Branch(name="feature-x").save()
+
+
+def test_flow_steps_and_their_records_are_on_the_branch(dag_module, run_id, feature_branch):
+    import lamindb as ln
+
+    from airflow.providers.lamindb.utils import runtime
+    from airflow.providers.lamindb.utils.dag_run import dag_source
+
+    def save_record(name: str) -> str:
+        return ln.Record(name=name).save().uid
+
+    kwargs = start_flow_run_kwargs(dag_module, run_id)
+    flow_run = runtime.start_flow_run(**kwargs, branch="feature-x")
+    assert flow_run.branch == feature_branch
+    assert flow_run.transform.branch_id == runtime.MAIN_BRANCH_ID  # still found by source from main
+    assert ln.context.branch is None
+
+    # steps find the flow run although lamindb's default scope is main, and inherit its branch
+    uid = runtime.run_step(
+        save_record, (f"on-branch-{run_id}",), {}, kwargs["reference"], dag_source(dag_module.dag)
+    )
+    step_run = ln.Run.filter(initiated_by_run=flow_run, entrypoint="save_record", branch=feature_branch).one()
+    assert step_run.transform == flow_run.transform
+    assert ln.Record.filter(uid=uid).one().branch == feature_branch
+    assert ln.context.branch is None
+
+    # a retried init keeps the run and its branch
+    assert runtime.start_flow_run(**kwargs).uid == flow_run.uid
+    with pytest.raises(RuntimeError, match="on another branch than 'main'"):
+        runtime.start_flow_run(**kwargs, branch="main")
+
+    uid = runtime.run_connected(save_record, (f"connected-branch-{run_id}",), {}, branch="feature-x")
+    assert ln.Record.filter(uid=uid).one().branch == feature_branch
+    with pytest.raises(ValueError, match="can't be recorded on the LaminDB 'trash' branch"):
+        runtime.run_connected(save_record, ("x",), {}, branch="trash")
+    runtime.finish_flow_run(kwargs["reference"], True)
+    assert ln.Run.filter(uid=flow_run.uid).one().status == "completed"
