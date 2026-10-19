@@ -564,6 +564,117 @@ def test_task_lamindb_k8s_connect_only_uses_the_pod_credentials(
     assert "api-key" not in repr(seen)
 
 
+def test_templated_lamindb_version_is_checked_once_rendered(
+    fake_lamindb: MagicMock, make_context, lamindb_connection
+) -> None:
+    fake_lamindb.flow_run = MagicMock()
+    op = _single_task(task.lamindb_venv(lamindb_version="{{ params.pin }}"), step)  # parses
+    assert "lamindb_version" in op.template_fields
+
+    context = make_context()
+    context["params"] = {"pin": " 2.10.1 "}
+    op.render_template_fields(context)
+    _, seen = _execute_in_fake_venv(op, context)
+    assert seen["requirements"][0] == "lamindb-core==2.10.1"
+
+
+@pytest.mark.parametrize(
+    ("pin", "error"),
+    [("2.8.0", r"lamindb 2\.8\.0 is not supported"), ("None", "'None' is not a lamindb version")],
+)
+def test_rendered_lamindb_version_fails_before_installing(
+    fake_lamindb: MagicMock, make_context, lamindb_connection, pin: str, error: str
+) -> None:
+    op = _single_task(task.lamindb_venv(lamindb_version="{{ params.pin }}"), step)
+    context = make_context()
+    context["params"] = {"pin": pin}
+    op.render_template_fields(context)
+
+    with (
+        patch.object(remote, "dag_source", return_value="# dag source"),
+        patch.object(type(op).__mro__[2], "execute") as venv_execute,
+        pytest.raises(LaminDBVersionError, match=error),
+    ):
+        op.execute(context)
+    venv_execute.assert_not_called()
+
+
+def test_mapped_steps_build_their_own_pinned_environment(
+    fake_lamindb: MagicMock, make_context, lamindb_connection
+) -> None:
+    fake_lamindb.flow_run = MagicMock()
+
+    @dag
+    def test_dag():
+        task.lamindb_venv(lamindb_version="2.{{ 10 + ti.map_index }}.0", venv_cache_path="/tmp/venvs")(
+            load
+        ).partial(credentials="c", day="d").expand(user=["a", "b", "c"])
+
+    mapped = test_dag().get_task("load")
+    requirements, hashes = [], []
+
+    def fake_venv_execute(self, context):
+        requirements.append(list(self.requirements))
+        hashes.append(self._calculate_cache_hash()[0])
+
+    for map_index in (0, 1, 2):
+        context = make_context()
+        context["ti"].map_index = map_index
+        context["ti"].xcom_pull.return_value = None
+        mapped.render_template_fields(context)
+        op = context["task"]
+        with (
+            patch.object(remote, "dag_source", return_value="# dag source"),
+            patch.object(type(op).__mro__[2], "execute", fake_venv_execute),
+        ):
+            op.execute(context)
+
+    assert [r[0] for r in requirements] == [
+        "lamindb-core==2.10.0",
+        "lamindb-core==2.11.0",
+        "lamindb-core==2.12.0",
+    ]
+    assert "pandas>=2.0.0" in requirements[0]  # lamindb 2.10 and newer allow pandas 3
+    assert len(set(hashes)) == 3
+
+
+def test_auto_flow_does_not_copy_a_templated_lamindb_version() -> None:
+    @dag
+    def test_dag():
+        task.lamindb_venv(
+            auto_flow=True,
+            lamindb_version="{{ params.pin }}",
+            requirements=["lamindb-core=={{ params.pin }}", "lamindb[bionty]==2.11.0"],
+        )(step)()
+
+    built = test_dag()
+    init = built.get_task("lamindb_flow_init")
+    assert init.lamindb_version is None  # the instance's version
+    assert init.requirements == ["lamindb[bionty]==2.11.0"]
+
+
+def test_flow_operators_render_lamindb_version() -> None:
+    from airflow.providers.lamindb.operators.flow import LaminDBFlowInitOperator
+
+    init = LaminDBFlowInitOperator(task_id="init", lamindb_version="{{ params.pin }}")
+    assert "lamindb_version" in init.template_fields
+    with pytest.raises(LaminDBVersionError, match=r"lamindb 2\.8\.0 is not supported"):
+        LaminDBFlowInitOperator(task_id="init2", lamindb_version="2.8.0")
+
+
+def test_dags_with_templated_lamindb_versions_serialize() -> None:
+    from airflow.serialization.serialized_objects import DagSerialization
+
+    @dag
+    def test_dag():
+        task.lamindb_venv(lamindb_version="{{ params.pin }}")(load).partial(credentials="c", day="d").expand(
+            user=["a"]
+        )
+
+    serialized = DagSerialization.to_dict(test_dag())
+    assert "{{ params.pin }}" in str(serialized)
+
+
 def test_sensitive_looking_names_are_still_recorded(fake_lamindb: MagicMock, make_context) -> None:
     """Airflow matches sensitive names by substring; only values Airflow knows to be secret count."""
 
@@ -596,3 +707,32 @@ def test_sensitive_looking_names_are_still_recorded(fake_lamindb: MagicMock, mak
         "secretory_cells": ["acinar"],
         "max_tokens": 512,
     }
+
+
+@pytest.mark.parametrize(
+    ("pin", "expected"), [(2.11, "lamindb-core==2.11"), ("2.11.0", "lamindb-core==2.11.0")]
+)
+def test_natively_rendered_lamindb_version(
+    fake_lamindb: MagicMock, make_context, lamindb_connection, pin, expected
+):
+    fake_lamindb.flow_run = MagicMock()
+
+    @dag(render_template_as_native_obj=True, params={"pin": pin})
+    def test_dag():
+        task.lamindb_venv(lamindb_version="{{ params.pin }}")(step)()
+
+    op = test_dag().get_task("step")
+    context = make_context()
+    context["params"] = {"pin": pin}
+    op.render_template_fields(context)
+    assert op.lamindb_version == pin
+    context["ti"].xcom_pull.return_value = None
+
+    _, seen = _execute_in_fake_venv(op, context)
+    assert seen["requirements"][0] == expected
+
+
+def test_literal_lamindb_versions_may_be_numbers() -> None:
+    assert _single_task(task.lamindb_venv(lamindb_version=2.11), step).lamindb_version == 2.11
+    with pytest.raises(LaminDBVersionError, match=r"lamindb 2\.7 is not supported"):
+        _single_task(task.lamindb_venv(lamindb_version=2.7), step)
