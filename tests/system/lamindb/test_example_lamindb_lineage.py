@@ -22,6 +22,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from airflow.sdk.definitions.mappedoperator import MappedOperator
 
 pytest.importorskip("lamindb")
 
@@ -47,12 +48,19 @@ def dags():
     import lamindb
     import lamindb_setup
 
-    for dag in (module.dag_ok, module.dag_fail, module.dag_auto_flow):
+    settings = {
+        "lamindb_conn_id": None,
+        "lamindb_instance": lamindb_setup.settings.instance.slug,
+        "lamindb_version": lamindb.__version__,
+    }
+    for dag in (module.dag_ok, module.dag_fail, module.dag_auto_flow, module.dag_params):
         for task in dag.tasks:
-            if hasattr(task, "lamindb_conn_id"):
-                task.lamindb_conn_id = None
-                task.lamindb_instance = lamindb_setup.settings.instance.slug
-                task.lamindb_version = lamindb.__version__
+            if isinstance(task, MappedOperator) and hasattr(task.operator_class, "lamindb_cache_dir"):
+                # unmapped from partial_kwargs when it runs
+                task.partial_kwargs.update(settings)
+            elif hasattr(task, "lamindb_conn_id"):
+                for name, value in settings.items():
+                    setattr(task, name, value)
     return module
 
 
@@ -102,3 +110,19 @@ def test_auto_flow_dag_run(dags):
     assert set(steps) == {"venv_extract", "venv_double"}
     assert all(step.status == "completed" for step in steps.values())
     assert steps["venv_double"].params == {"data": {"count": 4}}
+
+
+def test_secret_arguments_are_not_recorded(dags, monkeypatch):
+    import lamindb as ln
+
+    monkeypatch.setenv("AIRFLOW_VAR_LIMS_CREDENTIALS", "s3cret-credentials")
+    dr = dags.dag_params.test()
+    assert str(dr.state) == "success"
+
+    flow = ln.Run.filter(
+        reference=f"lamindb_example_params/{dr.run_id}", reference_type="airflow_dag_run"
+    ).one()
+    steps = ln.Run.filter(initiated_by_run=flow, entrypoint="fetch")
+    assert sorted(step.params["sample"] for step in steps) == ["S1", "S2", "S3"]
+    assert all(step.params == {"sample": step.params["sample"]} for step in steps)
+    assert all(step.status == "completed" for step in steps)

@@ -7,7 +7,7 @@ from typing import Any
 
 from airflow.providers.lamindb.hooks.lamindb import LaminDBHook
 from airflow.providers.lamindb.operators.flow import wire_flow_tasks
-from airflow.providers.lamindb.utils.remote import RemoteLaminDBStepMixin
+from airflow.providers.lamindb.utils.remote import ExcludeTemplated, RemoteLaminDBStepMixin
 from airflow.sdk.bases.decorator import task_decorator_factory
 
 
@@ -31,9 +31,17 @@ def _lamindb_k8s_decorated_operator_class() -> type:
             *,
             lamindb_conn_id: str | None = LaminDBHook.default_conn_name,
             lamindb_instance: str | None = None,
+            lamindb_exclude_params: Sequence[str] = (),
+            lamindb_exclude_templated: ExcludeTemplated = "secrets",
             **kwargs: Any,
         ) -> None:
-            super().__init__(lamindb_conn_id=lamindb_conn_id, lamindb_instance=lamindb_instance, **kwargs)
+            super().__init__(
+                lamindb_conn_id=lamindb_conn_id,
+                lamindb_instance=lamindb_instance,
+                lamindb_exclude_params=lamindb_exclude_params,
+                lamindb_exclude_templated=lamindb_exclude_templated,
+                **kwargs,
+            )
             if self.auto_flow:
                 wire_flow_tasks(
                     self, lamindb_conn_id=self.lamindb_conn_id, lamindb_instance=self.lamindb_instance
@@ -53,10 +61,12 @@ def lamindb_k8s_task(
     connection of type ``lamindb``; the pod only gets its instance, not its API key),
     ``lamindb_instance`` (instance slug; overrides the connection's; both templated),
     ``auto_flow`` (wire flow operators, which run in a virtualenv on the worker, if the
-    DAG has none yet; default ``False``) and ``track`` (record the call in LaminDB; with
-    ``False`` it runs exactly as under ``@task.kubernetes``). The image must have lamindb 2.8.1
-    or newer installed (the step fails on older versions) and credentials for the instance,
-    e.g. ``LAMIN_API_KEY`` from a Kubernetes secret. The worker needs no lamindb. Requires
+    DAG has none yet; default ``False``), ``track`` (record the call in LaminDB; with
+    ``False`` it runs exactly as under ``@task.kubernetes``), and ``lamindb_exclude_params``
+    and ``lamindb_exclude_templated`` (arguments not to record, as for ``@task.lamindb_venv``).
+    The image must have lamindb 2.8.1 or newer installed (the step fails on older versions)
+    and credentials for the instance, e.g. ``LAMIN_API_KEY`` from a Kubernetes secret. The
+    worker needs no lamindb. Requires
     ``pip install "apache-airflow-providers-lamindb[cncf.kubernetes]"``.
 
     The step needs the ``lamindb_default`` connection (or the one named by

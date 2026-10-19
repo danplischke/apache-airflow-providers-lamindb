@@ -9,6 +9,7 @@ from typing import Any
 from airflow.providers.lamindb.hooks.lamindb import LaminDBHook
 from airflow.providers.lamindb.operators.flow import wire_flow_tasks
 from airflow.providers.lamindb.utils.remote import (
+    ExcludeTemplated,
     RemoteLaminDB,
     RemoteLaminDBStepMixin,
     check_lamindb_version,
@@ -51,10 +52,18 @@ class LaminDBVenvDecoratedOperator(RemoteLaminDBStepMixin, _PythonVirtualenvDeco
         lamindb_instance: str | None = None,
         lamindb_version: str | None = None,
         lamindb_cache_dir: str | None = None,
+        lamindb_exclude_params: Sequence[str] = (),
+        lamindb_exclude_templated: ExcludeTemplated = "secrets",
         **kwargs: Any,
     ) -> None:
         check_lamindb_version(lamindb_version)
-        super().__init__(lamindb_conn_id=lamindb_conn_id, lamindb_instance=lamindb_instance, **kwargs)
+        super().__init__(
+            lamindb_conn_id=lamindb_conn_id,
+            lamindb_instance=lamindb_instance,
+            lamindb_exclude_params=lamindb_exclude_params,
+            lamindb_exclude_templated=lamindb_exclude_templated,
+            **kwargs,
+        )
         self.lamindb_version = lamindb_version
         self.lamindb_cache_dir = lamindb_cache_dir
         if self.auto_flow:
@@ -100,6 +109,12 @@ def lamindb_venv_task(
     - ``track``: record the call in LaminDB. Default ``True``; with ``False`` the
       function runs exactly as under ``@task.virtualenv``, and lamindb is not added
       to ``requirements``.
+    - ``lamindb_exclude_params``: names of parameters (or ``**kwargs`` keys) not to
+      record; the function still gets them.
+    - ``lamindb_exclude_templated``: ``"secrets"`` (default) doesn't record arguments
+      whose template reads an Airflow Variable or Connection (``var``, ``conn``),
+      ``"all"`` no templated argument, ``"none"`` records them all. Arguments that
+      contain a secret Airflow masks in logs are never recorded.
 
     The worker needs no lamindb.
     """

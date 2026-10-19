@@ -26,6 +26,7 @@ def test_example_dags_import(dagbag):
         "lamindb_example_auto_flow",
         "lamindb_example_fail",
         "lamindb_example_ok",
+        "lamindb_example_params",
     ]
 
 

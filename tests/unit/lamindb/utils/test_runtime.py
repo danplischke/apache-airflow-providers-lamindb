@@ -22,7 +22,7 @@ def test_runtime_is_self_contained() -> None:
         for node in ast.walk(tree)
         if isinstance(node, ast.ImportFrom) and node.module
     }
-    assert imported <= {"datetime", "inspect", "pathlib", "re", "lamindb"}
+    assert imported <= {"datetime", "inspect", "logging", "pathlib", "re", "lamindb"}
     top_level = [node for node in tree.body if isinstance(node, (ast.Import, ast.ImportFrom))]
     assert all(node.module == "datetime" for node in top_level if isinstance(node, ast.ImportFrom))
     assert not any(isinstance(node, ast.Import) for node in top_level)
@@ -186,3 +186,79 @@ def test_run_step_without_flow_run_raises(fake_lamindb: MagicMock) -> None:
     with pytest.raises(LookupError, match="No LaminDB flow run"):
         runtime.run_step(lambda: None, (), {}, "my_dag/run_1", "")
     fake_lamindb.track.assert_not_called()
+
+
+def test_run_step_leaves_out_excluded_params_but_passes_them(fake_lamindb: MagicMock) -> None:
+    fake_lamindb.flow_run = MagicMock(**{"transform.key": "my_dag.py"})
+    received = {}
+
+    def load(user, password, *, retries=3, **options):
+        received.update(user=user, password=password, retries=retries, **options)
+        return "ok"
+
+    result = runtime.run_step(
+        load,
+        ("alice", "s3cret"),
+        {"token": "t0ken", "region": "eu"},
+        "my_dag/run_1",
+        "",
+        exclude_params=["password", "token"],
+    )
+
+    assert result == "ok"
+    assert received == {"user": "alice", "password": "s3cret", "retries": 3, "token": "t0ken", "region": "eu"}
+    params = fake_lamindb.track.call_args.kwargs["params"]
+    assert params == {"user": "alice", "retries": 3, "options": {"region": "eu"}}
+
+
+@pytest.fixture
+def lamindb_inference(monkeypatch: pytest.MonkeyPatch, fake_lamindb: MagicMock):
+    """``lamindb.models`` with a stand-in for lamindb's parameter type inference."""
+    import sys
+    import types
+
+    class SQLRecord:
+        pass
+
+    def infer_convert_dtype_key_value(key, value, mute=False):
+        assert mute
+        if isinstance(value, (int, str)):
+            return type(value).__name__, value, ""
+        if isinstance(value, list) and all(isinstance(item, SQLRecord) for item in value):
+            return "list[cat[ULabel]]", value, ""
+        return "?", value, ""
+
+    models = types.ModuleType("lamindb.models")
+    models.SQLRecord = SQLRecord  # type: ignore[attr-defined]
+    feature_manager = types.ModuleType("lamindb.models._feature_manager")
+    feature_manager.infer_convert_dtype_key_value = infer_convert_dtype_key_value  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "lamindb.models", models)
+    monkeypatch.setitem(sys.modules, "lamindb.models._feature_manager", feature_manager)
+    return SQLRecord
+
+
+def test_step_params_drops_values_lamindb_cannot_record_without_logging_them(
+    lamindb_inference, caplog: pytest.LogCaptureFixture
+) -> None:
+    class Client:
+        def __repr__(self) -> str:
+            return "Client(password='s3cret')"
+
+    record = lamindb_inference()
+
+    def step(count, name, client, label, labels, missing=None):
+        pass
+
+    params = runtime.step_params(step, (1, "x", Client(), record, [record]), {})
+
+    assert params == {"count": 1, "name": "x", "label": record, "labels": [record], "missing": None}
+    assert "Not recording parameter 'client' of type Client" in caplog.text
+    assert "s3cret" not in caplog.text
+
+
+def test_step_params_keeps_everything_when_lamindb_cannot_be_asked(fake_lamindb: MagicMock) -> None:
+    def step(client):
+        pass
+
+    client = object()
+    assert runtime.step_params(step, (client,), {}) == {"client": client}
