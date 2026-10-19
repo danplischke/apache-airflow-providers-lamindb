@@ -43,6 +43,7 @@ class LaminDBVenvDecoratedOperator(RemoteLaminDBStepMixin, _PythonVirtualenvDeco
         "lamindb_conn_id",
         "lamindb_instance",
         "lamindb_space",
+        "lamindb_branch",
         "lamindb_version",
         "lamindb_cache_dir",
     )
@@ -54,6 +55,7 @@ class LaminDBVenvDecoratedOperator(RemoteLaminDBStepMixin, _PythonVirtualenvDeco
         lamindb_conn_id: str | None = LaminDBHook.default_conn_name,
         lamindb_instance: str | None = None,
         lamindb_space: str | None = None,
+        lamindb_branch: str | None = None,
         lamindb_version: str | None = None,
         lamindb_cache_dir: str | None = None,
         lamindb_exclude_params: Sequence[str] = (),
@@ -65,6 +67,7 @@ class LaminDBVenvDecoratedOperator(RemoteLaminDBStepMixin, _PythonVirtualenvDeco
             lamindb_conn_id=lamindb_conn_id,
             lamindb_instance=lamindb_instance,
             lamindb_space=lamindb_space,
+            lamindb_branch=lamindb_branch,
             lamindb_exclude_params=lamindb_exclude_params,
             lamindb_exclude_templated=lamindb_exclude_templated,
             **kwargs,
@@ -77,6 +80,7 @@ class LaminDBVenvDecoratedOperator(RemoteLaminDBStepMixin, _PythonVirtualenvDeco
                 lamindb_conn_id=self.lamindb_conn_id,
                 lamindb_instance=self.lamindb_instance,
                 lamindb_space=None if is_template(self.lamindb_space) else self.lamindb_space,
+                lamindb_branch=None if is_template(self.lamindb_branch) else self.lamindb_branch,
                 # a template may refer to the step's own XComs or map index; the flow tasks fall
                 # back to the instance's version instead
                 lamindb_version=None if is_template(self.lamindb_version) else self.lamindb_version,
@@ -110,6 +114,8 @@ def lamindb_venv_task(
     - ``lamindb_instance``: instance slug to connect to; overrides the connection's. Templated.
     - ``lamindb_space``: name or uid of the space for the step run and the records the
       function saves; defaults to the flow run's space. Templated.
+    - ``lamindb_branch``: name or uid of the branch for the step run and the records the
+      function saves; defaults to the flow run's branch. Templated.
     - ``lamindb_version``: version of ``lamindb-core`` added to ``requirements`` unless
       you list lamindb yourself, 2.8.1 or newer; defaults to the instance's version on
       LaminHub (with a connection), else the latest. Templated, e.g. per mapped task;

@@ -151,6 +151,20 @@ The lineage operators and decorators accept these arguments, also through a DAG'
     another space than its flow run needs access to both, and artifacts saved in a space need a
     storage location in it (see lamindb's `NoStorageLocationForSpace`).
 
+`lamindb_branch`
+:   The name or uid of a [branch](https://docs.lamin.ai/lamindb.branch) to record on, instead of the
+    instance's current one, for example a draft branch that is reviewed and merged later. Templated; an
+    empty rendered value means the default. On the flow init operator, it's the branch of the flow run.
+    Steps record their runs on the flow run's branch, and so do the records their function saves, unless
+    the step sets its own `lamindb_branch`. With `connect=True`, it's the branch of the records the
+    function saves.
+
+    The DAG file's transform stays on the branch lamindb finds it on (by default `main`), so steps and
+    later flow runs on other branches still find it by its source. Steps find their flow run on any
+    branch. An unknown branch fails the task before anything is recorded, and so do `archive` and
+    `trash`. A retried flow init keeps its run's branch and fails if it's given another one.
+    Auto-wired flow tasks copy a step's literal branch, not a templated one.
+
 `lamindb_version` (virtualenvs only)
 :   The lamindb version to install, 2.8.1 or newer. Defaults to the instance's version on LaminHub,
     so that the virtualenv speaks the instance's schema, else the latest. The virtualenvs install

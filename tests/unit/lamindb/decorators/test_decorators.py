@@ -557,10 +557,8 @@ def test_task_lamindb_k8s_connect_only_uses_the_pod_credentials(
     with patch.object(type(op).__mro__[2], "execute", fake_pod_execute):
         op.execute(make_context())
 
-    assert (
-        "run_connected(_lamindb_airflow_user_fn, args, kwargs, **{'instance': 'owner/name', 'space': None})"
-        in seen["source"]
-    )
+    config = "**{'instance': 'owner/name', 'space': None, 'branch': None}"
+    assert f"run_connected(_lamindb_airflow_user_fn, args, kwargs, {config})" in seen["source"]
     assert "api-key" not in repr(seen)
 
 
@@ -790,3 +788,54 @@ def test_literal_lamindb_versions_may_be_numbers() -> None:
 )
 def test_space_names(space, expected) -> None:
     assert remote.space_name(space) == expected
+
+
+def test_lamindb_branch_is_templated_and_reaches_steps_and_flow_operators(
+    fake_lamindb: MagicMock, make_context, lamindb_connection
+) -> None:
+    from airflow.providers.lamindb.operators.flow import LaminDBFlowInitOperator
+
+    @dag(default_args={"lamindb_branch": "{{ params.branch }}"})
+    def test_dag():
+        LaminDBFlowInitOperator()
+        task.lamindb_venv(step)()
+
+    built = test_dag()
+    init, op = built.get_task("lamindb_flow_init"), built.get_task("step")
+    assert "lamindb_branch" in init.template_fields
+    assert "lamindb_branch" in op.template_fields
+    context = make_context()
+    context["params"] = {"branch": " feature-x "}
+    init.render_template_fields(context)
+    assert init._runtime_kwargs(context)["branch"] == "feature-x"
+
+    fake_lamindb.flow_run = MagicMock(space_id=1, branch_id=1)
+    feature = fake_lamindb.Branch.filter.return_value.one_or_none.return_value
+    feature.id = 2
+    op.render_template_fields(context)
+    context["ti"].xcom_pull.return_value = None
+    _execute_in_fake_venv(op, context)
+    fake_lamindb.Branch.filter.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    ("branch", "flow_branch"), [("feature-x", "feature-x"), ("{{ params.branch }}", None)]
+)
+def test_auto_flow_copies_only_a_literal_branch(branch: str, flow_branch: str | None) -> None:
+    op = _single_task(task.lamindb_venv(auto_flow=True, lamindb_branch=branch), step)
+    assert op.get_dag().get_task("lamindb_flow_init").lamindb_branch == flow_branch
+
+
+def test_lamindb_branch_reaches_pod_steps(fake_lamindb: MagicMock, make_context, lamindb_connection) -> None:
+    pytest.importorskip("airflow.providers.cncf.kubernetes")
+    op = _single_task(
+        task.lamindb_k8s(image="python:3.12", track=False, connect=True, lamindb_branch="feature-x"), step
+    )
+    seen = {}
+
+    def fake_pod_execute(self, context):
+        seen["source"] = self.get_python_source()
+
+    with patch.object(type(op).__mro__[2], "execute", fake_pod_execute):
+        op.execute(make_context())
+    assert "'branch': 'feature-x'" in seen["source"]

@@ -99,8 +99,9 @@ def test_start_flow_run_restarts_existing_run_on_retry(fake_lamindb: MagicMock) 
     fake_lamindb.track.assert_not_called()
     assert existing._status_code == runtime.STATUS_RESTARTED
     assert existing.finished_at is None
+    # on every branch but the archive and the trash, not only lamindb's current one
     fake_lamindb.Run.filter.assert_called_with(
-        reference="my_dag/run_1", reference_type=runtime.FLOW_RUN_REFERENCE_TYPE
+        reference="my_dag/run_1", reference_type=runtime.FLOW_RUN_REFERENCE_TYPE, branch_id__gte=1
     )
 
 
@@ -354,3 +355,77 @@ def test_run_connected_sets_the_default_space_while_the_function_runs(fake_lamin
         runtime.run_connected(save_something, (), {}, space="lab")
     assert seen == [lab]
     assert fake_lamindb.context._space is None
+
+
+def test_start_flow_run_on_a_branch(fake_lamindb: MagicMock) -> None:
+    feature = fake_lamindb.Branch.filter.return_value.one_or_none.return_value
+    feature.id = 2
+
+    run = runtime.start_flow_run("my_dag/run_1", "/dags/my_dag.py", "my_dag", {}, branch="feature-x")
+
+    assert "branch" not in fake_lamindb.track.call_args.kwargs  # the transform stays findable from main
+    assert run.branch is feature
+    assert fake_lamindb.context._branch is None
+
+
+@pytest.mark.parametrize(("branch_id", "name"), [(0, "archive"), (-1, "trash")])
+def test_runs_are_not_recorded_on_the_archive_or_the_trash(fake_lamindb: MagicMock, branch_id, name) -> None:
+    record = fake_lamindb.Branch.filter.return_value.one_or_none.return_value
+    record.id, record.name = branch_id, name
+    with pytest.raises(ValueError, match=f"can't be recorded on the LaminDB '{name}' branch"):
+        runtime.start_flow_run("r", "/p.py", "e", {}, branch=name)
+    fake_lamindb.track.assert_not_called()
+
+
+def test_unknown_branch_fails_before_anything_is_recorded(fake_lamindb: MagicMock) -> None:
+    fake_lamindb.Branch.filter.return_value.one_or_none.return_value = None
+    with pytest.raises(LookupError, match="LaminDB branch 'feature-x' does not exist"):
+        runtime.start_flow_run("r", "/p.py", "e", {}, branch="feature-x")
+    fake_lamindb.track.assert_not_called()
+
+
+def test_retried_flow_init_keeps_the_branch_of_its_run(fake_lamindb: MagicMock) -> None:
+    fake_lamindb.flow_run = MagicMock(branch_id=2)
+    fake_lamindb.Branch.filter.return_value.one_or_none.return_value = MagicMock(id=3)
+    with pytest.raises(RuntimeError, match="on another branch than 'other'"):
+        runtime.start_flow_run("r", "/p.py", "e", {}, branch="other")
+
+
+@pytest.mark.parametrize(
+    ("flow_branch_id", "step_branch", "expected"),
+    [
+        (runtime.MAIN_BRANCH_ID, None, None),  # unchanged behaviour
+        (2, None, "flow"),  # inherited from the flow run
+        (2, "feature-y", "feature-y"),
+        (runtime.MAIN_BRANCH_ID, "feature-y", "feature-y"),
+    ],
+)
+def test_step_branch(fake_lamindb: MagicMock, flow_branch_id, step_branch, expected) -> None:
+    flow_branch = MagicMock(name="flow branch", id=flow_branch_id)
+    fake_lamindb.flow_run = MagicMock(
+        branch_id=flow_branch_id, branch=flow_branch, space_id=runtime.ALL_SPACE_ID
+    )
+    feature_y = fake_lamindb.Branch.filter.return_value.one_or_none.return_value
+    feature_y.id = 5
+    runs = _recorded_runs(fake_lamindb)
+    seen = []
+
+    runtime.run_step(
+        lambda: seen.append(fake_lamindb.context._branch), (), {}, "my_dag/run_1", "", branch=step_branch
+    )
+
+    branch = {None: None, "flow": flow_branch, "feature-y": feature_y}[expected]
+    assert "branch" not in fake_lamindb.track.call_args.kwargs
+    assert seen == [branch]  # records fn saves go on the branch
+    if branch is not None:
+        assert runs[0].branch is branch
+    assert fake_lamindb.context._branch is None
+
+
+def test_run_connected_sets_the_default_branch_while_the_function_runs(fake_lamindb: MagicMock) -> None:
+    feature = fake_lamindb.Branch.filter.return_value.one_or_none.return_value
+    feature.id = 2
+    seen = []
+    runtime.run_connected(lambda: seen.append(fake_lamindb.context._branch), (), {}, branch="feature-x")
+    assert seen == [feature]
+    assert fake_lamindb.context._branch is None
