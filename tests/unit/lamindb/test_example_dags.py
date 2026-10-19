@@ -24,6 +24,7 @@ def test_example_dags_import(dagbag):
         "example_lamindb_record_events",
         "example_lamindb_sensors",
         "lamindb_example_auto_flow",
+        "lamindb_example_connect",
         "lamindb_example_fail",
         "lamindb_example_ok",
         "lamindb_example_params",

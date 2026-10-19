@@ -444,6 +444,126 @@ def test_task_lamindb_k8s_ships_the_excluded_params(
     assert "'exclude_params': ['credentials', 'user']" in seen["source"]
 
 
+def _execute_connected(op, context, seen=None):
+    """Execute in a fake venv; returns the result and what the virtualenv saw (also into ``seen``)."""
+    seen = {} if seen is None else seen
+
+    def fake_venv_execute(self, context):
+        seen["requirements"] = list(self.requirements)
+        seen["env_vars"] = dict(self.env_vars or {})
+        seen["source"] = self.get_python_source()
+        namespace: dict = {}
+        exec(seen["source"], namespace)
+        return namespace[self.python_callable.__name__](*self.op_args, **self.op_kwargs)
+
+    with patch.object(type(op).__mro__[2], "execute", fake_venv_execute):
+        try:
+            return op.execute(context), seen
+        finally:
+            settings_dir = seen.get("env_vars", {}).get("LAMIN_SETTINGS_DIR", "")
+            seen["settings_dir_exists_after"] = os.path.isdir(settings_dir)
+
+
+def test_connect_only_step_connects_without_recording(
+    fake_lamindb: MagicMock, make_context, lamindb_connection
+) -> None:
+    op = _single_task(task.lamindb_venv(track=False, connect=True, auto_flow=True), step)
+    assert op.get_dag().task_ids == ["step"]  # no flow tasks
+
+    result, seen = _execute_connected(op, make_context())
+
+    assert result == 1
+    fake_lamindb.connect.assert_called_once_with("owner/name")
+    fake_lamindb.track.assert_not_called()
+    fake_lamindb.Run.filter.assert_not_called()  # no flow run needed
+    assert "run_connected" in seen["source"]
+    assert seen["requirements"] == ["lamindb-core==2.11.0", "numpy", "pandas>=2.0.0", "pandera>=0.24.0"]
+    assert seen["env_vars"]["LAMIN_API_KEY"] == "api-key"
+    assert not seen["settings_dir_exists_after"]
+    assert op.env_vars is None
+
+
+def test_connect_only_step_cleans_up_when_the_function_fails(
+    fake_lamindb: MagicMock, make_context, lamindb_connection
+) -> None:
+    def fail():
+        raise ValueError("boom")
+
+    op = _single_task(task.lamindb_venv(track=False, connect=True, task_id="step"), fail)
+
+    seen: dict = {}
+    with pytest.raises(ValueError, match="boom"):
+        _execute_connected(op, make_context(), seen)
+    fake_lamindb.connect.assert_called_once_with("owner/name")
+    fake_lamindb.track.assert_not_called()
+    assert seen["env_vars"]["LAMIN_SETTINGS_DIR"]
+    assert not seen["settings_dir_exists_after"]
+    assert op.env_vars is None
+
+
+def test_connect_only_step_needs_its_connection(make_context, monkeypatch) -> None:
+    from airflow.exceptions import AirflowNotFoundException
+
+    monkeypatch.delenv("AIRFLOW_CONN_LAMINDB_DEFAULT", raising=False)
+    op = _single_task(task.lamindb_venv(track=False, connect=True), step)
+    with pytest.raises(AirflowNotFoundException, match="'lamindb_default' connection"):
+        op.execute(make_context())
+
+
+def test_connect_only_step_rejects_instances_on_older_lamindb(
+    make_context, lamindb_connection, monkeypatch
+) -> None:
+    def too_old(self):
+        raise LaminDBVersionError("runs lamindb 2.7.0")
+
+    monkeypatch.setattr(remote.RemoteLaminDB, "instance_lamindb_version", too_old)
+    op = _single_task(task.lamindb_venv(track=False, connect=True), step)
+    with pytest.raises(LaminDBVersionError, match=r"2\.7\.0"):
+        _execute_connected(op, make_context())
+
+
+def test_connect_only_mapped_steps_resolve_their_own_instance(
+    fake_lamindb: MagicMock, make_context, lamindb_connection
+) -> None:
+    @dag
+    def test_dag():
+        task.lamindb_venv(track=False, connect=True, lamindb_instance="owner/site{{ ti.map_index }}")(
+            load
+        ).partial(credentials="c", day="d").expand(user=["a", "b"])
+
+    mapped = test_dag().get_task("load")
+    for map_index in (0, 1):
+        context = make_context()
+        context["ti"].map_index = map_index
+        mapped.render_template_fields(context)
+        result, _ = _execute_connected(context["task"], context)
+        assert result == [["a", "b"][map_index], "c", "d"]
+    assert [c.args for c in fake_lamindb.connect.call_args_list] == [("owner/site0",), ("owner/site1",)]
+    # not part of a flow run, so not held to its instance
+    context["ti"].xcom_pull.assert_not_called()
+
+
+def test_task_lamindb_k8s_connect_only_uses_the_pod_credentials(
+    fake_lamindb: MagicMock, make_context, lamindb_connection
+) -> None:
+    pytest.importorskip("airflow.providers.cncf.kubernetes")
+    op = _single_task(task.lamindb_k8s(image="python:3.12", track=False, connect=True), step)
+    seen = {}
+
+    def fake_pod_execute(self, context):
+        seen["source"] = self.get_python_source()
+        seen["env_vars"] = self.env_vars
+
+    with patch.object(type(op).__mro__[2], "execute", fake_pod_execute):
+        op.execute(make_context())
+
+    assert (
+        "run_connected(_lamindb_airflow_user_fn, args, kwargs, **{'instance': 'owner/name'})"
+        in seen["source"]
+    )
+    assert "api-key" not in repr(seen)
+
+
 def test_sensitive_looking_names_are_still_recorded(fake_lamindb: MagicMock, make_context) -> None:
     """Airflow matches sensitive names by substring; only values Airflow knows to be secret count."""
 

@@ -62,7 +62,8 @@ def lamindb_k8s_task(
     ``lamindb_instance`` (instance slug; overrides the connection's; both templated),
     ``auto_flow`` (wire flow operators, which run in a virtualenv on the worker, if the
     DAG has none yet; default ``False``), ``track`` (record the call in LaminDB; with
-    ``False`` it runs exactly as under ``@task.kubernetes``), and ``lamindb_exclude_params``
+    ``False`` it runs exactly as under ``@task.kubernetes``), ``connect`` (with ``track=False``,
+    still connect the pod to the instance, without recording anything), and ``lamindb_exclude_params``
     and ``lamindb_exclude_templated`` (arguments not to record, as for ``@task.lamindb_venv``).
     The image must have lamindb 2.8.1 or newer installed (the step fails on older versions)
     and credentials for the instance, e.g. ``LAMIN_API_KEY`` from a Kubernetes secret. The

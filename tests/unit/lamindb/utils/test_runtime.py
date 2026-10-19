@@ -262,3 +262,10 @@ def test_step_params_keeps_everything_when_lamindb_cannot_be_asked(fake_lamindb:
 
     client = object()
     assert runtime.step_params(step, (client,), {}) == {"client": client}
+
+
+def test_run_connected_connects_without_recording(fake_lamindb: MagicMock) -> None:
+    assert runtime.run_connected(lambda a, b=2: a + b, (1,), {"b": 3}, instance="owner/name") == 4
+    fake_lamindb.connect.assert_called_once_with("owner/name")
+    fake_lamindb.track.assert_not_called()
+    fake_lamindb.Run.filter.assert_not_called()

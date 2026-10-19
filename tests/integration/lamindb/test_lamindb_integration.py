@@ -101,11 +101,15 @@ def start_flow_run_kwargs(dag_module, run_id: str) -> dict:
     }
 
 
-def step_script(user_source: str, callable_name: str, call: str, config: dict) -> str:
+def step_script(
+    user_source: str, callable_name: str, call: str, config: dict, runtime_function: str = "run_step"
+) -> str:
     """The step source a virtualenv/pod receives, then called by name like Airflow's template."""
     from airflow.providers.lamindb.utils.remote import build_remote_step_source
 
-    script = build_remote_step_source(user_source=user_source, callable_name=callable_name, config=config)
+    script = build_remote_step_source(
+        user_source=user_source, callable_name=callable_name, config=config, runtime_function=runtime_function
+    )
     return script + f'\nimport json\nprint("RESULT=" + json.dumps({call}))\n'
 
 
@@ -258,3 +262,25 @@ def test_step_records_only_params_lamindb_can_store(dag_module, run_id, caplog, 
     assert "Not recording parameter 'client' of type Client" in caplog.text
     assert "s3cret" not in caplog.text + output.out + output.err
     runtime.finish_flow_run(kwargs["reference"], True)
+
+
+def test_connect_only_source_records_nothing(instance, tmp_path):
+    import lamindb as ln
+
+    runs_before = ln.Run.filter().count()
+    transforms_before = ln.Transform.filter().count()
+    user_source = textwrap.dedent(
+        """
+        def count_runs() -> int:
+            import lamindb as ln
+
+            return ln.Run.filter().count()
+        """
+    )
+    script = step_script(user_source, "count_runs", "count_runs()", {"instance": instance}, "run_connected")
+
+    result = json.loads(run_script(script, tmp_path).stdout.split("RESULT=")[1])
+
+    assert result == runs_before  # connected to the instance
+    assert ln.Run.filter().count() == runs_before
+    assert ln.Transform.filter().count() == transforms_before
