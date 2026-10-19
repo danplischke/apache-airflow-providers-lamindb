@@ -27,6 +27,9 @@ MIN_LAMINDB_VERSION = "2.8.1"
 ALL_SPACE_ID = 1
 """Id of the ``all`` space every instance has: the default, without access restrictions."""
 
+MAIN_BRANCH_ID = 1
+"""Id of the ``main`` branch every instance has; ``archive`` is 0 and ``trash`` -1."""
+
 STATUS_STARTED = -1
 STATUS_RESTARTED = -2
 STATUS_COMPLETED = 0
@@ -78,8 +81,11 @@ def get_flow_run(reference):
     """Return the flow run tagged with ``reference``, or None if it was never started."""
     import lamindb as ln
 
+    # on any branch but the archive and the trash: lamindb's default scope is only the current branch
     return (
-        ln.Run.filter(reference=reference, reference_type=FLOW_RUN_REFERENCE_TYPE)
+        ln.Run.filter(
+            reference=reference, reference_type=FLOW_RUN_REFERENCE_TYPE, branch_id__gte=MAIN_BRANCH_ID
+        )
         .order_by("-created_at")
         .first()
     )
@@ -114,30 +120,63 @@ def resolve_space(space):
     return record
 
 
+def resolve_branch(branch):
+    """Return the ``Branch`` named (or with the uid) ``branch``; ``None`` for no branch."""
+    import lamindb as ln
+
+    if branch is None:
+        return None
+    record = ln.Branch.filter(ln.Q(name=branch) | ln.Q(uid=branch)).one_or_none()
+    if record is None:
+        raise LookupError(f"LaminDB branch {branch!r} does not exist, or you have no access to it.")
+    if record.id < MAIN_BRANCH_ID:
+        raise ValueError(f"Runs can't be recorded on the LaminDB {record.name!r} branch.")
+    return record
+
+
+def _move_to_branch(run, branch_record):
+    """Put ``run`` on ``branch_record``; its transform stays where lamindb's default lookup finds it.
+
+    ``ln.track(branch=...)`` would also create a new transform on the branch, where steps and later
+    flow runs on other branches wouldn't find it by its source.
+    """
+    if branch_record is not None and run.branch_id != branch_record.id:
+        run.branch = branch_record
+        run.save()
+
+
 def _reset_context(ln):
     """Leave the process clean for in-process runners like ``dag.test()``."""
     ln.context._run = None
     ln.context._space = None
+    ln.context._branch = None
 
 
-def start_flow_run(reference, path, entrypoint, params, instance=None, space=None):
+def start_flow_run(reference, path, entrypoint, params, instance=None, space=None, branch=None):
     """Start (or restart, on retry) the flow run for a DAG run; return it.
 
     Uses ``ln.track`` on the DAG file so the flow run belongs to a versioned
     ``Transform`` of the DAG source. Idempotent per DAG run: a retry of the init
     task restarts the existing run instead of creating a second one. With ``space``,
-    the transform (if new) and the run are created in that space.
+    the transform (if new) and the run are created in that space; with ``branch``, the run
+    is on that branch.
     """
     from pathlib import Path
 
     ln = connect(instance)
     space_record = resolve_space(space)
+    branch_record = resolve_branch(branch)
     existing = get_flow_run(reference)
     if existing is not None:
         if space_record is not None and existing.space_id != space_record.id:
             raise RuntimeError(
                 f"The flow run of {reference!r} is in another space than {space!r}; "
                 "it keeps its space when the init task is retried."
+            )
+        if branch_record is not None and existing.branch_id != branch_record.id:
+            raise RuntimeError(
+                f"The flow run of {reference!r} is on another branch than {branch!r}; "
+                "it keeps its branch when the init task is retried."
             )
         existing.started_at = datetime.now(timezone.utc)
         existing.finished_at = None
@@ -173,6 +212,8 @@ def start_flow_run(reference, path, entrypoint, params, instance=None, space=Non
         transform.save()
     run.reference = reference
     run.reference_type = FLOW_RUN_REFERENCE_TYPE
+    if branch_record is not None:
+        run.branch = branch_record
     run.save()
     return run
 
@@ -185,13 +226,15 @@ def finish_flow_run(reference, success, instance=None):
     return flow_run
 
 
-def run_connected(fn, args, kwargs, instance=None, space=None):
+def run_connected(fn, args, kwargs, instance=None, space=None, branch=None):
     """Call ``fn`` connected to ``instance``, without recording anything.
 
-    With ``space``, records ``fn`` saves are created in that space by default.
+    With ``space`` or ``branch``, records ``fn`` saves are created in that space or on that branch
+    by default.
     """
     ln = connect(instance)
     ln.context._space = resolve_space(space)
+    ln.context._branch = resolve_branch(branch)
     try:
         return fn(*args, **kwargs)
     finally:
@@ -258,19 +301,24 @@ def run_step(
     instance=None,
     exclude_params=(),
     space=None,
+    branch=None,
 ):
     """Run ``fn`` as a step of the flow run, via ``ln.track`` with ``initiated_by_run``.
 
     Passing the DAG source with the flow transform's key makes lamindb resolve the
     same ``Transform`` by hash as the flow run, so no pickled state is needed. ``fn``
     gets ``args`` and ``kwargs`` unchanged; see ``step_params`` for what is recorded.
-    The step run, and records ``fn`` saves, are in ``space``, else in the flow run's.
+    The step run, and records ``fn`` saves, are in ``space``, else in the flow run's, and on
+    ``branch``, else on the flow run's.
     """
     ln = connect(instance)
     flow_run = require_flow_run(flow_run_reference)
     space_record = resolve_space(space)
     if space_record is None and flow_run.space_id not in (None, ALL_SPACE_ID):
         space_record = flow_run.space
+    branch_record = resolve_branch(branch)
+    if branch_record is None and flow_run.branch_id not in (None, MAIN_BRANCH_ID):
+        branch_record = flow_run.branch
     space_kwargs = {"space": space_record} if space_record is not None else {}
     try:
         ln.track(
@@ -288,6 +336,9 @@ def run_step(
         if step_reference and len(step_reference) <= MAX_REFERENCE_LENGTH:
             run.reference = step_reference
             run.reference_type = STEP_RUN_REFERENCE_TYPE
+        _move_to_branch(run, branch_record)
+        # records fn saves default to the context's branch
+        ln.context._branch = branch_record
         try:
             result = fn(*args, **kwargs)
         except BaseException:
