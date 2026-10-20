@@ -1,13 +1,19 @@
 # LaminDB Lineage
 
-The lineage operators record Airflow DAG runs in LaminDB, so that data created by a DAG can be traced
-back to the DAG run and the task that created it:
+The lineage decorators record Airflow tasks in LaminDB, so that data created by a DAG can be traced
+back to the task run that created it, and optionally to the DAG run around it:
 
 | Airflow | LaminDB |
 |---|---|
 | DAG file | `Transform` (kind `script`, versioned by source hash) |
-| DAG run | flow `Run` of that transform, `entrypoint=dag_id`, `reference="<dag_id>/<run_id>"` |
-| task run | step `Run`, `initiated_by_run=` the flow run, `entrypoint=` the function name |
+| task run, standalone (the default) | `Run` of that transform, `entrypoint=` the function name |
+| `LaminDBFlow` scope in a DAG run | flow `Run` of that transform, `entrypoint=dag_id`, `reference="<dag_id>/<run_id>"` |
+| task run in a scope | `Run` with `initiated_by_run=` the flow run, `entrypoint=` the function name |
+
+A tracked task is **standalone** unless you put it in a [`LaminDBFlow`](#lamindbflow-optional-flow-scope)
+block. Standalone tasks need no flow run; they record the source, parameters, environment and
+outcome of each task run, with a reference to the Airflow task instance. A `LaminDBFlow` block adds a
+flow run around its tasks, for pipeline-level lineage.
 
 lamindb runs in a virtualenv (`@task.lamindb_venv` and the flow operators) or a Kubernetes pod
 (`@task.lamindb_k8s`), never on the worker, so its version doesn't have to fit Airflow's
@@ -17,9 +23,10 @@ dependencies. The tasks connect with the [lamindb connection](connections/lamind
 ## @task.lamindb_venv
 
 `@task.lamindb_venv` works like `@task.virtualenv` and accepts all of its arguments. The function
-runs in a virtualenv, recorded as a step of the DAG run's flow run: lamindb tracks its parameters and
-outcome, and artifacts the function saves are linked to the step run. Plain Airflow tasks can sit in
-between and exchange XComs with the steps.
+runs in a virtualenv and is tracked by default: lamindb records its parameters and outcome, and
+artifacts the function saves are linked to the task run. Plain Airflow tasks can sit in between and
+exchange XComs with the tracked ones. Each attempt of a task, including retries and every map index,
+is its own run.
 
 ```python title="tests/system/lamindb/example_lamindb_lineage.py"
 --8<-- "tests/system/lamindb/example_lamindb_lineage.py:howto_decorator_lamindb_venv"
@@ -31,7 +38,7 @@ lamindb is added to `requirements` when the task runs (see `lamindb_version` und
 ## @task.lamindb_k8s
 
 `@task.lamindb_k8s` works like `@task.kubernetes` and accepts all of its arguments; it needs
-`pip install "apache-airflow-providers-lamindb[cncf.kubernetes]"`. The image must have lamindb 2.8.1 or newer
+`pip install "apache-airflow-providers-lamindb[k8s]"`. The image must have lamindb 2.8.1 or newer
 installed, and the pod needs the API key, for example from a Kubernetes secret. The connection only provides the instance,
 because environment variables of a pod are readable in its spec.
 
@@ -46,68 +53,132 @@ from airflow.providers.cncf.kubernetes.secret import Secret
 def train(dataset_key: str) -> str: ...
 ```
 
-The flow operators of a DAG with only pod steps run in a virtualenv on the worker.
+Pod steps are tracked standalone by default too. The lifecycle operators of a `LaminDBFlow` always
+run in a virtualenv on the worker, also when all the tasks in the scope are pod steps.
+
+## LaminDBFlow: optional flow scope
+
+[`LaminDBFlow`][airflow.providers.lamindb.flow.LaminDBFlow] is a context manager that groups the
+tracked tasks created inside it under one flow run per DAG run. Import it from the package:
+
+```python
+from airflow.providers.lamindb import LaminDBFlow
+```
+
+```python title="tests/system/lamindb/example_lamindb_lineage.py"
+--8<-- "tests/system/lamindb/example_lamindb_lineage.py:howto_lamindb_flow_scope"
+```
+
+On exit, the block adds a `LaminDBFlowInitOperator` and a `LaminDBFlowFinishOperator` to the DAG, wires
+init upstream of the scope's tasks that have no upstream within the scope, and finish downstream of
+those that have no downstream within it. Init is paired with finish as Airflow's setup and teardown
+(see [the operators](#lamindbflowinitoperator-and-lamindbflowfinishoperator)). An empty block still
+adds the pair.
+
+**Membership.** Every task *invocation* created inside the block belongs to the scope: normal calls,
+`.override()`, `.partial()`, `.expand()` and `.expand_kwargs()`, also inside task groups. There is no
+`add_task`. A mapped task is one invocation, so its map indexes join automatically and no extra
+lifecycle tasks are created per index. Two details:
+
+- A task created *outside* the block and only wired inside it (for example `curate(upstream_result)`
+  where `upstream_result` comes from a standalone task) is wired into the DAG as usual, but it is not a
+  member: it isn't tracked under the scope's flow run.
+- Plain Airflow tasks and `track=False` tasks created inside the block are members too: they run
+  between init and finish, inside the flow run's lifecycle. Only tracked LaminDB tasks get the flow
+  run as parent.
+
+**Configuration.** `LaminDBFlow(**kwargs)` configures both lifecycle operators explicitly: the
+connection and instance, the lamindb setup, and for the virtualenvs the Python and lamindb version,
+index and environment settings (any argument of the
+[flow operators](#lamindbflowinitoperator-and-lamindbflowfinishoperator)). Nothing is borrowed from the
+tasks in the block, and the tasks' own connection, instance and environment settings stay their own;
+the only thing a scoped task takes from its parent is the default branch and space (see
+[LaminDB settings](#lamindb-settings)). Scoped tracking needs its flow run: a task whose parent flow
+run doesn't exist fails with an error instead of running standalone.
+
+**Rules.**
+
+- Scopes can't be nested; entering a `LaminDBFlow` inside another one raises an error.
+- One DAG has one default scope, with the task ids `lamindb_flow_init` and `lamindb_flow_finish` and the
+  flow run reference `<dag_id>/<run_id>`. More scopes in the same DAG need a stable, explicit
+  `scope_id`: `LaminDBFlow("enrich", ...)`. Such a scope gets task ids of its own and appends its id to
+  the flow run reference, so concurrent scopes and DAG runs never share a flow run. Invalid ids, and
+  ids that make the reference too long, raise a clear error; the identity is never truncated.
+- If the block raises, the scope is discarded and the exception propagates: nothing is wired and no
+  lifecycle operators are added. A new `LaminDBFlow` can be used afterwards.
+- Finish marks the flow run `errored` when a task *of its scope* failed, including a failed map index or
+  a failed plain task. It ignores failures of tasks outside the scope, and sibling scopes don't affect
+  each other.
+
+```python
+with DAG("pipeline"):
+    raw = extract()  # standalone
+    with LaminDBFlow():  # default scope
+        curate(raw)  # in the scope's flow run; raw itself is not
+    with LaminDBFlow("enrich", lamindb_version="2.11"):  # sibling scope: explicit id
+        enrich(extract.override(task_id="extract_again")())
+```
 
 ## LaminDBFlowInitOperator and LaminDBFlowFinishOperator
 
+These are the operators that `LaminDBFlow` adds, and they stay exported for advanced use.
 [`LaminDBFlowInitOperator`][airflow.providers.lamindb.operators.flow.LaminDBFlowInitOperator] starts
-the flow run of a DAG run: it calls `ln.track()` on the DAG file in a virtualenv and tags the run with
-the DAG run. Retrying it restarts the same run instead of creating a second one. It returns the flow
-run uid.
+a flow run: it calls `ln.track()` on the DAG file in a virtualenv and tags the run with the DAG run.
+Retrying it restarts the same run instead of creating a second one. It returns the flow run uid.
 
 [`LaminDBFlowFinishOperator`][airflow.providers.lamindb.operators.flow.LaminDBFlowFinishOperator]
-closes the flow run as `completed`, or `errored` if any other task of the DAG run failed.
+closes the flow run as `completed`, or `errored` if a task failed. In a `LaminDBFlow` that means a task
+of the scope; see the rules above.
 
-Init is an Airflow *setup* task and finish a *teardown* task. Finish therefore runs after the steps even
-when they fail, and Airflow ignores it when deciding the DAG run state, so a failed step still fails the
-DAG run. Pass `is_setup=False` or `is_teardown=False` (with your own `trigger_rule`) to opt out.
+Init is an Airflow *setup* task and finish a *teardown* task. Finish therefore runs after the scope's
+tasks even when they fail, and Airflow ignores it when deciding the DAG run state, so a failed task
+still fails the DAG run. Pass `is_setup=False` or `is_teardown=False` (with your own `trigger_rule`) to
+opt out.
 
 Both accept every `PythonVirtualenvOperator` argument except `python_callable`, `op_args` and
-`op_kwargs`. Wire them with `with init >> finish:`, Airflow's setup/teardown context: when the block
-ends, Airflow wires init upstream of the tasks in it that have no upstream, and finish downstream of the
-ones that have no downstream. Every task in the block, LaminDB step or not, runs inside the flow run.
+`op_kwargs`.
+
+Used directly, with `with init >> finish:`, they are only Airflow's setup/teardown context: they do
+**not** make tracked tasks their children. A tracked task is standalone unless it was created inside a
+`LaminDBFlow`, however init and finish are wired around it. A finish operator you declare yourself keeps
+looking at the DAG run's other tasks; the scope's finish only looks at its own members.
 
 ```python title="tests/system/lamindb/example_lamindb_lineage.py"
 --8<-- "tests/system/lamindb/example_lamindb_lineage.py:howto_operator_lamindb_flow"
 ```
 
-Airflow does not track mapped tasks (`.expand()`) in the context; add them with
-`with init >> finish as scope: ... scope.add_task(mapped)` if they are a root or leaf, or use
-[`auto_flow`](#auto-wiring), which wires mapped steps too.
+## Mapped tasks
 
-## Auto-wiring
-
-Alternatively, pass `auto_flow=True` to the steps (default `False`). Each one then adds the DAG's
-`lamindb_flow_init` and `lamindb_flow_finish` tasks on first use and wires
-`init >> step >> finish`, which adds an edge per step. The flow tasks copy the settings of the first
-LaminDB step: its connection and instance, and for `@task.lamindb_venv` also its Python version,
-index, lamindb pin and environment settings. Flow operators declared before the steps are reused
-instead.
-
-```python title="tests/system/lamindb/example_lamindb_lineage.py"
---8<-- "tests/system/lamindb/example_lamindb_lineage.py:howto_lamindb_auto_flow"
-```
-
-Mapped steps (`.expand()`, `.expand_kwargs()`) are auto-wired too, when Airflow maps them: the
-decorators override Airflow's own `expand`, so `partial()` and `override()` work as usual, and
-`auto_flow` may come from `default_args`.
+Mapped tasks (`.expand()`, `.expand_kwargs()`) are tracked standalone like any other, and join a
+`LaminDBFlow` when they are created inside it; `.partial()` and `.override()` work as usual.
 
 ```python title="tests/system/lamindb/example_lamindb_lineage.py"
 --8<-- "tests/system/lamindb/example_lamindb_lineage.py:howto_lamindb_mapped_steps"
 ```
 
-- Each map index is its own step run. Finish waits for all of them, and marks the flow run errored if
-  any failed; a retried map index records a new step run.
-- A map over nothing runs no steps; the flow run completes.
+- Each map index is its own run. In a scope, finish waits for all of them, and marks the flow run
+  errored if any failed; a retried map index records a new run.
+- A map over nothing runs no tasks; the flow run completes.
 
-Caveats:
+A scoped task looks the flow run up by its DAG run (and scope), so no XCom plumbing is needed. A
+scoped task whose flow init has not run fails with a clear error.
 
-- Flow operators declared *after* an auto-wiring step clash with the auto-added task id; declare them
-  first.
-- Finish waits for auto-wired steps only.
+## Migrating to LaminDBFlow
 
-Every step looks the flow run up by its DAG run, so no XCom plumbing is needed and any DAG topology
-works. A step whose flow init has not run fails with a clear error.
+Tracked tasks used to need a flow run, found through the DAG's flow operators. They no longer attach
+to flow operators implicitly, and `auto_flow` is removed.
+
+| Before | Now |
+|---|---|
+| `@task.lamindb_venv(auto_flow=True)` | Drop it: the task is tracked standalone. For a flow run around tasks, create them inside `with LaminDBFlow(...):`. |
+| `with LaminDBFlowInitOperator() >> LaminDBFlowFinishOperator():` around the steps | `with LaminDBFlow(...):` around the steps. |
+| `scope.add_task(mapped)` | Remove it: mapped invocations created inside the block join. |
+| Flow settings (`lamindb_conn_id`, `lamindb_version`, ...) copied from the first step | Pass them to `LaminDBFlow(...)`. |
+
+Passing `auto_flow` to a decorator now fails with an error that points at `LaminDBFlow`, instead of
+being silently ignored. Existing DAGs that wrapped their steps in `init >> finish` keep running, but
+their steps are recorded as standalone runs, without a parent flow run, until you switch to
+`LaminDBFlow`.
 
 ## LaminDB settings
 
@@ -123,8 +194,9 @@ The lineage operators and decorators accept these arguments, also through a DAG'
     `None` uses lamindb's own configuration (`LAMIN_API_KEY`, `~/.lamin`) instead, for example for
     instances that aren't hosted on LaminHub, or for `@task.lamindb_k8s` steps whose pods bring their
     own credentials. Then also pass `lamindb_instance` or set `LAMIN_CURRENT_INSTANCE`: the virtualenv
-    runs outside your project directory. Auto-wired flow operators get the step's `lamindb_conn_id`,
-    so with `None` they use the worker's lamindb configuration in their virtualenv.
+    runs outside your project directory. A `LaminDBFlow` takes its own `lamindb_conn_id`, which is not
+    borrowed from the tasks in it; with `None` its lifecycle operators use the worker's lamindb
+    configuration in their virtualenv.
 
 `lamindb_instance`
 :   The instance slug `owner/name`; overrides the connection's.
@@ -133,12 +205,13 @@ The lineage operators and decorators accept these arguments, also through a DAG'
 :   The name or uid of a [space](https://docs.lamin.ai/permissions) to record in, instead of
     lamindb's default. Templated; an empty rendered value means the default. On the flow init
     operator, it's the space of the flow run, and of the DAG file's transform when that is first
-    recorded; a transform keeps its space when later flow runs are in another one. Steps record in the
-    flow run's space and so do the records their function saves, unless the step sets its own
-    `lamindb_space`. With `connect=True`, it's the space of the records the function saves. An unknown
+    recorded; a transform keeps its space when later flow runs are in another one. Tasks in a
+    `LaminDBFlow` default to their flow run's space, and so do the records their function saves, unless
+    the task sets its own `lamindb_space`. Standalone tasks use lamindb's default space unless they set
+    one. With `connect=True`, it's the space of the records the function saves. An unknown
     space, or one you have no access to, fails the task before anything is recorded; there is no
     fallback to the default space. A retried flow init keeps its run's space and fails if it's given
-    another one. Auto-wired flow tasks copy a step's literal space, not a templated one.
+    another one.
 
     LaminHub enforces access to spaces; the provider has no permission checks of its own. A step in
     another space than its flow run needs access to both, and artifacts saved in a space need a
@@ -148,15 +221,15 @@ The lineage operators and decorators accept these arguments, also through a DAG'
 :   The name or uid of a [branch](https://docs.lamin.ai/lamindb.branch) to record on, instead of the
     instance's current one, for example a draft branch that is reviewed and merged later. Templated; an
     empty rendered value means the default. On the flow init operator, it's the branch of the flow run.
-    Steps record their runs on the flow run's branch, and so do the records their function saves, unless
-    the step sets its own `lamindb_branch`. With `connect=True`, it's the branch of the records the
+    Tasks in a `LaminDBFlow` default to their flow run's branch, and so do the records their function
+    saves, unless the task sets its own `lamindb_branch`. Standalone tasks use the instance's current
+    branch unless they set one. With `connect=True`, it's the branch of the records the
     function saves.
 
     The DAG file's transform stays on the branch lamindb finds it on (by default `main`), so steps and
     later flow runs on other branches still find it by its source. Steps find their flow run on any
     branch. An unknown branch fails the task before anything is recorded, and so do `archive` and
     `trash`. A retried flow init keeps its run's branch and fails if it's given another one.
-    Auto-wired flow tasks copy a step's literal branch, not a templated one.
 
 `lamindb_version` (virtualenvs only)
 :   The lamindb version to install, 2.8.1 or newer. Defaults to the instance's version on LaminHub,
@@ -167,9 +240,9 @@ The lineage operators and decorators accept these arguments, also through a DAG'
 
     Templated: a mapped task can pin its own version, for example from an upstream task's XCom, and
     gets its own virtualenv (and cache entry) for it. A template is checked once rendered, before
-    anything is installed. Auto-wired flow tasks don't copy a templated version, which may refer to
-    the step's own XComs or map index; they install the instance's version (the latest without a
-    connection) unless you declare them yourself. In DAGs that render templates as native objects,
+    anything is installed. A `LaminDBFlow` doesn't borrow the version of the tasks in it: pass its own
+    `lamindb_version`, or its lifecycle operators install the instance's version (the latest without a
+    connection). In DAGs that render templates as native objects,
     keep versions strings: a number such as `2.10` renders as `2.1`.
 
     ```python
@@ -185,15 +258,16 @@ Lineage needs lamindb 2.8.1 or newer, and anything older fails deliberately. An 
 before its virtualenv is built. A step or flow task whose virtualenv or pod has an older lamindb,
 for example from your own `requirements` or the pod's image, fails when it starts.
 
-A step can use another connection than the rest of the DAG, for example to run under another API key:
+A task can use another connection than the rest of the DAG, for example to run under another API key:
 
 ```python
 @task.lamindb_venv(lamindb_conn_id="lamindb_curator")
 def curate(data: dict) -> None: ...
 ```
 
-All LaminDB tasks of a DAG run must use the same instance as its flow run; a step that connects to
-another instance fails before it starts.
+Task connections are owned by the task. In a `LaminDBFlow`, the tasks must use the same instance as
+the scope's flow run; a scoped task that connects to another instance fails before it starts.
+Standalone tasks have no flow run to match.
 
 ## Recorded parameters
 
@@ -230,16 +304,16 @@ log or return it.
 
 A LaminDB task runs in one of three modes:
 
-| | Step run | Flow run needed | Connected to the instance |
+| | Task run recorded | Parent flow run | Connected to the instance |
 |---|---|---|---|
-| default (`track=True`) | yes | yes | yes |
+| default (`track=True`) | yes | only inside a `LaminDBFlow` | yes |
 | `track=False, connect=True` | no | no | yes |
 | `track=False` | no | no | no: the plain `@task.virtualenv` or `@task.kubernetes` |
 
 With `connect=True`, a task that only reads or writes records gets the same setup as a step, without
 lineage: a virtualenv gets lamindb (see `lamindb_version`) and the connection's credentials, and both
 connect to the instance before the function runs. A pod connects with its own credentials, as for
-steps. `auto_flow` is ignored, and the task may connect to another instance than the DAG's flow run,
+steps. The task may connect to another instance than a flow run in the DAG,
 for example one per mapped task through a templated `lamindb_instance`.
 
 ```python title="tests/system/lamindb/example_lamindb_lineage.py"
@@ -282,8 +356,8 @@ the DAGs when they are parsed.
   and values must be strings. Pod steps don't call it: pods get their environment from the pod spec,
   e.g. its `secrets`. If it fails in the flow finish task, that task logs it and still closes the flow
   run.
-- Steps, connect-only tasks and flow operators all run it, including flow tasks that `auto_flow`
-  adds for mapped and unmapped steps.
+- Tracked tasks, connect-only tasks and flow operators all run it, including the lifecycle operators
+  of a `LaminDBFlow`.
 
 ### Overriding it
 
@@ -304,10 +378,9 @@ with DAG("sequencing", default_args={"lamindb_setup": SequencingSetup()}):
 def plain_step() -> None: ...
 ```
 
-A step may opt out on its own, since it then needs nothing from its flow tasks. To give steps
-another setup, override it for the whole DAG, through `default_args` (task groups' `default_args`
-count too): wiring fails when a step needs another setup than its flow tasks run, since they would
-otherwise run without it.
+The lifecycle operators of a `LaminDBFlow` are configured by the scope, not by the tasks in it, so
+pass `lamindb_setup` to `LaminDBFlow(...)` when its init and finish need a setup other than the
+installation's.
 
 Setups are the same when their class and `repr` are, so each task may create its own instance.
 `LaminDBSetup`'s `repr` names the class; a subclass that takes settings should include them in its
@@ -318,11 +391,12 @@ Keep deployment specifics, such as package indexes, cache paths and secret names
 ## How the steps are recorded
 
 The decorators reuse Airflow's mechanism of shipping the function's source text and append a small
-wrapper that connects to the instance, binds the step to the flow run and records the outcome. In the
-virtualenv or pod, the step calls `ln.track()` with the DAG file's source and `initiated_by_run=`
-the flow run, so it resolves the same transform as the flow run. Nothing is pickled by reference, and
-the remote environment only needs lamindb. Step runs reference the Airflow task instance log URL
-(`reference_type="airflow_task_instance"`).
+wrapper that connects to the instance and records the outcome. In the virtualenv or pod, the task
+calls `ln.track()` with the DAG file's source and the function's entrypoint. The transform identity
+is the DAG's source file, not the function, with or without a `LaminDBFlow`; in a scope the task
+also passes `initiated_by_run=` the scope's flow run. Nothing is pickled by reference, and the remote
+environment only needs lamindb. Runs reference the Airflow task instance (by its log URL,
+`reference_type="airflow_task_instance"`, where one is available).
 
 ## Limitations
 

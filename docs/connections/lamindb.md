@@ -60,8 +60,7 @@ and the step decorators, and `lamindb_conn_id` and `instance` in the sensors, so
 can choose them at run time:
 
 ```python
-from airflow.providers.lamindb.operators.flow import LaminDBFlowFinishOperator, LaminDBFlowInitOperator
-from airflow.sdk import task
+from airflow.sdk import DAG, task
 
 CONN_ID = "{{ ti.xcom_pull(task_ids='pick_connection') }}"
 
@@ -75,15 +74,13 @@ def pick_connection() -> str:
 def process(): ...
 
 
-init = LaminDBFlowInitOperator(lamindb_conn_id=CONN_ID)
-pick_connection() >> init
-with init >> LaminDBFlowFinishOperator(lamindb_conn_id=CONN_ID):
-    process()
+with DAG("templated_connection"):
+    pick_connection() >> process()  # a standalone tracked task
 ```
 
-The flow init task runs before every step, so the task that picks the connection must be upstream of
-it. Triggers can't be templated: Airflow creates them from the DAG file when it parses it, so their
-`lamindb_conn_id` must be a fixed value.
+A `LaminDBFlow` takes its own `lamindb_conn_id` for its init and finish tasks, like the flow operators; the
+tasks inside keep their own connection settings. Triggers can't be templated: Airflow creates them
+from the DAG file when it parses it, so their `lamindb_conn_id` must be a fixed value.
 
 ## Examples
 

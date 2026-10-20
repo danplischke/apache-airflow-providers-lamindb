@@ -11,10 +11,7 @@ import os
 
 from airflow.sdk import DAG, Param, task
 
-from airflow.providers.lamindb.operators.flow import (
-    LaminDBFlowFinishOperator,
-    LaminDBFlowInitOperator,
-)
+from airflow.providers.lamindb import LaminDBFlow
 
 LOCAL_INSTANCE = "anonymous/airflowtest"
 
@@ -75,13 +72,14 @@ with DAG(
             values = [float(row[0]) for row in csv.reader(f)]
         return {"n": len(values), "mean": round(sum(values) / len(values), 3)}
 
-    with LaminDBFlowInitOperator() >> LaminDBFlowFinishOperator():
+    # the tasks of the block share one flow run per DAG run; outside it they would be standalone
+    with LaminDBFlow():
         squares = square.expand(value=measure("{{ params.count }}"))
         summarize(save_table(scale(squares, factor=10)))
 
 
 with DAG(
-    "lamindb_showcase_auto_flow",
+    "lamindb_showcase_scope",
     schedule=None,
     default_args=LAMINDB_ARGS,
     params={"fail": Param(False, type="boolean", description="fail validate, so the flow run errors")},
@@ -89,14 +87,17 @@ with DAG(
     tags=["lamindb"],
 ):
 
-    @task.lamindb_venv(auto_flow=True)
+    @task.lamindb_venv
     def download() -> dict:
         return {"rows": 100}
 
-    @task.lamindb_venv(auto_flow=True)
+    @task.lamindb_venv
     def validate(data: dict, fail: bool) -> dict:
         if fail:
             raise ValueError("validation failed on purpose")
         return data
 
-    validate(download(), "{{ params.fail }}")
+    # the downloads are standalone; the flow run around validate errors when it fails
+    data = download()
+    with LaminDBFlow():
+        validate(data, "{{ params.fail }}")

@@ -25,8 +25,24 @@ def test_import_does_not_need_lamindb() -> None:
         "import airflow.providers.lamindb, airflow.providers.lamindb.get_provider_info\n"
         "import airflow.providers.lamindb.decorators.python_virtualenv\n"
         "import airflow.providers.lamindb.decorators.kubernetes\n"
+        "from airflow.providers.lamindb import LaminDBFlow\n"
+        "import airflow.providers.lamindb.flow\n"
     )
     subprocess.run([sys.executable, "-c", code], check=True)
+
+
+def test_flow_scopes_work_without_lamindb_on_worker(no_lamindb: None) -> None:
+    from airflow.sdk import DAG, task
+
+    from airflow.providers.lamindb import LaminDBFlow
+
+    def a() -> None:
+        pass
+
+    with DAG("d", schedule=None) as dag, LaminDBFlow():
+        task.lamindb_venv(a)()
+
+    assert {"a", "lamindb_flow_init", "lamindb_flow_finish"} == set(dag.task_ids)
 
 
 @pytest.mark.usefixtures("lamindb_connection")

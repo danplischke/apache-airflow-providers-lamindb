@@ -144,7 +144,7 @@ build:
     uv build
     uvx 'twine>=7.0.0' check dist/*
 
-# Import the package without the dev dependencies, lamindb or the cncf.kubernetes extra
+# Import the package without the dev dependencies, lamindb or the k8s extra
 [group('package')]
 smoke:
     uv run --isolated --no-default-groups python dev/smoke.py

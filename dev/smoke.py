@@ -1,4 +1,4 @@
-"""Smoke test of a base install: no dev dependencies, no lamindb and no cncf.kubernetes extra.
+"""Smoke test of a base install: no dev dependencies, no lamindb and no k8s extra.
 
 Run by ``just smoke`` and the smoke-test job in qa.yml. Airflow validates get_provider_info whenever it
 is imported, so a broken one breaks ``import airflow`` for every installation that has this package.
@@ -26,7 +26,7 @@ if importlib.util.find_spec("airflow.providers.cncf") is None:
     try:
         task.lamindb_k8s(lambda: None)
     except ImportError as e:
-        if "apache-airflow-providers-lamindb[cncf.kubernetes]" not in str(e):
+        if "apache-airflow-providers-lamindb[k8s]" not in str(e):
             raise SystemExit(f"@task.lamindb_k8s gives no install hint: {e}") from e
     else:
         raise SystemExit("@task.lamindb_k8s worked without apache-airflow-providers-cncf-kubernetes")

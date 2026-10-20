@@ -43,13 +43,13 @@ dependencies = [
 
 [project.optional-dependencies]
 # lamindb is never needed on the worker: the virtualenv/pod operators install it remotely.
-"cncf.kubernetes" = [
+k8s = [
     "apache-airflow-providers-cncf-kubernetes>=10.19.0",
 ]
 
 [dependency-groups]
 dev = [
-    "apache-airflow-providers-lamindb[cncf.kubernetes]",
+    "apache-airflow-providers-lamindb[k8s]",
     # integration and system tests run lamindb against a throwaway instance
     "lamindb>=2.11",
     "mypy>=1.15",

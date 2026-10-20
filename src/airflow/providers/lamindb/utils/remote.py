@@ -23,7 +23,11 @@ from airflow.exceptions import AirflowException, AirflowNotFoundException
 from airflow.providers.lamindb.exceptions import LaminDBVersionError
 from airflow.providers.lamindb.hooks.lamindb import LaminDBHook, parse_instance_slug
 from airflow.providers.lamindb.utils import runtime
-from airflow.providers.lamindb.utils.dag_run import context_flow_run_reference, dag_source, task_instance_url
+from airflow.providers.lamindb.utils.dag_run import (
+    context_flow_run_reference,
+    dag_source,
+    task_instance_reference,
+)
 
 log = logging.getLogger(__name__)
 
@@ -516,22 +520,6 @@ def masked_parameters(
     return names
 
 
-def literal(value: Any) -> Any:
-    """``value`` unless it's a template, which may refer to a step's own XComs or map index."""
-    return None if is_template(value) else value
-
-
-def flow_lamindb_kwargs(setting: Callable[[str], Any]) -> dict[str, Any]:
-    """The LaminDB arguments the flow tasks that ``auto_flow`` adds copy from a step."""
-    return {
-        "lamindb_conn_id": setting("lamindb_conn_id"),
-        "lamindb_instance": setting("lamindb_instance"),
-        "lamindb_space": literal(setting("lamindb_space")),
-        "lamindb_branch": literal(setting("lamindb_branch")),
-        "lamindb_setup": setting("lamindb_setup"),
-    }
-
-
 def _operator_default(operator_class: type, name: str) -> Any:
     """The default of an ``__init__`` argument of ``operator_class`` or its bases, else ``None``."""
     for cls in operator_class.__mro__:
@@ -627,24 +615,38 @@ def setup_bootstrap_source(setup: LaminDBSetup | None) -> str:
     return setup.bootstrap_source() if setup is not None else ""
 
 
-def check_flow_instance(step: Any, context: Any, instance: str | None) -> None:
-    """Fail early if the step would connect to another instance than its DAG run's flow run."""
+def check_flow_instance(step: Any, context: Any, instance: str | None, scope: str) -> None:
+    """Fail early if the step would connect to another instance than the flow run of its scope."""
     from airflow.providers.lamindb.operators.flow import FLOW_INSTANCE_XCOM_KEY, LaminDBFlowInitOperator
 
     dag = step.get_dag()
-    inits = [t.task_id for t in (dag.tasks if dag else []) if isinstance(t, LaminDBFlowInitOperator)]
+    inits = [
+        t.task_id
+        for t in (dag.tasks if dag else [])
+        if isinstance(t, LaminDBFlowInitOperator) and t.lamindb_scope == scope
+    ]
     if instance is None or not inits:
         return
     flow_instance = context["ti"].xcom_pull(task_ids=inits[0], key=FLOW_INSTANCE_XCOM_KEY)
     if flow_instance and flow_instance != instance:
         raise AirflowException(
-            f"Task {step.task_id!r} connects to LaminDB instance {instance!r}, but the flow run of this "
-            f"DAG run is in {flow_instance!r}. All LaminDB tasks of a DAG must use the same instance."
+            f"Task {step.task_id!r} connects to LaminDB instance {instance!r}, but its flow run is in "
+            f"{flow_instance!r}. All LaminDB tasks of a LaminDBFlow must use the same instance."
+        )
+
+
+def reject_auto_flow(kwargs: dict[str, Any]) -> None:
+    """Fail for the removed ``auto_flow`` argument, which used to add flow tasks to a DAG implicitly."""
+    if "auto_flow" in kwargs:
+        raise TypeError(
+            "auto_flow was removed: tracked LaminDB tasks no longer need a flow run. Drop the argument "
+            "to track the task standalone, or create the tasks inside `with LaminDBFlow():` "
+            "(from airflow.providers.lamindb import LaminDBFlow) to group them under a flow run."
         )
 
 
 class RemoteLaminDBStepMixin:
-    """Bind a virtualenv/pod step to the flow run by rewriting the shipped source.
+    """Track a virtualenv/pod step, standalone or in a flow run, by rewriting the shipped source.
 
     :param lamindb_conn_id: Airflow connection of type ``lamindb`` with the Lamin API key and the
         instance; the step fails if it does not exist. ``None`` uses lamindb's own configuration in
@@ -657,9 +659,9 @@ class RemoteLaminDBStepMixin:
     :param lamindb_space: name or uid of the space the step run, and records the function saves,
         are created in; defaults to the flow run's space. With ``connect=True``, the space records
         the function saves are created in.
-    :param auto_flow: wire ``init >> step >> finish`` with the DAG's flow operators,
-        adding virtualenv ones if the DAG has none yet. Default ``False``. The concrete
-        operator does the wiring once fully initialised. Ignored when ``track`` is ``False``.
+    :param lamindb_scope: set by ``LaminDBFlow`` when it wires the step, not to be passed: ``None``
+        for a standalone step, ``""`` for the DAG's default scope, else the scope id. A scoped step is
+        a child of its scope's flow run and fails if that does not exist.
     :param track: record the call in LaminDB. Pass ``False`` to ship the function
         unchanged, as the plain virtualenv/pod operator would.
     :param connect: with ``track=False``, still connect to the instance before the function
@@ -688,7 +690,7 @@ class RemoteLaminDBStepMixin:
         lamindb_instance: str | None = None,
         lamindb_space: str | None = None,
         lamindb_branch: str | None = None,
-        auto_flow: bool = False,
+        lamindb_scope: str | None = None,
         track: bool = True,
         connect: bool = False,
         lamindb_setup: LaminDBSetup | None = None,
@@ -696,6 +698,7 @@ class RemoteLaminDBStepMixin:
         lamindb_exclude_templated: ExcludeTemplated = "secrets",
         **kwargs: Any,
     ) -> None:
+        reject_auto_flow(kwargs)
         super().__init__(**kwargs)
         self.lamindb_conn_id = lamindb_conn_id
         self.lamindb_instance = lamindb_instance
@@ -706,7 +709,7 @@ class RemoteLaminDBStepMixin:
         self.lamindb_setup = lamindb_setup
         if track or connect:
             resolve_setup(lamindb_setup)  # a broken [lamindb] setup_class fails when the DAG is parsed
-        self.auto_flow = auto_flow and track
+        self.lamindb_scope = lamindb_scope
         if lamindb_exclude_templated not in ("secrets", "all", "none"):
             raise ValueError(
                 "lamindb_exclude_templated must be 'secrets', 'all' or 'none', "
@@ -753,19 +756,24 @@ class RemoteLaminDBStepMixin:
             return super().execute(context)  # type: ignore[misc]
         remote = RemoteLaminDB.resolve(self.lamindb_conn_id, self.lamindb_instance, self.lamindb_cache_dir)
         if self.track:
-            check_flow_instance(self, context, remote.instance)
+            scope = self.lamindb_scope
+            if scope is not None:
+                check_flow_instance(self, context, remote.instance, scope)
             self._lamindb_runtime_function = "run_step"
             self._lamindb_remote = {
-                "flow_run_reference": context_flow_run_reference(context),
+                "flow_run_reference": context_flow_run_reference(context, scope)
+                if scope is not None
+                else None,
                 "source_code": dag_source(context["dag"]),
-                "step_reference": task_instance_url(context),
+                "fileloc": context["dag"].fileloc,
+                "step_reference": task_instance_reference(context),
                 "instance": remote.instance,
                 "exclude_params": self._lamindb_exclude_params(),
                 "space": self._lamindb_space(),
                 "branch": space_name(self.lamindb_branch),
             }
         else:
-            # not part of the flow run, so it may connect to any instance
+            # not recorded, so it may connect to any instance
             self._lamindb_runtime_function = "run_connected"
             self._lamindb_remote = {
                 "instance": remote.instance,

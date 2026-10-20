@@ -538,13 +538,13 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
-cncf-kubernetes = [
+k8s = [
     { name = "apache-airflow-providers-cncf-kubernetes" },
 ]
 
 [package.dev-dependencies]
 dev = [
-    { name = "apache-airflow-providers-lamindb", extra = ["cncf-kubernetes"] },
+    { name = "apache-airflow-providers-lamindb", extra = ["k8s"] },
     { name = "lamindb" },
     { name = "mypy" },
     { name = "pytest" },
@@ -562,16 +562,16 @@ docs = [
 [package.metadata]
 requires-dist = [
     { name = "apache-airflow", specifier = ">=3.3.0" },
-    { name = "apache-airflow-providers-cncf-kubernetes", marker = "extra == 'cncf-kubernetes'", specifier = ">=10.19.0" },
+    { name = "apache-airflow-providers-cncf-kubernetes", marker = "extra == 'k8s'", specifier = ">=10.19.0" },
     { name = "apache-airflow-providers-standard", specifier = ">=1.15.0" },
     { name = "httpx", specifier = ">=0.27.0" },
     { name = "packaging", specifier = ">=22" },
 ]
-provides-extras = ["cncf-kubernetes"]
+provides-extras = ["k8s"]
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "apache-airflow-providers-lamindb", extras = ["cncf-kubernetes"] },
+    { name = "apache-airflow-providers-lamindb", extras = ["k8s"] },
     { name = "lamindb", specifier = ">=2.11" },
     { name = "mypy", specifier = ">=1.15" },
     { name = "pytest", specifier = ">=8.3" },

@@ -6,9 +6,7 @@ from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from typing import Any
 
-from airflow.providers.lamindb.decorators.base import lamindb_task_decorator_factory
 from airflow.providers.lamindb.hooks.lamindb import LaminDBHook
-from airflow.providers.lamindb.operators.flow import wire_flow_tasks
 from airflow.providers.lamindb.utils.remote import (
     ExcludeTemplated,
     LaminDBSetup,
@@ -16,27 +14,13 @@ from airflow.providers.lamindb.utils.remote import (
     RemoteLaminDBStepMixin,
     check_lamindb_version,
     ensure_lamindb_requirement,
-    flow_lamindb_kwargs,
-    is_template,
-    lamindb_requirement_lines,
     lamindb_virtualenv_env,
-    literal,
+    reject_auto_flow,
     resolve_setup,
     setup_execution_env,
 )
 from airflow.providers.standard.decorators.python_virtualenv import _PythonVirtualenvDecoratedOperator
-
-# virtualenv settings the auto-wired flow operators copy from the first step
-_SHARED_VENV_ARGS = (
-    "python_version",
-    "system_site_packages",
-    "pip_install_options",
-    "index_urls",
-    "index_urls_from_connection_ids",
-    "venv_cache_path",
-    "env_vars",
-    "inherit_env",
-)
+from airflow.sdk.bases.decorator import task_decorator_factory
 
 
 class LaminDBVenvDecoratedOperator(RemoteLaminDBStepMixin, _PythonVirtualenvDecoratedOperator):
@@ -45,6 +29,7 @@ class LaminDBVenvDecoratedOperator(RemoteLaminDBStepMixin, _PythonVirtualenvDeco
     custom_operator_name = "@task.lamindb_venv"
     template_fields: Sequence[str] = (
         *_PythonVirtualenvDecoratedOperator.template_fields,
+        "lamindb_scope",
         "lamindb_conn_id",
         "lamindb_instance",
         "lamindb_space",
@@ -61,6 +46,7 @@ class LaminDBVenvDecoratedOperator(RemoteLaminDBStepMixin, _PythonVirtualenvDeco
         lamindb_instance: str | None = None,
         lamindb_space: str | None = None,
         lamindb_branch: str | None = None,
+        lamindb_scope: str | None = None,
         lamindb_setup: LaminDBSetup | None = None,
         lamindb_version: str | None = None,
         lamindb_cache_dir: str | None = None,
@@ -74,6 +60,7 @@ class LaminDBVenvDecoratedOperator(RemoteLaminDBStepMixin, _PythonVirtualenvDeco
             lamindb_instance=lamindb_instance,
             lamindb_space=lamindb_space,
             lamindb_branch=lamindb_branch,
+            lamindb_scope=lamindb_scope,
             lamindb_setup=lamindb_setup,
             lamindb_exclude_params=lamindb_exclude_params,
             lamindb_exclude_templated=lamindb_exclude_templated,
@@ -81,25 +68,6 @@ class LaminDBVenvDecoratedOperator(RemoteLaminDBStepMixin, _PythonVirtualenvDeco
         )
         self.lamindb_version = lamindb_version
         self.lamindb_cache_dir = lamindb_cache_dir
-        if self.auto_flow:
-            wire_flow_tasks(self, **self.lamindb_flow_kwargs(lambda name: getattr(self, name, None)))
-
-    @classmethod
-    def lamindb_flow_kwargs(cls, setting: Callable[[str], Any]) -> dict[str, Any]:
-        """Arguments of the flow tasks that ``auto_flow`` adds, from the step's ``setting(name)``."""
-        return {
-            **flow_lamindb_kwargs(setting),
-            # a template may refer to the step's own XComs or map index; the flow tasks fall back to
-            # the instance's version instead
-            "lamindb_version": literal(setting("lamindb_version")),
-            "lamindb_cache_dir": setting("lamindb_cache_dir"),
-            "requirements": [
-                line
-                for line in lamindb_requirement_lines(setting("requirements") or [])
-                if not is_template(line)
-            ],
-            **{name: setting(name) for name in _SHARED_VENV_ARGS},
-        }
 
     @contextmanager
     def _lamindb_environment(self, remote: RemoteLaminDB, context: Any) -> Iterator[None]:
@@ -128,13 +96,9 @@ def lamindb_venv_task(
       function saves; defaults to the flow run's branch. Templated.
     - ``lamindb_version``: version of ``lamindb-core`` added to ``requirements`` unless
       you list lamindb yourself, 2.8.1 or newer; defaults to the instance's version on
-      LaminHub (with a connection), else the latest. Templated, e.g. per mapped task;
-      auto-wired flow tasks don't copy a templated version.
+      LaminHub (with a connection), else the latest. Templated, e.g. per mapped task.
     - ``lamindb_cache_dir``: absolute path of a lamindb cache shared between tasks, set as
       ``LAMIN_CACHE_DIR``; overrides the connection's ``cache_dir`` extra. Templated.
-    - ``auto_flow``: wire ``init >> step >> finish`` with the DAG's flow operators,
-      adding ones with the same Python, index and LaminDB settings if the DAG has none
-      yet, also for mapped steps. Default ``False``.
     - ``track``: record the call in LaminDB. Default ``True``; with ``False`` the
       function runs exactly as under ``@task.virtualenv``, and lamindb is not added
       to ``requirements``.
@@ -151,12 +115,14 @@ def lamindb_venv_task(
       ``"all"`` no templated argument, ``"none"`` records them all. Arguments that
       contain a secret Airflow masks in logs are never recorded.
 
-    The worker needs no lamindb.
+    The step is standalone unless it is created inside a ``LaminDBFlow`` block. The worker needs no
+    lamindb.
     """
+    reject_auto_flow(kwargs)
     # mapped steps aren't initialised when the DAG is parsed; check the [lamindb] setup_class here
     if kwargs.get("track", True) or kwargs.get("connect", False):
         resolve_setup(kwargs.get("lamindb_setup"))
-    return lamindb_task_decorator_factory(
+    return task_decorator_factory(
         python_callable=python_callable,
         multiple_outputs=multiple_outputs,
         decorated_operator_class=LaminDBVenvDecoratedOperator,

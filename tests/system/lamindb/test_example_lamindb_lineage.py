@@ -55,8 +55,10 @@ def dags():
     }
     for dag in (
         module.dag_ok,
+        module.dag_standalone,
+        module.dag_operators,
         module.dag_fail,
-        module.dag_auto_flow,
+        module.dag_scopes,
         module.dag_params,
         module.dag_connect,
         module.dag_mapped,
@@ -72,12 +74,27 @@ def dags():
     return module
 
 
-def flow_and_steps(dag_id: str, run_id: str):
+def flow_and_steps(dag_id: str, run_id: str, scope: str | None = None):
     import lamindb as ln
 
-    flow = ln.Run.filter(reference=f"{dag_id}/{run_id}", reference_type="airflow_dag_run").one()
+    reference = f"{dag_id}/{run_id}" + (f"/{scope}" if scope else "")
+    flow = ln.Run.filter(reference=reference, reference_type="airflow_dag_run").one()
     steps = {r.entrypoint: r for r in ln.Run.filter(initiated_by_run=flow)}
     return flow, steps
+
+
+def task_runs(dag_id: str, run_id: str) -> dict:
+    """Runs of the task instances of a DAG run, by task id (a map index adds a suffix), any parent."""
+    from urllib.parse import quote
+
+    import lamindb as ln
+
+    prefix = f"{dag_id}/{run_id}/"  # the reference without a usable log URL
+    runs = {}
+    for run in ln.Run.filter(reference_type="airflow_task_instance", reference__contains=dag_id):
+        if f"/dags/{dag_id}/runs/{quote(run_id)}/tasks/" in run.reference or run.reference.startswith(prefix):
+            runs.setdefault(run.entrypoint, []).append(run)
+    return runs
 
 
 def test_dag_run_success(dags):
@@ -98,6 +115,38 @@ def test_dag_run_success(dags):
     assert steps["report"].params == {"value": 7}  # XCom from a plain task
 
 
+def test_standalone_dag_run_has_no_flow_run(dags):
+    import lamindb as ln
+
+    dr = dags.dag_standalone.test()
+    assert str(dr.state) == "success"
+
+    assert not ln.Run.filter(reference=f"lamindb_example_standalone/{dr.run_id}").exists()
+    runs = task_runs("lamindb_example_standalone", dr.run_id)
+    assert set(runs) == {"solo", "solo_next"}
+    for (run,) in runs.values():
+        assert run.initiated_by_run is None
+        assert run.status == "completed"
+        assert run.transform.key.endswith("example_lamindb_lineage.py")  # the DAG file, not a wrapper script
+        assert run.reference_type == "airflow_task_instance"
+    assert runs["solo"][0].params == {"count": 4}
+    assert runs["solo_next"][0].params == {"value": 5}
+    assert runs["solo"][0].transform.uid == runs["solo_next"][0].transform.uid
+
+
+def test_flow_operators_alone_do_not_parent_tasks(dags):
+    import lamindb as ln
+
+    dr = dags.dag_operators.test()
+    assert str(dr.state) == "success"
+
+    flow = ln.Run.filter(reference=f"lamindb_example_operators/{dr.run_id}").one()
+    assert flow.status == "completed"
+    assert not ln.Run.filter(initiated_by_run=flow).exists()
+    (inner,) = task_runs("lamindb_example_operators", dr.run_id)["inner"]
+    assert inner.initiated_by_run is None
+
+
 def test_failed_step_fails_dag_run_and_flow(dags):
     dr = dags.dag_fail.test()
     assert str(dr.state) == "failed"  # finish is a teardown, so it does not mask the failure
@@ -108,16 +157,33 @@ def test_failed_step_fails_dag_run_and_flow(dags):
     assert steps["boom"].status == "errored"
 
 
-def test_auto_flow_dag_run(dags):
-    assert dags.dag_auto_flow.get_task("lamindb_flow_init").system_site_packages is True
-    dr = dags.dag_auto_flow.test()
-    assert str(dr.state) == "success"
+@pytest.mark.parametrize(
+    ("conf", "dag_state", "default_status", "enrich_status"),
+    [
+        ({}, "success", "completed", "completed"),
+        ({"fail_enrich": True}, "failed", "completed", "errored"),
+    ],
+)
+def test_sibling_scopes_and_standalone_tasks_do_not_affect_each_other(
+    dags, conf, dag_state, default_status, enrich_status
+):
+    dr = dags.dag_scopes.test(run_conf=conf)
+    assert str(dr.state) == dag_state
 
-    flow, steps = flow_and_steps("lamindb_example_auto_flow", dr.run_id)
-    assert flow.status == "completed"
-    assert set(steps) == {"venv_extract", "venv_double"}
-    assert all(step.status == "completed" for step in steps.values())
-    assert steps["venv_double"].params == {"data": {"count": 4}}
+    default, default_steps = flow_and_steps("lamindb_example_scopes", dr.run_id)
+    enrich, enrich_steps = flow_and_steps("lamindb_example_scopes", dr.run_id, "enrich")
+    assert default.uid != enrich.uid
+    assert default.transform.uid == enrich.transform.uid
+    assert default.status == default_status  # a failure in the sibling scope isn't its business
+    assert enrich.status == enrich_status
+    assert set(default_steps) == {"stage_one"}
+    assert set(enrich_steps) == {"stage_two"}
+    assert enrich_steps["stage_two"].status == enrich_status
+    runs = task_runs("lamindb_example_scopes", dr.run_id)
+    assert sorted(run.initiated_by_run_id is None for run in runs["stage_one"]) == [
+        False,
+        True,
+    ]  # outside, first
 
 
 def test_secret_arguments_are_not_recorded(dags, monkeypatch):
@@ -165,6 +231,7 @@ def test_mapped_steps(dags, conf, dag_state, flow_status, steps):
     assert flow.status == flow_status
     step_runs = ln.Run.filter(initiated_by_run=flow, entrypoint="measure")
     assert {run.params["sample"]: run.status for run in step_runs} == steps
+    assert len({run.reference for run in step_runs}) == len(steps)  # one reference per map index
 
 
 def test_the_configured_setup_prepares_steps_and_flow_tasks(dags, monkeypatch, request):

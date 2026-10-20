@@ -84,7 +84,7 @@ def test_start_flow_run_tracks_dag_file_and_tags_run(fake_lamindb: MagicMock) ->
 
 
 def test_start_flow_run_saves_source_of_new_transform(fake_lamindb: MagicMock) -> None:
-    def track(**kwargs) -> None:
+    def track(*args, **kwargs) -> None:
         fake_lamindb.context._run = MagicMock(**{"transform.hash": None})
 
     fake_lamindb.track.side_effect = track
@@ -123,7 +123,7 @@ def test_finish_flow_run(fake_lamindb: MagicMock, success: bool, status: int) ->
 
 
 def test_finish_flow_run_without_flow_run_raises(fake_lamindb: MagicMock) -> None:
-    with pytest.raises(LookupError, match="No LaminDB flow run found for DAG run 'my_dag/run_1'"):
+    with pytest.raises(LookupError, match="No LaminDB flow run found for 'my_dag/run_1'"):
         runtime.finish_flow_run("my_dag/run_1", True)
 
 
@@ -159,7 +159,7 @@ def test_run_step_records_reference_and_status(fake_lamindb: MagicMock) -> None:
     fake_lamindb.flow_run = MagicMock()
     runs = []
 
-    def track(**kwargs) -> None:
+    def track(*args, **kwargs) -> None:
         runs.append(MagicMock())
         fake_lamindb.context._run = runs[-1]
 
@@ -179,8 +179,8 @@ def _recorded_runs(fake_lamindb: MagicMock) -> list[MagicMock]:
     runs: list[MagicMock] = []
     track = fake_lamindb.track.side_effect
 
-    def recording_track(**kwargs) -> None:
-        track(**kwargs)
+    def recording_track(*args, **kwargs) -> None:
+        track(*args, **kwargs)
         runs.append(fake_lamindb.context.run)
 
     fake_lamindb.track.side_effect = recording_track
@@ -206,6 +206,120 @@ def test_run_step_without_flow_run_raises(fake_lamindb: MagicMock) -> None:
     with pytest.raises(LookupError, match="No LaminDB flow run"):
         runtime.run_step(lambda: None, (), {}, "my_dag/run_1", "")
     fake_lamindb.track.assert_not_called()
+
+
+def test_standalone_step_tracks_the_dag_file_without_a_flow_run(fake_lamindb: MagicMock) -> None:
+    def extract(count, scale=2):
+        assert fake_lamindb.context.run is not None
+        return count * scale
+
+    result = runtime.run_step(
+        extract, (3,), {}, None, "# dag source", step_reference="http://ti", fileloc="/dags/my_dag.py"
+    )
+
+    assert result == 6
+    fake_lamindb.Run.filter.assert_not_called()  # no flow run is looked up
+    fake_lamindb.track.assert_called_once_with(
+        key="my_dag.py",
+        source_code="# dag source",
+        kind="script",
+        entrypoint="extract",
+        params={"count": 3, "scale": 2},
+        initiated_by_run=None,
+        new_run=True,
+        stream_tracking=False,
+    )
+    assert fake_lamindb.context.run is None
+
+
+def test_standalone_step_needs_the_dag_file_name(fake_lamindb: MagicMock) -> None:
+    with pytest.raises(ValueError, match="file name of its DAG"):
+        runtime.run_step(lambda: None, (), {}, None, "# dag source")
+    fake_lamindb.track.assert_not_called()
+
+
+def test_standalone_step_has_no_space_or_branch_to_inherit(fake_lamindb: MagicMock) -> None:
+    runtime.run_step(lambda: None, (), {}, None, "# dag", fileloc="/dags/my_dag.py")
+    assert "space" not in fake_lamindb.track.call_args.kwargs
+    assert fake_lamindb.context._branch is None
+
+
+def test_standalone_step_takes_its_own_space_and_branch(fake_lamindb: MagicMock) -> None:
+    lab = fake_lamindb.Space.filter.return_value.one_or_none.return_value
+    feature = fake_lamindb.Branch.filter.return_value.one_or_none.return_value
+    feature.id, feature.name = 2, "feature-x"
+    runs = _recorded_runs(fake_lamindb)
+    seen = {}
+
+    def fn():
+        seen["branch"] = fake_lamindb.context._branch
+
+    runtime.run_step(fn, (), {}, None, "# dag", fileloc="/dags/my_dag.py", space="lab", branch="feature-x")
+
+    assert fake_lamindb.track.call_args.kwargs["space"] is lab
+    assert runs[0].branch is feature
+    assert seen["branch"] is feature
+    assert fake_lamindb.context._branch is None
+
+
+def test_standalone_step_marks_run_errored_and_cleans_up(fake_lamindb: MagicMock) -> None:
+    runs = _recorded_runs(fake_lamindb)
+    fake_lamindb.context._transform = "stale"
+    fake_lamindb.context._uid = "stale"
+
+    def boom():
+        raise ValueError("x")
+
+    with pytest.raises(ValueError, match="x"):
+        runtime.run_step(boom, (), {}, None, "# dag", fileloc="/dags/my_dag.py")
+    assert runs[0]._status_code == runtime.STATUS_ERRORED
+    assert fake_lamindb.context.run is None
+    assert fake_lamindb.context._transform is None
+    assert fake_lamindb.context._uid is None  # the next attempt must not be pinned to this transform
+
+
+def test_every_attempt_of_a_standalone_step_is_its_own_run(fake_lamindb: MagicMock) -> None:
+    for _ in range(2):
+        runtime.run_step(lambda: None, (), {}, None, "# dag", fileloc="/dags/my_dag.py")
+    assert [c.kwargs["new_run"] for c in fake_lamindb.track.call_args_list] == [True, True]
+
+
+def test_standalone_step_uses_the_key_of_the_transform_with_the_same_source(fake_lamindb: MagicMock) -> None:
+    """Another key for a known source makes lamindb ask whether the file was renamed."""
+    fake_lamindb.Transform.filter.return_value.first.return_value = MagicMock(key="team/my_dag.py")
+
+    runtime.run_step(lambda: None, (), {}, None, "# dag", fileloc="/elsewhere/my_dag.py")
+
+    assert fake_lamindb.track.call_args.kwargs["key"] == "team/my_dag.py"
+    assert fake_lamindb.track.call_args.args == ()
+    fake_lamindb.Transform.filter.assert_called_once_with(
+        hash=fake_lamindb.setup.core.hashing.hash_string("# dag")
+    )
+
+
+def test_standalone_step_of_an_edited_dag_is_a_new_version(fake_lamindb: MagicMock) -> None:
+    previous = MagicMock(uid="AbCdEfGhIjKl0000")
+    order_by = fake_lamindb.Transform.filter.return_value.order_by.return_value
+    order_by.first.return_value = previous
+
+    runtime.run_step(lambda: None, (), {}, None, "# edited", fileloc="/dags/my_dag.py")
+
+    assert fake_lamindb.track.call_args.args == ("AbCdEfGhIjKl",)  # the stem makes lamindb bump the version
+    assert fake_lamindb.track.call_args.kwargs["key"] == "my_dag.py"
+    fake_lamindb.Transform.filter.assert_called_with(key="my_dag.py", is_latest=True)
+
+
+def test_standalone_step_key_is_relative_to_the_dev_dir(fake_lamindb: MagicMock, tmp_path) -> None:
+    dags = tmp_path / "project" / "dags"
+    dags.mkdir(parents=True)
+    fake_lamindb.setup.core._settings_store.dev_dir_containing.return_value = (tmp_path / "project").resolve()
+
+    assert runtime.transform_key(fake_lamindb, dags / "my_dag.py") == "dags/my_dag.py"
+    fake_lamindb.setup.core._settings_store.dev_dir_containing.return_value = None
+    assert runtime.transform_key(fake_lamindb, dags / "my_dag.py") == "my_dag.py"
+    # a file outside the dev dir falls back to its name
+    fake_lamindb.setup.core._settings_store.dev_dir_containing.return_value = (tmp_path / "other").resolve()
+    assert runtime.transform_key(fake_lamindb, dags / "my_dag.py") == "my_dag.py"
 
 
 def test_run_step_leaves_out_excluded_params_but_passes_them(fake_lamindb: MagicMock) -> None:

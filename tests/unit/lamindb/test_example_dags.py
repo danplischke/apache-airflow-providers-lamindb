@@ -23,13 +23,15 @@ def test_example_dags_import(dagbag):
         "example_lamindb_branch_review",
         "example_lamindb_record_events",
         "example_lamindb_sensors",
-        "lamindb_example_auto_flow",
         "lamindb_example_connect",
         "lamindb_example_fail",
         "lamindb_example_mapped",
         "lamindb_example_ok",
+        "lamindb_example_operators",
         "lamindb_example_params",
+        "lamindb_example_scopes",
         "lamindb_example_setup",
+        "lamindb_example_standalone",
     ]
 
 
@@ -48,8 +50,8 @@ def test_watchers_use_lamindb_triggers(dagbag):
 @pytest.mark.parametrize(
     ("hosted", "dag_ids"),
     [
-        (False, ["lamindb_showcase", "lamindb_showcase_auto_flow"]),
-        (True, ["lamindb_showcase", "lamindb_showcase_auto_flow", "lamindb_showcase_on_table"]),
+        (False, ["lamindb_showcase", "lamindb_showcase_scope"]),
+        (True, ["lamindb_showcase", "lamindb_showcase_on_table", "lamindb_showcase_scope"]),
     ],
 )
 def test_standalone_dags_import(monkeypatch, hosted, dag_ids):

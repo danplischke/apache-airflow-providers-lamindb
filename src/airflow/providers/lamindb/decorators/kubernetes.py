@@ -5,16 +5,15 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from typing import Any
 
-from airflow.providers.lamindb.decorators.base import lamindb_task_decorator_factory
 from airflow.providers.lamindb.hooks.lamindb import LaminDBHook
-from airflow.providers.lamindb.operators.flow import wire_flow_tasks
 from airflow.providers.lamindb.utils.remote import (
     ExcludeTemplated,
     LaminDBSetup,
     RemoteLaminDBStepMixin,
-    flow_lamindb_kwargs,
+    reject_auto_flow,
     resolve_setup,
 )
+from airflow.sdk.bases.decorator import task_decorator_factory
 
 
 def _lamindb_k8s_decorated_operator_class() -> type:
@@ -26,6 +25,7 @@ def _lamindb_k8s_decorated_operator_class() -> type:
         custom_operator_name = "@task.lamindb_k8s"
         template_fields: Sequence[str] = (
             *_KubernetesDecoratedOperator.template_fields,
+            "lamindb_scope",
             "lamindb_conn_id",
             "lamindb_instance",
             "lamindb_space",
@@ -41,6 +41,7 @@ def _lamindb_k8s_decorated_operator_class() -> type:
             lamindb_instance: str | None = None,
             lamindb_space: str | None = None,
             lamindb_branch: str | None = None,
+            lamindb_scope: str | None = None,
             lamindb_setup: LaminDBSetup | None = None,
             lamindb_exclude_params: Sequence[str] = (),
             lamindb_exclude_templated: ExcludeTemplated = "secrets",
@@ -51,18 +52,12 @@ def _lamindb_k8s_decorated_operator_class() -> type:
                 lamindb_instance=lamindb_instance,
                 lamindb_space=lamindb_space,
                 lamindb_branch=lamindb_branch,
+                lamindb_scope=lamindb_scope,
                 lamindb_setup=lamindb_setup,
                 lamindb_exclude_params=lamindb_exclude_params,
                 lamindb_exclude_templated=lamindb_exclude_templated,
                 **kwargs,
             )
-            if self.auto_flow:
-                wire_flow_tasks(self, **self.lamindb_flow_kwargs(lambda name: getattr(self, name, None)))
-
-        @classmethod
-        def lamindb_flow_kwargs(cls, setting: Callable[[str], Any]) -> dict[str, Any]:
-            """Arguments of the flow tasks that ``auto_flow`` adds, from the step's ``setting(name)``."""
-            return flow_lamindb_kwargs(setting)
 
     return LaminDBK8sDecoratedOperator
 
@@ -78,9 +73,8 @@ def lamindb_k8s_task(
     connection of type ``lamindb``; the pod only gets its instance, not its API key),
     ``lamindb_instance`` (instance slug; overrides the connection's), ``lamindb_space``
     and ``lamindb_branch`` (space and branch of the step run and the records it saves; default to
-    the flow run's; all four templated),
-    ``auto_flow`` (wire flow operators, which run in a virtualenv on the worker, if the
-    DAG has none yet; default ``False``), ``track`` (record the call in LaminDB; with
+    the flow run's, if the step is in a ``LaminDBFlow``; all four templated),
+    ``track`` (record the call in LaminDB; with
     ``False`` it runs exactly as under ``@task.kubernetes``), ``connect`` (with ``track=False``,
     still connect the pod to the instance, without recording anything), ``lamindb_setup`` (a
     ``LaminDBSetup`` whose bootstrap code runs in the pod), and ``lamindb_exclude_params``
@@ -88,27 +82,27 @@ def lamindb_k8s_task(
     The image must have lamindb 2.8.1 or newer installed (the step fails on older versions)
     and credentials for the instance, e.g. ``LAMIN_API_KEY`` from a Kubernetes secret. The
     worker needs no lamindb. Requires
-    ``pip install "apache-airflow-providers-lamindb[cncf.kubernetes]"``.
+    ``pip install "apache-airflow-providers-lamindb[k8s]"``.
 
     The step needs the ``lamindb_default`` connection (or the one named by
     ``lamindb_conn_id``) and fails if it is missing. Pass ``lamindb_conn_id=None`` to
     use only the pod's own lamindb configuration, together with ``lamindb_instance`` to
-    pin the instance. The auto-wired flow operators get the same ``lamindb_conn_id``, so
-    with ``None`` they use the worker's lamindb configuration (``LAMIN_API_KEY``,
-    ``LAMIN_CURRENT_INSTANCE``, ``~/.lamin``) in their virtualenv.
+    pin the instance. The steps are standalone unless created inside a ``LaminDBFlow`` block, whose
+    flow operators run in a virtualenv on the worker and take their own ``lamindb_conn_id``.
     """
+    reject_auto_flow(kwargs)
     try:
         operator_class = _lamindb_k8s_decorated_operator_class()
     except ImportError as e:
         raise ImportError(
             "@task.lamindb_k8s requires apache-airflow-providers-cncf-kubernetes. "
-            'Install with: pip install "apache-airflow-providers-lamindb[cncf.kubernetes]"'
+            'Install with: pip install "apache-airflow-providers-lamindb[k8s]"'
         ) from e
 
     # mapped steps aren't initialised when the DAG is parsed; check the [lamindb] setup_class here
     if kwargs.get("track", True) or kwargs.get("connect", False):
         resolve_setup(kwargs.get("lamindb_setup"))
-    return lamindb_task_decorator_factory(
+    return task_decorator_factory(
         python_callable=python_callable,
         multiple_outputs=multiple_outputs,
         decorated_operator_class=operator_class,

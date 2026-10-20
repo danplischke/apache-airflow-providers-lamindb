@@ -116,6 +116,54 @@ def test_flow_finish_records_dag_run_outcome(
     context["ti"].get_task_states.assert_called_once_with(dag_id="my_dag", run_ids=["run_1"])
 
 
+def test_flow_finish_of_a_scope_only_looks_at_its_members(
+    fake_lamindb: MagicMock, make_context, lamindb_connection
+) -> None:
+    fake_lamindb.flow_run = flow_run = MagicMock(uid="flowuid")
+    # a sibling scope's or standalone task failing is none of this scope's business: the server
+    # only returns the member tasks (mapped ones once per map index)
+    context = make_context(task_states={"a": "success", "m_0": "success", "m_1": "success"})
+    op = LaminDBFlowFinishOperator(lamindb_scope="enrich", lamindb_members=["a", "m"])
+
+    _run_in_fake_venv(op, context)
+
+    context["ti"].get_task_states.assert_called_once_with(
+        dag_id="my_dag", run_ids=["run_1"], task_ids=["a", "m"]
+    )
+    assert op.op_kwargs["lamindb_airflow_config"]["reference"] == "my_dag/run_1/enrich"
+    assert flow_run._status_code == 0
+
+    context = make_context(task_states={"a": "success", "m_0": "success", "m_1": "failed"})
+    _run_in_fake_venv(LaminDBFlowFinishOperator(lamindb_scope="enrich", lamindb_members=["a", "m"]), context)
+    assert flow_run._status_code == 1
+
+
+def test_flow_finish_of_an_empty_scope_completes(
+    fake_lamindb: MagicMock, make_context, lamindb_connection
+) -> None:
+    fake_lamindb.flow_run = flow_run = MagicMock(uid="flowuid")
+    context = make_context(task_states={"x": "failed"})
+
+    _run_in_fake_venv(LaminDBFlowFinishOperator(lamindb_members=[]), context)
+
+    context["ti"].get_task_states.assert_not_called()
+    assert flow_run._status_code == 0
+
+
+def test_flow_init_of_a_scope_tags_its_flow_run_with_the_scope(
+    fake_lamindb: MagicMock, make_context, lamindb_connection
+) -> None:
+    fake_lamindb.flow_run = MagicMock(uid="flowuid")
+    op = LaminDBFlowInitOperator(lamindb_scope="enrich")
+
+    _run_in_fake_venv(op, make_context())
+
+    config = op.op_kwargs["lamindb_airflow_config"]
+    assert config["reference"] == "my_dag/run_1/enrich"
+    assert config["entrypoint"] == "my_dag"
+    assert fake_lamindb.Run.filter.call_args.kwargs["reference"] == "my_dag/run_1/enrich"
+
+
 def test_flow_finish_without_flow_run_raises(
     fake_lamindb: MagicMock, make_context, lamindb_connection
 ) -> None:
