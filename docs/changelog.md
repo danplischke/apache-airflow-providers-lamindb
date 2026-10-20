@@ -19,9 +19,12 @@ Initial release.
   is an optional context manager that groups the tasks created inside it, mapped ones included, under
   a flow run per DAG run. **Migration:** `auto_flow` is removed and now fails with an error; tracked
   tasks are no longer parented implicitly by `with LaminDBFlowInitOperator() >> LaminDBFlowFinishOperator():`
-  or by flow operators elsewhere in the DAG. Wrap the tasks in `with LaminDBFlow(...):` instead.
-  The flow operators remain exported as low-level building blocks. See
+  or by flow operators elsewhere in the DAG, which now warn with `LaminDBFlowWarning`. Wrap the
+  tasks in `with LaminDBFlow(...):` instead; note that plain Airflow tasks created in the block become
+  members too and wait for the flow init. `auto_flow` and `lamindb_scope` in `default_args` fail
+  instead of being dropped. The flow operators remain exported as low-level building blocks. See
   [Migrating to LaminDBFlow](lineage.md#migrating-to-lamindbflow).
+- The Kubernetes extra is `[k8s]`; the former `[cncf.kubernetes]` still installs the same provider.
 - `LaminDBHook` and the `lamindb` connection type for the LaminHub REST API, shared by all
   operators, triggers and sensors. It queries and writes records (`insert_records`, `update_record`).
 - Event triggers for event-driven scheduling based on the LaminHub database write log, with

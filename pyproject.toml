@@ -46,6 +46,10 @@ dependencies = [
 k8s = [
     "apache-airflow-providers-cncf-kubernetes>=10.19.0",
 ]
+# the extra's former name, kept so that existing installs keep the Kubernetes provider
+"cncf.kubernetes" = [
+    "apache-airflow-providers-cncf-kubernetes>=10.19.0",
+]
 
 [dependency-groups]
 dev = [

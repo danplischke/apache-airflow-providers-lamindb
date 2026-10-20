@@ -538,6 +538,9 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+cncf-kubernetes = [
+    { name = "apache-airflow-providers-cncf-kubernetes" },
+]
 k8s = [
     { name = "apache-airflow-providers-cncf-kubernetes" },
 ]
@@ -562,12 +565,13 @@ docs = [
 [package.metadata]
 requires-dist = [
     { name = "apache-airflow", specifier = ">=3.3.0" },
+    { name = "apache-airflow-providers-cncf-kubernetes", marker = "extra == 'cncf-kubernetes'", specifier = ">=10.19.0" },
     { name = "apache-airflow-providers-cncf-kubernetes", marker = "extra == 'k8s'", specifier = ">=10.19.0" },
     { name = "apache-airflow-providers-standard", specifier = ">=1.15.0" },
     { name = "httpx", specifier = ">=0.27.0" },
     { name = "packaging", specifier = ">=22" },
 ]
-provides-extras = ["k8s"]
+provides-extras = ["cncf-kubernetes", "k8s"]
 
 [package.metadata.requires-dev]
 dev = [

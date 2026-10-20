@@ -8,12 +8,15 @@ plain ``lamindb_scope`` argument of the tasks, which Airflow serializes with the
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import Collection
 from contextvars import ContextVar, Token
 from typing import Any
 
 from airflow.exceptions import AirflowException
+from airflow.providers.lamindb.exceptions import LaminDBFlowWarning
 from airflow.providers.lamindb.operators.flow import (
+    _CREATED_BY_LAMINDB_FLOW,
     LaminDBFlowFinishOperator,
     LaminDBFlowInitOperator,
 )
@@ -130,17 +133,28 @@ class LaminDBFlow:
         members = {
             task_id: dag.task_dict[task_id] for task_id in dag.task_dict if task_id not in self._before
         }
+        if not members:
+            warnings.warn(
+                f"{self._describe()} in DAG {dag.dag_id!r} has no tasks; it adds no flow run.",
+                LaminDBFlowWarning,
+                stacklevel=3,
+            )
+            return
         init_id, finish_id = flow_task_ids(self.scope)
-        init = LaminDBFlowInitOperator(
-            dag=dag, task_id=init_id, lamindb_scope=self.scope, **self.flow_operator_kwargs
-        )
-        finish = LaminDBFlowFinishOperator(
-            dag=dag,
-            task_id=finish_id,
-            lamindb_scope=self.scope,
-            lamindb_members=list(members),
-            **self.flow_operator_kwargs,
-        )
+        created_by_flow = _CREATED_BY_LAMINDB_FLOW.set(True)
+        try:
+            init = LaminDBFlowInitOperator(
+                dag=dag, task_id=init_id, lamindb_scope=self.scope, **self.flow_operator_kwargs
+            )
+            finish = LaminDBFlowFinishOperator(
+                dag=dag,
+                task_id=finish_id,
+                lamindb_scope=self.scope,
+                lamindb_members=list(members),
+                **self.flow_operator_kwargs,
+            )
+        finally:
+            _CREATED_BY_LAMINDB_FLOW.reset(created_by_flow)
         steps = [task for task in members.values() if _is_step(task)]
         try:
             for step in steps:  # validate everything before changing any task

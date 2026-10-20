@@ -27,5 +27,9 @@ class LaminDBApiError(AirflowException):
         self.transient = transient
 
 
+class LaminDBFlowWarning(UserWarning):
+    """A DAG uses LaminDB flow runs in a way that changed meaning; see the message."""
+
+
 class LaminDBVersionError(AirflowFailException, ValueError):
     """Raised for lamindb older than the provider supports; tasks fail without retries."""

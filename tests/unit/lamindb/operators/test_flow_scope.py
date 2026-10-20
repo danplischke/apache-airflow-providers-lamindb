@@ -6,6 +6,7 @@ from airflow.sdk import DAG, TaskGroup, task
 from airflow.serialization.serialized_objects import DagSerialization
 
 from airflow.providers.lamindb import LaminDBFlow
+from airflow.providers.lamindb.exceptions import LaminDBFlowWarning
 from airflow.providers.lamindb.operators import LaminDBFlowFinishOperator, LaminDBFlowInitOperator
 
 INIT, FINISH = "lamindb_flow_init", "lamindb_flow_finish"
@@ -151,12 +152,73 @@ def test_task_groups_keep_their_task_ids_and_the_flow_tasks_the_enclosing_group(
     assert dag.get_task(f"outer.{INIT}").downstream_task_ids == {"outer.inner.a", f"outer.{FINISH}"}
 
 
-def test_empty_scope_still_pairs_init_and_finish() -> None:
-    with DAG("d", schedule=None) as dag, LaminDBFlow():
+def test_an_empty_scope_adds_no_flow_run() -> None:
+    with (
+        pytest.warns(LaminDBFlowWarning, match="has no tasks; it adds no flow run"),
+        DAG("d", schedule=None) as dag,
+        LaminDBFlow(),
+    ):
         pass
 
-    assert dag.get_task(INIT).downstream_task_ids == {FINISH}
-    assert dag.get_task(FINISH).lamindb_members == []
+    assert dag.task_ids == []
+
+
+def test_flow_operators_outside_a_scope_warn_that_they_group_nothing() -> None:
+    """`with init >> finish:` used to make the block's tasks children of the flow run."""
+    with (
+        pytest.warns(LaminDBFlowWarning, match="not part of a LaminDBFlow, so no task is a child") as record,
+        DAG("d", schedule=None) as dag,
+        LaminDBFlowInitOperator() >> LaminDBFlowFinishOperator(),
+    ):
+        venv("a")()
+
+    assert len(record) == 2  # init and finish
+    assert dag.get_task("a").lamindb_scope is None  # standalone, as the warning says
+
+
+def test_flow_operators_of_a_scope_dont_warn(recwarn) -> None:
+    with DAG("d", schedule=None), LaminDBFlow():
+        venv("a")()
+
+    assert not [w for w in recwarn if issubclass(w.category, LaminDBFlowWarning)]
+
+
+@pytest.mark.parametrize(
+    "default_args",
+    [{"auto_flow": True}, {"auto_flow": False}],
+)
+def test_auto_flow_from_default_args_fails_instead_of_being_dropped(default_args) -> None:
+    with (
+        pytest.raises(TypeError, match="auto_flow was removed"),
+        DAG("d", schedule=None, default_args=default_args),
+    ):
+        venv("a")()
+
+
+def test_auto_flow_from_a_task_groups_default_args_fails_too() -> None:
+    with (
+        pytest.raises(TypeError, match="auto_flow was removed"),
+        DAG("d", schedule=None),
+        TaskGroup("g", default_args={"auto_flow": True}),
+    ):
+        venv("a")()
+
+
+def test_lamindb_scope_from_default_args_fails() -> None:
+    with (
+        pytest.raises(TypeError, match="lamindb_scope can't be set through default_args"),
+        DAG("d", schedule=None, default_args={"lamindb_scope": ""}),
+    ):
+        venv("a")()
+
+
+def test_mapped_steps_reject_auto_flow_from_default_args_when_unmapped() -> None:
+    """Mapped steps are only created when they run, so the check happens then, with the same error."""
+    with DAG("d", schedule=None, default_args={"auto_flow": True}) as dag:
+        task.lamindb_venv(noop, task_id="m").expand(x=[1])
+
+    with pytest.raises(TypeError, match="auto_flow was removed"):
+        dag.get_task("m").unmap({"op_kwargs": {"x": 1}})
 
 
 def test_sibling_scopes_need_distinct_ids_and_have_task_ids_of_their_own() -> None:

@@ -322,6 +322,20 @@ def test_standalone_step_key_is_relative_to_the_dev_dir(fake_lamindb: MagicMock,
     assert runtime.transform_key(fake_lamindb, dags / "my_dag.py") == "my_dag.py"
 
 
+def test_standalone_step_key_uses_the_one_dev_dir_of_older_lamindb(fake_lamindb: MagicMock, tmp_path) -> None:
+    # lamindb 2.8 keys ln.track(path=...) relative to ln.setup.settings.dev_dir, without dev_dir_containing
+    dags = tmp_path / "project" / "dags"
+    dags.mkdir(parents=True)
+    del fake_lamindb.setup.core._settings_store.dev_dir_containing
+    fake_lamindb.setup.settings.dev_dir = (tmp_path / "project").resolve()
+
+    assert runtime.transform_key(fake_lamindb, dags / "my_dag.py") == "dags/my_dag.py"
+    fake_lamindb.setup.settings.dev_dir = (tmp_path / "other").resolve()
+    assert runtime.transform_key(fake_lamindb, dags / "my_dag.py") == "my_dag.py"
+    fake_lamindb.setup.settings.dev_dir = None
+    assert runtime.transform_key(fake_lamindb, dags / "my_dag.py") == "my_dag.py"
+
+
 def test_run_step_leaves_out_excluded_params_but_passes_them(fake_lamindb: MagicMock) -> None:
     fake_lamindb.flow_run = MagicMock(**{"transform.key": "my_dag.py"})
     received = {}

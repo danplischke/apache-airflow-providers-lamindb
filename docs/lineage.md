@@ -72,8 +72,8 @@ from airflow.providers.lamindb import LaminDBFlow
 On exit, the block adds a `LaminDBFlowInitOperator` and a `LaminDBFlowFinishOperator` to the DAG, wires
 init upstream of the scope's tasks that have no upstream within the scope, and finish downstream of
 those that have no downstream within it. Init is paired with finish as Airflow's setup and teardown
-(see [the operators](#lamindbflowinitoperator-and-lamindbflowfinishoperator)). An empty block still
-adds the pair.
+(see [the operators](#lamindbflowinitoperator-and-lamindbflowfinishoperator)). An empty block adds
+nothing and warns with `LaminDBFlowWarning`.
 
 **Membership.** Every task *invocation* created inside the block belongs to the scope: normal calls,
 `.override()`, `.partial()`, `.expand()` and `.expand_kwargs()`, also inside task groups. There is no
@@ -174,11 +174,24 @@ to flow operators implicitly, and `auto_flow` is removed.
 | `with LaminDBFlowInitOperator() >> LaminDBFlowFinishOperator():` around the steps | `with LaminDBFlow(...):` around the steps. |
 | `scope.add_task(mapped)` | Remove it: mapped invocations created inside the block join. |
 | Flow settings (`lamindb_conn_id`, `lamindb_version`, ...) copied from the first step | Pass them to `LaminDBFlow(...)`. |
+| `default_args={"auto_flow": True}` | Remove it, and create the tasks inside `with LaminDBFlow(...):`. |
 
-Passing `auto_flow` to a decorator now fails with an error that points at `LaminDBFlow`, instead of
-being silently ignored. Existing DAGs that wrapped their steps in `init >> finish` keep running, but
-their steps are recorded as standalone runs, without a parent flow run, until you switch to
-`LaminDBFlow`.
+What fails, and what only warns:
+
+- `auto_flow` fails with a `TypeError` that points at `LaminDBFlow`, also when it comes from the
+  `default_args` of a DAG or task group. A mapped task with `auto_flow` in its `default_args` fails when
+  Airflow unmaps it at run time, since that's when its arguments are known.
+- `lamindb_scope` in `default_args` fails with a `TypeError`: it would make every tracked task a member
+  of a flow run.
+- A `LaminDBFlowInitOperator` or `LaminDBFlowFinishOperator` created outside a `LaminDBFlow` warns with
+  `LaminDBFlowWarning` when the DAG is parsed. Such DAGs keep running, but their steps are recorded as
+  standalone runs, without a parent flow run, until you switch to `LaminDBFlow`.
+
+**Behaviour changes when you switch.** Every task created in the block becomes a member, not only the
+tracked ones: plain Airflow tasks and `track=False` tasks in it now wait for the flow init, and a failure
+of one of them marks the flow run `errored`. Create tasks that should stay independent of the flow run
+outside the block. Tracked tasks in the block need their flow run: one whose flow init didn't run fails
+instead of running standalone.
 
 ## LaminDB settings
 

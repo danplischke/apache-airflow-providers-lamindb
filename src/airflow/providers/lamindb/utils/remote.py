@@ -636,8 +636,19 @@ def check_flow_instance(step: Any, context: Any, instance: str | None, scope: st
 
 
 def reject_auto_flow(kwargs: dict[str, Any]) -> None:
-    """Fail for the removed ``auto_flow`` argument, which used to add flow tasks to a DAG implicitly."""
-    if "auto_flow" in kwargs:
+    """Fail for the removed ``auto_flow`` argument, which used to add flow tasks to a DAG implicitly.
+
+    Also when it comes through ``default_args``, which Airflow hands to ``__init__`` merged from the
+    DAG, its task groups and the task: Airflow would drop it there silently, and the task would be
+    standalone without a word. ``lamindb_scope`` there would make standalone tasks scoped ones.
+    """
+    default_args = kwargs.get("default_args") or {}
+    if "lamindb_scope" in default_args:
+        raise TypeError(
+            "lamindb_scope can't be set through default_args: it would make every LaminDB task a "
+            "member of a flow run. Create the tasks inside `with LaminDBFlow():` instead."
+        )
+    if "auto_flow" in kwargs or "auto_flow" in default_args:
         raise TypeError(
             "auto_flow was removed: tracked LaminDB tasks no longer need a flow run. Drop the argument "
             "to track the task standalone, or create the tasks inside `with LaminDBFlow():` "

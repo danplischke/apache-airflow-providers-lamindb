@@ -15,6 +15,9 @@ from airflow.providers.lamindb.operators.flow import (
 )
 from airflow.providers.lamindb.utils.remote import RemoteLaminDB
 
+# these tests build flow operators on their own, which warns that they group no tasks
+pytestmark = pytest.mark.filterwarnings("ignore::airflow.providers.lamindb.exceptions.LaminDBFlowWarning")
+
 CORE = ["lamindb-core==2.11.0", "numpy", "pandas>=2.0.0", "pandera>=0.24.0"]
 
 

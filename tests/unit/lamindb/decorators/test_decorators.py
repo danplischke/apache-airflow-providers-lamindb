@@ -11,6 +11,9 @@ from airflow.providers.lamindb import LaminDBFlow
 from airflow.providers.lamindb.exceptions import LaminDBVersionError
 from airflow.providers.lamindb.utils import remote
 
+# these tests build flow operators on their own, which warns that they group no tasks
+pytestmark = pytest.mark.filterwarnings("ignore::airflow.providers.lamindb.exceptions.LaminDBFlowWarning")
+
 
 def _single_task(decorator, fn):
     @dag

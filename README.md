@@ -105,7 +105,8 @@ with DAG("my_pipeline_with_flow") as dag:
   blocks, but wiring them with `with init >> finish:` does not make tracked tasks their children.
 
 **Migrating:** `auto_flow` is removed, and `with init >> finish:` no longer parents tracked tasks.
-Wrap the tasks in `with LaminDBFlow(...):` instead; see the
+Wrap the tasks in `with LaminDBFlow(...):` instead; plain Airflow tasks created in the block join the
+flow too and wait for its init. See the
 [migration guide](https://danplischke.github.io/apache-airflow-providers-lamindb/lineage/#migrating-to-lamindbflow).
 
 All of them take `lamindb_conn_id` and `lamindb_instance`, the virtualenv ones also

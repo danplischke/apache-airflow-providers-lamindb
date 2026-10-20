@@ -305,11 +305,21 @@ def transform_key(ln, fileloc):
 
     path = Path(fileloc).expanduser().resolve(strict=False)
     try:
-        # the helper lamindb infers the key of ln.track(path=...) with
+        # the helper lamindb >= 2.11 infers the key of ln.track(path=...) with
         dev_dir_containing = ln.setup.core._settings_store.dev_dir_containing
-        root = dev_dir_containing(path, instance_slug=ln.setup.settings.instance.slug)
-        return path.relative_to(root).as_posix() if root is not None else path.name
-    except (AttributeError, ImportError, ValueError):  # not in this lamindb, or the file isn't below it
+    except (AttributeError, ImportError):
+        # older lamindb: relative to the one configured development directory
+        root = getattr(ln.setup.settings, "dev_dir", None)
+    else:
+        try:
+            root = dev_dir_containing(path, instance_slug=ln.setup.settings.instance.slug)
+        except (AttributeError, ValueError):
+            root = None
+    if root is None:
+        return path.name
+    try:
+        return path.relative_to(root).as_posix()
+    except ValueError:  # the file isn't below it
         return path.name
 
 

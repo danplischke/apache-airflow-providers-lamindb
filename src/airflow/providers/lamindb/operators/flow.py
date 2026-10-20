@@ -6,9 +6,12 @@ DAG around its tasks; they do not make any task a child of the flow run by being
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import Sequence
+from contextvars import ContextVar
 from typing import Any
 
+from airflow.providers.lamindb.exceptions import LaminDBFlowWarning
 from airflow.providers.lamindb.hooks.lamindb import LaminDBHook
 from airflow.providers.lamindb.utils.dag_run import (
     DEFAULT_SCOPE,
@@ -37,6 +40,9 @@ from airflow.sdk import TriggerRule
 # the most-derived class to define one, so each operator repeats its own __init__
 # rather than inheriting it from a shared mixin.
 
+
+_CREATED_BY_LAMINDB_FLOW: ContextVar[bool] = ContextVar("lamindb_created_by_flow", default=False)
+"""Set by ``LaminDBFlow`` while it adds its flow operators."""
 
 FLOW_INSTANCE_XCOM_KEY = "lamindb_instance"
 """XCom key under which the flow init task records the instance of the flow run."""
@@ -105,6 +111,15 @@ class _LaminDBFlowOperator(PythonVirtualenvOperator):
         check_lamindb_version(lamindb_version)
         kwargs.setdefault("expect_airflow", False)
         super().__init__(python_callable=lamindb_airflow_flow_task, **kwargs)
+        if not _CREATED_BY_LAMINDB_FLOW.get():
+            warnings.warn(
+                f"{type(self).__name__} {self.task_id!r} is not part of a LaminDBFlow, so no task is a "
+                "child of its flow run: LaminDB tasks are standalone unless they are created inside "
+                "`with LaminDBFlow():`, which adds the flow operators itself. `with init >> finish:` and "
+                "auto_flow no longer group tasks; replace them with LaminDBFlow.",
+                LaminDBFlowWarning,
+                stacklevel=3,
+            )
         self.lamindb_scope = lamindb_scope
         self.lamindb_conn_id = lamindb_conn_id
         self.lamindb_instance = lamindb_instance
