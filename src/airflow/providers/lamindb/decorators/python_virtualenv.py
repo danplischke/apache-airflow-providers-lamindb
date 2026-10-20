@@ -6,6 +6,7 @@ from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from typing import Any
 
+from airflow.providers.lamindb.decorators.base import lamindb_task_decorator_factory
 from airflow.providers.lamindb.hooks.lamindb import LaminDBHook
 from airflow.providers.lamindb.operators.flow import wire_flow_tasks
 from airflow.providers.lamindb.utils.remote import (
@@ -14,12 +15,13 @@ from airflow.providers.lamindb.utils.remote import (
     RemoteLaminDBStepMixin,
     check_lamindb_version,
     ensure_lamindb_requirement,
+    flow_lamindb_kwargs,
     is_template,
     lamindb_requirement_lines,
     lamindb_virtualenv_env,
+    literal,
 )
 from airflow.providers.standard.decorators.python_virtualenv import _PythonVirtualenvDecoratedOperator
-from airflow.sdk.bases.decorator import task_decorator_factory
 
 # virtualenv settings the auto-wired flow operators copy from the first step
 _SHARED_VENV_ARGS = (
@@ -75,21 +77,24 @@ class LaminDBVenvDecoratedOperator(RemoteLaminDBStepMixin, _PythonVirtualenvDeco
         self.lamindb_version = lamindb_version
         self.lamindb_cache_dir = lamindb_cache_dir
         if self.auto_flow:
-            wire_flow_tasks(
-                self,
-                lamindb_conn_id=self.lamindb_conn_id,
-                lamindb_instance=self.lamindb_instance,
-                lamindb_space=None if is_template(self.lamindb_space) else self.lamindb_space,
-                lamindb_branch=None if is_template(self.lamindb_branch) else self.lamindb_branch,
-                # a template may refer to the step's own XComs or map index; the flow tasks fall
-                # back to the instance's version instead
-                lamindb_version=None if is_template(self.lamindb_version) else self.lamindb_version,
-                lamindb_cache_dir=self.lamindb_cache_dir,
-                requirements=[
-                    line for line in lamindb_requirement_lines(self.requirements) if not is_template(line)
-                ],
-                **{name: getattr(self, name) for name in _SHARED_VENV_ARGS if hasattr(self, name)},
-            )
+            wire_flow_tasks(self, **self.lamindb_flow_kwargs(lambda name: getattr(self, name, None)))
+
+    @classmethod
+    def lamindb_flow_kwargs(cls, setting: Callable[[str], Any]) -> dict[str, Any]:
+        """Arguments of the flow tasks that ``auto_flow`` adds, from the step's ``setting(name)``."""
+        return {
+            **flow_lamindb_kwargs(setting),
+            # a template may refer to the step's own XComs or map index; the flow tasks fall back to
+            # the instance's version instead
+            "lamindb_version": literal(setting("lamindb_version")),
+            "lamindb_cache_dir": setting("lamindb_cache_dir"),
+            "requirements": [
+                line
+                for line in lamindb_requirement_lines(setting("requirements") or [])
+                if not is_template(line)
+            ],
+            **{name: setting(name) for name in _SHARED_VENV_ARGS},
+        }
 
     @contextmanager
     def _lamindb_environment(self, remote: RemoteLaminDB) -> Iterator[None]:
@@ -124,7 +129,7 @@ def lamindb_venv_task(
       ``LAMIN_CACHE_DIR``; overrides the connection's ``cache_dir`` extra. Templated.
     - ``auto_flow``: wire ``init >> step >> finish`` with the DAG's flow operators,
       adding ones with the same Python, index and LaminDB settings if the DAG has none
-      yet. Default ``False``; mapped steps are never auto-wired.
+      yet, also for mapped steps. Default ``False``.
     - ``track``: record the call in LaminDB. Default ``True``; with ``False`` the
       function runs exactly as under ``@task.virtualenv``, and lamindb is not added
       to ``requirements``.
@@ -140,7 +145,7 @@ def lamindb_venv_task(
 
     The worker needs no lamindb.
     """
-    return task_decorator_factory(
+    return lamindb_task_decorator_factory(
         python_callable=python_callable,
         multiple_outputs=multiple_outputs,
         decorated_operator_class=LaminDBVenvDecoratedOperator,

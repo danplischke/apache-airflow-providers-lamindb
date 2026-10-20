@@ -53,7 +53,14 @@ def dags():
         "lamindb_instance": lamindb_setup.settings.instance.slug,
         "lamindb_version": lamindb.__version__,
     }
-    for dag in (module.dag_ok, module.dag_fail, module.dag_auto_flow, module.dag_params, module.dag_connect):
+    for dag in (
+        module.dag_ok,
+        module.dag_fail,
+        module.dag_auto_flow,
+        module.dag_params,
+        module.dag_connect,
+        module.dag_mapped,
+    ):
         for task in dag.tasks:
             if isinstance(task, MappedOperator) and hasattr(task.operator_class, "lamindb_cache_dir"):
                 # unmapped from partial_kwargs when it runs
@@ -135,3 +142,25 @@ def test_connect_only_task_records_nothing(dags):
     dr = dags.dag_connect.test()
     assert str(dr.state) == "success"
     assert ln.Run.filter().count() == runs_before
+
+
+@pytest.mark.parametrize(
+    ("conf", "dag_state", "flow_status", "steps"),
+    [
+        ({}, "success", "completed", {"S1": "completed", "S2": "completed"}),
+        ({"fail_on": "S2"}, "failed", "errored", {"S1": "completed", "S2": "errored"}),
+        ({"samples": []}, "success", "completed", {}),  # nothing to map: no step runs
+    ],
+)
+def test_mapped_steps(dags, conf, dag_state, flow_status, steps):
+    import lamindb as ln
+
+    dr = dags.dag_mapped.test(run_conf=conf)
+    assert str(dr.state) == dag_state
+
+    flow = ln.Run.filter(
+        reference=f"lamindb_example_mapped/{dr.run_id}", reference_type="airflow_dag_run"
+    ).one()
+    assert flow.status == flow_status
+    step_runs = ln.Run.filter(initiated_by_run=flow, entrypoint="measure")
+    assert {run.params["sample"]: run.status for run in step_runs} == steps

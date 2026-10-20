@@ -431,6 +431,53 @@ def masked_parameters(
     return names
 
 
+def literal(value: Any) -> Any:
+    """``value`` unless it's a template, which may refer to a step's own XComs or map index."""
+    return None if is_template(value) else value
+
+
+def flow_lamindb_kwargs(setting: Callable[[str], Any]) -> dict[str, Any]:
+    """The LaminDB arguments the flow tasks that ``auto_flow`` adds copy from a step."""
+    return {
+        "lamindb_conn_id": setting("lamindb_conn_id"),
+        "lamindb_instance": setting("lamindb_instance"),
+        "lamindb_space": literal(setting("lamindb_space")),
+        "lamindb_branch": literal(setting("lamindb_branch")),
+    }
+
+
+def _operator_default(operator_class: type, name: str) -> Any:
+    """The default of an ``__init__`` argument of ``operator_class`` or its bases, else ``None``."""
+    for cls in operator_class.__mro__:
+        init = vars(cls).get("__init__")
+        parameter = inspect.signature(init).parameters.get(name) if init is not None else None
+        if parameter is not None and parameter.default is not inspect.Parameter.empty:
+            return parameter.default
+    return None
+
+
+def task_setting(task: Any, name: str) -> Any:
+    """An argument of a task as it will run.
+
+    Mapped tasks get theirs when Airflow unmaps them: from ``partial``, else from the ``default_args``
+    of their task group (which include its parent groups') over the DAG's, as Airflow merges them,
+    else the operator's default.
+    """
+    from airflow.sdk.definitions.mappedoperator import MappedOperator
+
+    if not isinstance(task, MappedOperator):
+        return getattr(task, name, None)
+    if name in task.partial_kwargs:
+        return task.partial_kwargs[name]
+    dag = task.get_dag()
+    default_args = dict(dag.default_args or {}) if dag else {}
+    if task.task_group is not None:
+        default_args.update(task.task_group.default_args or {})
+    if name in default_args:
+        return default_args[name]
+    return _operator_default(task.operator_class, name)
+
+
 def check_flow_instance(step: Any, context: Any, instance: str | None) -> None:
     """Fail early if the step would connect to another instance than its DAG run's flow run."""
     from airflow.providers.lamindb.operators.flow import FLOW_INSTANCE_XCOM_KEY, LaminDBFlowInitOperator

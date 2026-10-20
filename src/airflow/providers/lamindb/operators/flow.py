@@ -235,10 +235,10 @@ class LaminDBFlowFinishOperator(_LaminDBFlowOperator):
 def wire_flow_tasks(step: BaseOperator, **flow_kwargs: Any) -> None:
     """Wire ``init >> step >> finish``, adding the DAG's flow init/finish tasks on first use.
 
-    Called at DAG parse time by step decorators with ``auto_flow=True``. Flow operators
-    already in the DAG are reused, so the first LaminDB step decides their virtualenv
-    and LaminDB settings (``flow_kwargs``). Declare the flow operators yourself before
-    the steps to control them.
+    Called at DAG parse time by steps with ``auto_flow=True``, also mapped ones (see
+    ``LaminDBTaskDecorator``). Flow operators already in the DAG are reused, so the first
+    LaminDB step decides their virtualenv and LaminDB settings (``flow_kwargs``). Declare
+    the flow operators yourself before the steps to control them.
     """
     dag = step.get_dag()
     # tasks unmapped at run time were wired as a mapped task at parse time, if at all
