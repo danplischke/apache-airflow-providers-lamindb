@@ -2,9 +2,9 @@
 
 An [Apache Airflow](https://airflow.apache.org) 3 provider for [LaminDB](https://lamin.ai) with two parts:
 
-- **[Lineage](#lineage-dag-runs-as-flows-tasks-as-steps)**: records DAG runs as LaminDB flow runs and
-  tasks as steps, with flow operators and `@task.lamindb_venv` / `@task.lamindb_k8s` decorators that
-  run lamindb in a virtualenv or a Kubernetes pod.
+- **[Lineage](#lineage-tracked-tasks-and-optional-flows)**: records tasks as LaminDB runs, and
+  optionally DAG runs as flow runs around them, with `@task.lamindb_venv` / `@task.lamindb_k8s`
+  decorators that run lamindb in a virtualenv or a Kubernetes pod.
 - **[Event-driven scheduling](#event-driven-scheduling)**: triggers DAGs on changes in LaminDB instances
   hosted on LaminHub, with triggers, sensors, filters and a hook for the
   [LaminHub REST API](https://docs.lamin.ai/rest).
@@ -15,7 +15,7 @@ Both parts use the same Airflow connection, and the worker never needs the `lami
 
 ```bash
 pip install apache-airflow-providers-lamindb
-pip install "apache-airflow-providers-lamindb[cncf.kubernetes]"  # adds @task.lamindb_k8s
+pip install "apache-airflow-providers-lamindb[k8s]"  # adds @task.lamindb_k8s
 ```
 
 Requires `apache-airflow>=3.3.0` and `apache-airflow-providers-standard`. Airflow 3.3.0 added the asset
@@ -45,52 +45,69 @@ Every operator, decorator, trigger and sensor accepts `lamindb_conn_id` to use a
 for example a different API key for one task. See
 [Connection types](https://danplischke.github.io/apache-airflow-providers-lamindb/connections/lamindb/).
 
-## Lineage: DAG runs as flows, tasks as steps
+## Lineage: tracked tasks and optional flows
 
 | Airflow | LaminDB |
 |---|---|
 | DAG file | `Transform` (kind `script`, versioned by source hash) |
-| DAG run | flow `Run` of that transform, `entrypoint=dag_id`, `reference="<dag_id>/<run_id>"` |
-| task run | step `Run`, `initiated_by_run=` the flow run, `entrypoint=` the function name |
+| task run | `Run` of that transform, `entrypoint=` the function name |
+| `LaminDBFlow` scope in a DAG run (optional) | flow `Run` of that transform, `entrypoint=dag_id`, `reference="<dag_id>/<run_id>"`; its tasks' runs have `initiated_by_run=` that flow run |
+
+Tracked tasks are standalone by default: each task run is recorded with its source, parameters,
+environment and outcome, with no flow run needed.
 
 ```python
-from airflow.providers.lamindb import LaminDBFlowFinishOperator, LaminDBFlowInitOperator
 from airflow.sdk import DAG, task
 
 with DAG("my_pipeline") as dag:
-    with LaminDBFlowInitOperator() >> LaminDBFlowFinishOperator():
 
-        @task.lamindb_venv
-        def extract(count: int = 10) -> dict:
-            return {"count": count}
+    @task.lamindb_venv
+    def extract(count: int = 10) -> dict:
+        return {"count": count}
 
-        @task
-        def double(data: dict) -> dict:
-            # a plain Airflow task: not recorded in LaminDB
-            return {"count": data["count"] * 2}
+    @task
+    def double(data: dict) -> dict:
+        # a plain Airflow task: not recorded in LaminDB
+        return {"count": data["count"] * 2}
 
-        @task.lamindb_venv(requirements=["pandas"])
-        def report(data: dict) -> None:
-            import pandas as pd
+    @task.lamindb_venv(requirements=["pandas"])
+    def report(data: dict) -> None:
+        import pandas as pd
 
-            print(pd.Series([data["count"]]).describe())
+        print(pd.Series([data["count"]]).describe())
 
+    report(double(extract(count=3)))
+```
+
+To also record the DAG run as a flow run around some tasks, create them inside a `LaminDBFlow`:
+
+```python
+from airflow.providers.lamindb import LaminDBFlow
+
+with DAG("my_pipeline_with_flow") as dag:
+    with LaminDBFlow():
         report(double(extract(count=3)))
 ```
 
-- `@task.lamindb_venv(...)` works like `@task.virtualenv`; the function runs as a step in a
+- `@task.lamindb_venv(...)` works like `@task.virtualenv`; the function runs as a tracked task in a
   virtualenv that installs `lamindb-core` in the instance's version.
 - `@task.lamindb_k8s(image=..., ...)` works like `@task.kubernetes`; the image needs
   lamindb and an API key for the instance, for example from a Kubernetes secret.
-- `LaminDBFlowInitOperator` and `LaminDBFlowFinishOperator` open and close the flow run in
-  a virtualenv, as Airflow setup and teardown tasks. So `with init >> finish:` is Airflow's
-  setup/teardown context: when the block ends, Airflow wires init upstream of the tasks in it
-  that have no upstream, and finish downstream of the ones that have no downstream. Every task
-  in the block, LaminDB step or not, runs inside the flow run. Airflow does not track mapped
-  tasks (`.expand()`) in the context; add them with
-  `with init >> finish as scope: ... scope.add_task(mapped)` if they are a root or leaf.
-  Alternatively, pass `auto_flow=True` to the steps: each one adds the DAG's flow tasks on
-  first use and wires `init >> step >> finish`.
+- `LaminDBFlow(...)` is an optional context manager. Every task invocation created inside it,
+  mapped ones included, belongs to the scope; on exit it adds the flow's init and finish tasks (a
+  virtualenv setup/teardown pair) around them. Tracked tasks in the scope get the flow run as their
+  parent; plain tasks run inside the lifecycle but are not recorded. A task created outside the block
+  and only wired inside it is not a member. Scopes can't be nested; a DAG has one default scope, and
+  further scopes need an explicit `scope_id`: `LaminDBFlow("enrich")`. The scope's own arguments
+  (`lamindb_conn_id`, `lamindb_version`, ...) configure its init and finish tasks; they are not
+  borrowed from the tasks in it.
+- `LaminDBFlowInitOperator` and `LaminDBFlowFinishOperator` remain exported as low-level building
+  blocks, but wiring them with `with init >> finish:` does not make tracked tasks their children.
+
+**Migrating:** `auto_flow` is removed, and `with init >> finish:` no longer parents tracked tasks.
+Wrap the tasks in `with LaminDBFlow(...):` instead; plain Airflow tasks created in the block join the
+flow too and wait for its init. See the
+[migration guide](https://danplischke.github.io/apache-airflow-providers-lamindb/lineage/#migrating-to-lamindbflow).
 
 All of them take `lamindb_conn_id` and `lamindb_instance`, the virtualenv ones also
 `lamindb_version`, also through a DAG's `default_args`. Virtualenvs get the connection's API key and an empty, temporary
@@ -102,7 +119,7 @@ another connection, for example to run under another API key:
 def curate(data: dict) -> None: ...
 ```
 
-See [Lineage](https://danplischke.github.io/apache-airflow-providers-lamindb/lineage/) for auto-wiring, all settings, `track=False`, how
+See [Lineage](https://danplischke.github.io/apache-airflow-providers-lamindb/lineage/) for the flow scope, all settings, `track=False`, how
 the steps are recorded and the limitations.
 
 ## Event-driven scheduling

@@ -1,5 +1,10 @@
 # Python API
 
+::: airflow.providers.lamindb.flow
+    options:
+      members: [LaminDBFlow]
+      toc_label: flow
+
 ::: airflow.providers.lamindb.operators.flow
     options:
       members: [LaminDBFlowInitOperator, LaminDBFlowFinishOperator]

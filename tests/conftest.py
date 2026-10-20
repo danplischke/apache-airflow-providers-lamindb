@@ -62,12 +62,16 @@ def fake_lamindb(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
     fake.context = _FakeRunContext()
     fake.flow_run = None
 
-    def track(**kwargs: Any) -> None:
+    def track(*args: Any, **kwargs: Any) -> None:
         run = MagicMock()
         run.transform.hash = "hash"
         fake.context._run = run
 
     fake.track.side_effect = track
+    # a standalone step finds no transform of its DAG file yet, in no development directory
+    fake.Transform.filter.return_value.first.return_value = None
+    fake.Transform.filter.return_value.order_by.return_value.first.return_value = None
+    fake.setup.core._settings_store.dev_dir_containing.return_value = None
     fake.Run.filter.return_value.order_by.return_value.first.side_effect = lambda: fake.flow_run
     monkeypatch.setitem(sys.modules, "lamindb", fake)
     return fake

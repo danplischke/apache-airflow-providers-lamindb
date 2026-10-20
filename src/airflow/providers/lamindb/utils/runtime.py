@@ -7,11 +7,12 @@ lamindb.
 
 Mapping:
 
-- one Airflow DAG run  -> one LaminDB flow run (a ``Run`` of the DAG file's ``Transform``)
-- one Airflow task run -> one LaminDB step run (``initiated_by_run`` = the flow run)
+- one ``LaminDBFlow`` scope in a DAG run -> one LaminDB flow run (a ``Run`` of the DAG file's ``Transform``)
+- one Airflow task run -> one LaminDB step run, a child of the scope's flow run
+  (``initiated_by_run``) or, outside a scope, standalone
 
-The flow run is identified by ``reference="<dag_id>/<run_id>"`` and
-``reference_type="airflow_dag_run"``, so any task can look it up without XCom.
+The flow run is identified by ``reference="<dag_id>/<run_id>"`` (plus ``/<scope_id>`` for scopes
+with an id) and ``reference_type="airflow_dag_run"``, so any task can look it up without XCom.
 """
 
 from datetime import datetime, timezone
@@ -95,8 +96,8 @@ def require_flow_run(reference):
     flow_run = get_flow_run(reference)
     if flow_run is None:
         raise LookupError(
-            f"No LaminDB flow run found for DAG run {reference!r}. "
-            "Add a LaminDB flow init operator upstream of every LaminDB step."
+            f"No LaminDB flow run found for {reference!r}. The LaminDBFlow scope of this task needs "
+            "its flow init task to run first."
         )
     return flow_run
 
@@ -148,6 +149,9 @@ def _move_to_branch(run, branch_record):
 def _reset_context(ln):
     """Leave the process clean for in-process runners like ``dag.test()``."""
     ln.context._run = None
+    # ln.track() remembers the transform's uid, which would pin the next call to the same transform
+    ln.context._uid = None
+    ln.context._transform = None
     ln.context._space = None
     ln.context._branch = None
 
@@ -291,6 +295,54 @@ def step_params(fn, args, kwargs, exclude_params=()):
     return params
 
 
+def transform_key(ln, fileloc):
+    """The key of the DAG file's transform, as ``ln.track(path=...)`` infers it for the flow run.
+
+    Relative to the development directory the file is in, else the file name. Spelled out because
+    ``ln.track(source_code=...)`` needs a key, and ``path=`` can't be combined with it.
+    """
+    from pathlib import Path
+
+    path = Path(fileloc).expanduser().resolve(strict=False)
+    try:
+        # the helper lamindb >= 2.11 infers the key of ln.track(path=...) with
+        dev_dir_containing = ln.setup.core._settings_store.dev_dir_containing
+    except (AttributeError, ImportError):
+        # older lamindb: relative to the one configured development directory
+        root = getattr(ln.setup.settings, "dev_dir", None)
+    else:
+        try:
+            root = dev_dir_containing(path, instance_slug=ln.setup.settings.instance.slug)
+        except (AttributeError, ValueError):
+            root = None
+    if root is None:
+        return path.name
+    try:
+        return path.relative_to(root).as_posix()
+    except ValueError:  # the file isn't below it
+        return path.name
+
+
+def standalone_transform(ln, fileloc, source_code):
+    """The ``(key, uid)`` to track a standalone step of the DAG file with ``source_code`` under.
+
+    Without a flow run to take the transform from, the step finds the DAG file's transform the way
+    the flow init does, so that both resolve the same one:
+
+    - a transform with the same source is used with its own key: tracking it under another key makes
+      lamindb ask whether the file was renamed, which nothing can answer in a virtualenv or pod;
+    - else the latest transform with this key becomes the previous version, so an edited DAG file
+      is a new version instead of an unrelated transform (``uid`` is its stem);
+    - else a new transform is created (``uid`` is ``None``).
+    """
+    known = ln.Transform.filter(hash=ln.setup.core.hashing.hash_string(source_code)).first()
+    if known is not None:
+        return known.key, None
+    key = transform_key(ln, fileloc)
+    previous = ln.Transform.filter(key=key, is_latest=True).order_by("-created_at").first()
+    return key, previous.uid[:-4] if previous is not None else None
+
+
 def run_step(
     fn,
     args,
@@ -302,36 +354,38 @@ def run_step(
     exclude_params=(),
     space=None,
     branch=None,
+    fileloc=None,
 ):
-    """Run ``fn`` as a step of the flow run, via ``ln.track`` with ``initiated_by_run``.
+    """Run ``fn`` as a tracked step, a child of the flow run ``flow_run_reference`` if given.
 
-    Passing the DAG source with the flow transform's key makes lamindb resolve the
-    same ``Transform`` by hash as the flow run, so no pickled state is needed. ``fn``
-    gets ``args`` and ``kwargs`` unchanged; see ``step_params`` for what is recorded.
-    The step run, and records ``fn`` saves, are in ``space``, else in the flow run's, and on
-    ``branch``, else on the flow run's.
+    ``source_code`` is the DAG file's source. With a flow run, it is tracked under the flow run's
+    transform key, which makes lamindb resolve the same ``Transform`` by hash. Without one
+    (``None``), the step is standalone and finds the transform of the DAG file at ``fileloc`` itself
+    (see ``standalone_transform``). ``fn`` gets ``args`` and ``kwargs`` unchanged; see
+    ``step_params`` for what is recorded. The step run, and records ``fn`` saves, are in ``space``,
+    else in the flow run's, and on ``branch``, else on the flow run's.
     """
     ln = connect(instance)
-    flow_run = require_flow_run(flow_run_reference)
+    flow_run = require_flow_run(flow_run_reference) if flow_run_reference is not None else None
     space_record = resolve_space(space)
-    if space_record is None and flow_run.space_id not in (None, ALL_SPACE_ID):
+    if space_record is None and flow_run is not None and flow_run.space_id not in (None, ALL_SPACE_ID):
         space_record = flow_run.space
     branch_record = resolve_branch(branch)
-    if branch_record is None and flow_run.branch_id not in (None, MAIN_BRANCH_ID):
+    if branch_record is None and flow_run is not None and flow_run.branch_id not in (None, MAIN_BRANCH_ID):
         branch_record = flow_run.branch
-    space_kwargs = {"space": space_record} if space_record is not None else {}
+    track_kwargs = {
+        "source_code": source_code,
+        "kind": "script",
+        "entrypoint": fn.__name__,
+        "params": step_params(fn, args, kwargs, exclude_params),
+        "initiated_by_run": flow_run,
+        "new_run": True,
+        "stream_tracking": False,
+    }
+    if space_record is not None:
+        track_kwargs["space"] = space_record
     try:
-        ln.track(
-            key=flow_run.transform.key,
-            source_code=source_code,
-            kind="script",
-            entrypoint=fn.__name__,
-            params=step_params(fn, args, kwargs, exclude_params),
-            initiated_by_run=flow_run,
-            new_run=True,
-            stream_tracking=False,
-            **space_kwargs,
-        )
+        _track_step(ln, flow_run, fileloc, track_kwargs)
         run = ln.context.run
         if step_reference and len(step_reference) <= MAX_REFERENCE_LENGTH:
             run.reference = step_reference
@@ -348,3 +402,14 @@ def run_step(
         return result
     finally:
         _reset_context(ln)
+
+
+def _track_step(ln, flow_run, fileloc, track_kwargs):
+    """Call ``ln.track`` for a step: under the flow run's transform, or the DAG file's own."""
+    if flow_run is not None:
+        ln.track(key=flow_run.transform.key, **track_kwargs)
+        return
+    if fileloc is None:
+        raise ValueError("A standalone step needs the file name of its DAG to find its transform.")
+    key, uid = standalone_transform(ln, fileloc, track_kwargs["source_code"])
+    ln.track(*([uid] if uid else []), key=key, **track_kwargs)

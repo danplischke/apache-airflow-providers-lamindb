@@ -1,6 +1,7 @@
 """Apache Airflow provider for LaminDB.
 
-Maps DAG runs to LaminDB flows and tasks to steps, and schedules DAGs on LaminHub events.
+Records Airflow tasks in LaminDB, optionally grouped into flow runs with ``LaminDBFlow``, and schedules
+DAGs on LaminHub events.
 """
 
 from __future__ import annotations
@@ -13,10 +14,13 @@ import packaging.version
 from airflow import __version__ as airflow_version  # type: ignore[attr-defined]
 
 __all__ = [
+    "LaminDBFlow",
     "LaminDBFlowFinishOperator",
     "LaminDBFlowInitOperator",
     "__version__",
 ]
+
+_OPERATORS = ("LaminDBFlowFinishOperator", "LaminDBFlowInitOperator")
 
 try:
     __version__ = importlib.metadata.version("apache-airflow-providers-lamindb")
@@ -34,8 +38,12 @@ if packaging.version.parse(packaging.version.parse(airflow_version).base_version
 def __getattr__(name: str) -> Any:
     # Lazy: Airflow imports this package for get_provider_info while its own
     # configuration is still initialising, so importing operators here is circular.
-    if name in __all__:
+    if name in _OPERATORS:
         from airflow.providers.lamindb import operators
 
         return getattr(operators, name)
+    if name == "LaminDBFlow":
+        from airflow.providers.lamindb import flow
+
+        return flow.LaminDBFlow
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

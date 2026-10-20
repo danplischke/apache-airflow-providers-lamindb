@@ -5,10 +5,14 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from airflow.exceptions import AirflowException
-from airflow.sdk import dag, task
+from airflow.sdk import DAG, dag, task
 
+from airflow.providers.lamindb import LaminDBFlow
 from airflow.providers.lamindb.exceptions import LaminDBVersionError
 from airflow.providers.lamindb.utils import remote
+
+# these tests build flow operators on their own, which warns that they group no tasks
+pytestmark = pytest.mark.filterwarnings("ignore::airflow.providers.lamindb.exceptions.LaminDBFlowWarning")
 
 
 def _single_task(decorator, fn):
@@ -64,10 +68,18 @@ def test_task_lamindb_venv_rejects_older_lamindb_when_the_dag_is_parsed() -> Non
         _single_task(task.lamindb_venv(lamindb_version="2.8.0"), step)
 
 
-def test_task_lamindb_venv_passes_the_cache_dir_to_the_flow_operators() -> None:
-    op = _single_task(task.lamindb_venv(lamindb_cache_dir="/shared", auto_flow=True), step)
-    init = op.get_dag().get_task("lamindb_flow_init")
-    assert op.lamindb_cache_dir == init.lamindb_cache_dir == "/shared"
+def test_flow_scopes_configure_their_own_flow_operators() -> None:
+    @dag
+    def scoped():
+        with LaminDBFlow(lamindb_cache_dir="/shared", lamindb_conn_id=None):
+            task.lamindb_venv(step, lamindb_cache_dir="/other")()
+
+    built = scoped()
+    init = built.get_task("lamindb_flow_init")
+    assert init.lamindb_cache_dir == "/shared"  # nothing is copied from the step
+    assert init.lamindb_conn_id is None
+    assert built.get_task("step").lamindb_cache_dir == "/other"
+    assert built.get_task("step").lamindb_conn_id == "lamindb_default"
 
 
 def _execute_in_fake_venv(op, context):
@@ -92,13 +104,11 @@ def _execute_in_fake_venv(op, context):
 def test_remote_step_ships_wrapped_source_only_during_execute(
     fake_lamindb: MagicMock, make_context, lamindb_connection
 ) -> None:
-    fake_lamindb.flow_run = MagicMock(uid="flowuid")
     op = _single_task(task.lamindb_venv(requirements=["pandas"]), step)
     plain = op.get_python_source()
     assert plain.startswith("def step():")
     assert "_lamindb_airflow_step" not in plain
     context = make_context()
-    context["ti"].xcom_pull.return_value = "owner/name"  # instance of the flow run
 
     result, seen = _execute_in_fake_venv(op, context)
 
@@ -106,8 +116,11 @@ def test_remote_step_ships_wrapped_source_only_during_execute(
     fake_lamindb.connect.assert_called_once_with("owner/name")
     kwargs = fake_lamindb.track.call_args.kwargs
     assert kwargs["source_code"] == "# dag source"
+    assert kwargs["key"] == "my_dag.py"  # the DAG file, not the wrapper script it runs from
     assert kwargs["entrypoint"] == "step"
-    assert kwargs["initiated_by_run"] is fake_lamindb.flow_run
+    assert kwargs["initiated_by_run"] is None  # standalone: no flow run was looked up
+    fake_lamindb.Run.filter.assert_not_called()
+    context["ti"].xcom_pull.assert_not_called()
     assert op.get_python_source() == plain
     assert seen["requirements"] == ["pandas", "lamindb-core==2.11.0", "numpy", "pandera>=0.24.0"]
     assert seen["env_vars"]["LAMIN_API_KEY"] == "api-key"
@@ -115,24 +128,148 @@ def test_remote_step_ships_wrapped_source_only_during_execute(
     assert op.env_vars is None
 
 
-def test_step_on_another_instance_than_the_flow_run_fails_early(
+def test_scoped_step_on_another_instance_than_its_flow_run_fails_early(
     fake_lamindb: MagicMock, make_context, lamindb_connection
 ) -> None:
-    op = _single_task(task.lamindb_venv(lamindb_instance="owner/other", auto_flow=True), step)
+    @dag
+    def scoped():
+        with LaminDBFlow():
+            task.lamindb_venv(lamindb_instance="owner/other")(step)()
+
+    op = scoped().get_task("step")
     context = make_context()
     context["ti"].xcom_pull.return_value = "owner/name"
 
-    with pytest.raises(
-        AirflowException, match="'owner/other', but the flow run of this DAG run is in 'owner/name'"
-    ):
+    with pytest.raises(AirflowException, match="'owner/other', but its flow run is in 'owner/name'"):
         _execute_in_fake_venv(op, context)
     context["ti"].xcom_pull.assert_called_once_with(task_ids="lamindb_flow_init", key="lamindb_instance")
     fake_lamindb.track.assert_not_called()
 
 
+def test_standalone_step_may_use_any_instance(
+    fake_lamindb: MagicMock, make_context, lamindb_connection
+) -> None:
+    op = _single_task(task.lamindb_venv(lamindb_instance="owner/other"), step)
+
+    assert _execute_in_fake_venv(op, make_context())[0] == 1
+    fake_lamindb.connect.assert_called_once_with("owner/other")
+
+
+def _scoped_step(scope_id=None, **kwargs):
+    @dag
+    def scoped():
+        with LaminDBFlow(scope_id):
+            task.lamindb_venv(**kwargs)(step)()
+
+    return scoped().get_task("step")
+
+
+def test_scoped_step_is_a_child_of_its_scopes_flow_run(
+    fake_lamindb: MagicMock, make_context, lamindb_connection
+) -> None:
+    fake_lamindb.flow_run = flow_run = MagicMock(**{"transform.key": "team/my_dag.py"})
+    op = _scoped_step("enrich")
+    context = make_context()
+    context["ti"].xcom_pull.return_value = "owner/name"
+
+    assert _execute_in_fake_venv(op, context)[0] == 1
+
+    assert fake_lamindb.Run.filter.call_args.kwargs["reference"] == "my_dag/run_1/enrich"
+    kwargs = fake_lamindb.track.call_args.kwargs
+    assert kwargs["initiated_by_run"] is flow_run
+    assert kwargs["key"] == "team/my_dag.py"  # the parent's actual transform key
+    fake_lamindb.Transform.filter.assert_not_called()  # no lookup of the DAG file's transform
+
+
+def test_scoped_step_without_its_flow_run_fails_instead_of_running_standalone(
+    fake_lamindb: MagicMock, make_context, lamindb_connection
+) -> None:
+    op = _scoped_step()
+    context = make_context()
+    context["ti"].xcom_pull.return_value = None
+
+    with pytest.raises(LookupError, match="No LaminDB flow run found for 'my_dag/run_1'"):
+        _execute_in_fake_venv(op, context)
+    fake_lamindb.track.assert_not_called()
+
+
+def test_step_ships_the_dag_file_name_and_its_task_attempt_reference(
+    fake_lamindb: MagicMock, make_context, lamindb_connection
+) -> None:
+    op = _single_task(task.lamindb_venv, step)
+    context = make_context(fileloc="/dags/team/my_dag.py")
+    context["ti"].log_url = "u" * 300  # too long for a reference
+    context["ti"].task_id, context["ti"].map_index, context["ti"].try_number = "step", -1, 2
+    seen = {}
+
+    def fake_venv_execute(self, context):
+        seen["source"] = self.get_python_source()
+
+    with (
+        patch.object(remote, "dag_source", return_value="# dag source"),
+        patch.object(type(op).__mro__[2], "execute", fake_venv_execute),
+    ):
+        op.execute(context)
+
+    assert "'fileloc': '/dags/team/my_dag.py'" in seen["source"]
+    assert "'step_reference': 'my_dag/run_1/step/-1/2'" in seen["source"]
+    assert "'flow_run_reference': None" in seen["source"]
+    assert "run_1/enrich" not in seen["source"]
+
+
+def test_standalone_steps_do_not_inspect_flow_operators(
+    fake_lamindb: MagicMock, make_context, lamindb_connection
+) -> None:
+    @dag
+    def mixed():
+        with LaminDBFlow():
+            task.lamindb_venv(step, task_id="inside")()
+        task.lamindb_venv(step, task_id="outside")()
+
+    op = mixed().get_task("outside")
+    context = make_context()
+    context["ti"].xcom_pull.return_value = "owner/other-instance"  # a scope's flow run elsewhere
+
+    assert _execute_in_fake_venv(op, context)[0] == 1
+    context["ti"].xcom_pull.assert_not_called()
+
+
+def test_scoped_mapped_steps_resolve_their_scope_when_unmapped(
+    fake_lamindb: MagicMock, make_context, lamindb_connection
+) -> None:
+    fake_lamindb.flow_run = MagicMock(**{"transform.key": "my_dag.py"})
+
+    @dag
+    def mapped():
+        with LaminDBFlow("enrich"):
+            task.lamindb_venv(load).partial(credentials="c", day="d").expand(user=["a"])
+
+    unmapped = mapped().get_task("load").unmap({"op_kwargs": {"user": "a"}})
+    context = make_context()
+    context["ti"].xcom_pull.return_value = None
+    seen = {}
+
+    def fake_venv_execute(self, context):
+        seen["source"] = self.get_python_source()
+
+    with (
+        patch.object(remote, "dag_source", return_value="# dag source"),
+        patch.object(type(unmapped).__mro__[2], "execute", fake_venv_execute),
+    ):
+        unmapped.execute(context)
+
+    assert "'flow_run_reference': 'my_dag/run_1/enrich'" in seen["source"]
+
+
 def test_step_instance_is_compared_normalised(fake_lamindb: MagicMock, make_context) -> None:
     fake_lamindb.flow_run = MagicMock(uid="flowuid")
-    op = _single_task(task.lamindb_venv(lamindb_conn_id=None, lamindb_instance=" owner/name/ "), step)
+
+    @dag
+    def scoped():
+        with LaminDBFlow():
+            task.lamindb_venv(lamindb_conn_id=None, lamindb_instance=" owner/name/ ")(step)()
+
+    op = scoped().get_task("step")
     context = make_context()
     context["ti"].xcom_pull.return_value = "owner/name"
 
@@ -142,7 +279,6 @@ def test_step_instance_is_compared_normalised(fake_lamindb: MagicMock, make_cont
 
 
 def test_step_without_connection_uses_lamindb_configuration(fake_lamindb: MagicMock, make_context) -> None:
-    fake_lamindb.flow_run = MagicMock(uid="flowuid")
     op = _single_task(task.lamindb_venv(lamindb_conn_id=None), step)
 
     result, seen = _execute_in_fake_venv(op, make_context())
@@ -192,7 +328,6 @@ def test_task_lamindb_k8s_gets_only_the_instance_from_the_connection(
     pytest.importorskip("airflow.providers.cncf.kubernetes")
     op = _single_task(task.lamindb_k8s(image="python:3.12"), step)
     context = make_context()
-    context["ti"].xcom_pull.return_value = None  # flow run instance unknown: no check
     seen = {}
 
     def fake_pod_execute(self, context):
@@ -215,16 +350,8 @@ def test_task_lamindb_k8s_without_connection_uses_the_pod_configuration(
     pytest.importorskip("airflow.providers.cncf.kubernetes")
     monkeypatch.delenv("AIRFLOW_CONN_LAMINDB_DEFAULT", raising=False)
 
-    @dag
-    def test_dag():
-        task.lamindb_k8s(image="python:3.12", lamindb_conn_id=None, auto_flow=True)(step)()
-
-    built = test_dag()
-    op = built.get_task("step")
-    assert built.get_task("lamindb_flow_init").lamindb_conn_id is None
-    assert built.get_task("lamindb_flow_finish").lamindb_conn_id is None
+    op = _single_task(task.lamindb_k8s(image="python:3.12", lamindb_conn_id=None), step)
     context = make_context()
-    context["ti"].xcom_pull.return_value = None
     seen = {}
 
     def fake_pod_execute(self, context):
@@ -467,7 +594,7 @@ def _execute_connected(op, context, seen=None):
 def test_connect_only_step_connects_without_recording(
     fake_lamindb: MagicMock, make_context, lamindb_connection
 ) -> None:
-    op = _single_task(task.lamindb_venv(track=False, connect=True, auto_flow=True), step)
+    op = _single_task(task.lamindb_venv(track=False, connect=True), step)
     assert op.get_dag().task_ids == ["step"]  # no flow tasks
 
     result, seen = _execute_connected(op, make_context())
@@ -636,19 +763,16 @@ def test_mapped_steps_build_their_own_pinned_environment(
     assert len(set(hashes)) == 3
 
 
-def test_auto_flow_does_not_copy_a_templated_lamindb_version() -> None:
+def test_flow_scopes_take_a_templated_lamindb_version_of_their_own() -> None:
     @dag
     def test_dag():
-        task.lamindb_venv(
-            auto_flow=True,
-            lamindb_version="{{ params.pin }}",
-            requirements=["lamindb-core=={{ params.pin }}", "lamindb[bionty]==2.11.0"],
-        )(step)()
+        with LaminDBFlow(lamindb_version="{{ params.pin }}"):
+            task.lamindb_venv(lamindb_version="{{ params.other }}")(step)()
 
     built = test_dag()
-    init = built.get_task("lamindb_flow_init")
-    assert init.lamindb_version is None  # the instance's version
-    assert init.requirements == ["lamindb[bionty]==2.11.0"]
+    assert built.get_task("lamindb_flow_init").lamindb_version == "{{ params.pin }}"
+    assert built.get_task("lamindb_flow_finish").lamindb_version == "{{ params.pin }}"
+    assert built.get_task("step").lamindb_version == "{{ params.other }}"
 
 
 def test_flow_operators_render_lamindb_version() -> None:
@@ -676,12 +800,10 @@ def test_dags_with_templated_lamindb_versions_serialize() -> None:
 def test_lamindb_space_is_templated_and_reaches_the_step(
     fake_lamindb: MagicMock, make_context, lamindb_connection
 ) -> None:
-    fake_lamindb.flow_run = MagicMock()
     op = _single_task(task.lamindb_venv(lamindb_space="{{ params.space }}"), step)
     context = make_context()
     context["params"] = {"space": " lab "}
     op.render_template_fields(context)
-    context["ti"].xcom_pull.return_value = None
 
     _execute_in_fake_venv(op, context)
 
@@ -705,10 +827,15 @@ def test_lamindb_space_from_default_args_reaches_steps_and_flow_operators() -> N
     assert "lamindb_space" in built.get_task("lamindb_flow_init").template_fields
 
 
-@pytest.mark.parametrize(("space", "flow_space"), [("lab", "lab"), ("{{ params.space }}", None)])
-def test_auto_flow_copies_only_a_literal_space(space: str, flow_space: str | None) -> None:
-    op = _single_task(task.lamindb_venv(auto_flow=True, lamindb_space=space), step)
-    assert op.get_dag().get_task("lamindb_flow_init").lamindb_space == flow_space
+def test_flow_scopes_do_not_copy_the_space_of_their_steps() -> None:
+    @dag
+    def test_dag():
+        with LaminDBFlow(lamindb_space="lab"):
+            task.lamindb_venv(lamindb_space="other")(step)()
+
+    built = test_dag()
+    assert built.get_task("lamindb_flow_init").lamindb_space == "lab"
+    assert built.get_task("step").lamindb_space == "other"
 
 
 def test_flow_init_starts_the_flow_run_in_its_space(make_context, lamindb_connection) -> None:
@@ -789,40 +916,75 @@ def test_lamindb_setup_prepares_the_flow_operators(make_context, lamindb_connect
     assert init.env_vars is None
 
 
-def test_lamindb_setup_reaches_auto_wired_flow_tasks() -> None:
+def test_lamindb_setup_reaches_the_flow_tasks_of_a_scope() -> None:
     setup = SiteSetup()
-    op = _single_task(task.lamindb_venv(auto_flow=True, lamindb_setup=setup), step)
-    assert op.get_dag().get_task("lamindb_flow_init").lamindb_setup is setup
+
+    @dag
+    def scoped():
+        with LaminDBFlow(lamindb_setup=setup):
+            task.lamindb_venv(lamindb_setup=setup)(step)()
+
+    built = scoped()
+    assert built.get_task("lamindb_flow_init").lamindb_setup is setup
+    assert built.get_task("lamindb_flow_finish").lamindb_setup is setup
 
     @dag(default_args={"lamindb_setup": setup})
     def mapped_dag():
-        task.lamindb_venv(auto_flow=True)(load).partial(credentials="c", day="d").expand(user=["a"])
+        with LaminDBFlow():
+            task.lamindb_venv(load).partial(credentials="c", day="d").expand(user=["a"])
 
     built = mapped_dag()
     init, finish = built.get_task("lamindb_flow_init"), built.get_task("lamindb_flow_finish")
     assert init.lamindb_setup is finish.lamindb_setup is setup
 
 
-def test_steps_and_flow_tasks_with_different_setups_fail_when_wired() -> None:
-    from airflow.providers.lamindb.operators.flow import LaminDBFlowInitOperator
-
+def test_steps_and_flow_tasks_with_different_setups_fail_when_the_scope_closes() -> None:
     @dag
-    def auto_dag():
-        LaminDBFlowInitOperator()
-        task.lamindb_venv(auto_flow=True, lamindb_setup=SiteSetup())(step)()
+    def scoped_dag():
+        with LaminDBFlow():  # without the setup the step needs
+            task.lamindb_venv(lamindb_setup=SiteSetup())(step)()
 
     with pytest.raises(AirflowException, match="different lamindb_setup"):
-        auto_dag()
+        scoped_dag()
 
     @dag
     def mapped_dag():
-        LaminDBFlowInitOperator()  # without the setup the step needs
-        task.lamindb_venv(auto_flow=True, lamindb_setup=SiteSetup())(load).partial(
-            credentials="c", day="d"
-        ).expand(user=["a"])
+        with LaminDBFlow():
+            task.lamindb_venv(lamindb_setup=SiteSetup())(load).partial(credentials="c", day="d").expand(
+                user=["a"]
+            )
 
     with pytest.raises(AirflowException, match="step 'load' and flow task 'lamindb_flow_init'"):
         mapped_dag()
+
+    @dag
+    def standalone_dag():  # a standalone step has no flow task to agree with
+        task.lamindb_venv(lamindb_setup=SiteSetup())(step)()
+
+    standalone_dag()
+
+
+def test_a_setup_mismatch_leaves_no_partial_scope_and_the_scope_can_be_entered_again() -> None:
+    def mismatched_scope() -> None:
+        with LaminDBFlow():
+            task.lamindb_venv(step, task_id="fine")()
+            task.lamindb_venv(step, task_id="differs", lamindb_setup=SiteSetup())()
+
+    with DAG("d", schedule=None) as built:
+        with pytest.raises(AirflowException, match="different lamindb_setup"):
+            mismatched_scope()
+
+        # nothing was scoped or added: not the earlier member, not the flow tasks
+        assert set(built.task_ids) == {"fine", "differs"}
+        assert built.get_task("fine").lamindb_scope is None
+        assert built.get_task("differs").lamindb_scope is None
+        assert built.get_task("fine").downstream_task_ids == set()
+
+        with LaminDBFlow(lamindb_setup=SiteSetup()):  # the default scope is free again
+            task.lamindb_venv(step, task_id="again", lamindb_setup=SiteSetup())()
+
+    assert built.get_task("again").lamindb_scope == ""
+    assert {"lamindb_flow_init", "lamindb_flow_finish"} <= set(built.task_ids)
 
 
 def test_pod_steps_run_the_bootstrap_but_not_execution_env(
@@ -855,7 +1017,8 @@ def test_lamindb_setup_from_default_args_reaches_every_lamindb_task() -> None:
 
     @dag(default_args={"lamindb_setup": setup})
     def test_dag():
-        task.lamindb_venv(auto_flow=True)(step)()
+        with LaminDBFlow():
+            task.lamindb_venv(step)()
         LaminDBFlowFinishOperator(task_id="other_finish")
 
     built = test_dag()
@@ -986,7 +1149,13 @@ def test_the_configured_setup_prepares_every_lamindb_task(
     fake_lamindb: MagicMock, make_context, lamindb_connection, configured_setup
 ) -> None:
     fake_lamindb.flow_run = MagicMock()
-    op = _single_task(task.lamindb_venv(auto_flow=True), step)
+
+    @dag
+    def scoped():
+        with LaminDBFlow():
+            task.lamindb_venv(step)()
+
+    op = scoped().get_task("step")
     assert op.lamindb_setup is None  # resolved when the task runs, not stored on it
     context = make_context()
     context["ti"].xcom_pull.return_value = None
@@ -1006,7 +1175,8 @@ def test_dags_and_tasks_override_the_configured_setup(configured_setup) -> None:
 
     @dag(default_args={"lamindb_setup": site})
     def overridden():
-        task.lamindb_venv(auto_flow=True)(load).partial(credentials="c", day="d").expand(user=["a"])
+        with LaminDBFlow():
+            task.lamindb_venv(load).partial(credentials="c", day="d").expand(user=["a"])
 
     built = overridden()
     assert remote.resolve_setup(built.get_task("lamindb_flow_init").lamindb_setup) is site
@@ -1016,11 +1186,12 @@ def test_dags_and_tasks_override_the_configured_setup(configured_setup) -> None:
     assert remote.setup_execution_env(opted_out.lamindb_setup, {}) == {}
 
 
-def test_a_step_overriding_the_configured_setup_alone_fails_when_wired(configured_setup) -> None:
+def test_a_step_overriding_the_configured_setup_alone_fails_when_the_scope_closes(configured_setup) -> None:
     @dag
     def one_step_differs():
-        task.lamindb_venv(auto_flow=True)(step)()
-        task.lamindb_venv(auto_flow=True, lamindb_setup=SiteSetup(), task_id="other")(step)()
+        with LaminDBFlow():
+            task.lamindb_venv(step)()
+            task.lamindb_venv(lamindb_setup=SiteSetup(), task_id="other")(step)()
 
     with pytest.raises(AirflowException, match="step 'other' and flow task 'lamindb_flow_init'"):
         one_step_differs()
@@ -1059,12 +1230,13 @@ def test_equivalent_setups_are_the_same_setup() -> None:
 
     @dag
     def two_instances():
-        shared = {"lamindb_setup": SiteSetup(), "auto_flow": True}
-        with TaskGroup("a", default_args=shared):
-            task.lamindb_venv(load).partial(credentials="c", day="d").expand(user=["x"])
-        with TaskGroup("b", default_args=shared):
-            task.lamindb_venv(load).partial(credentials="c", day="d").expand(user=["y"])
-        task.lamindb_venv(auto_flow=True, lamindb_setup=SiteSetup())(step)()
+        shared = {"lamindb_setup": SiteSetup()}
+        with LaminDBFlow(lamindb_setup=SiteSetup()):
+            with TaskGroup("a", default_args=shared):
+                task.lamindb_venv(load).partial(credentials="c", day="d").expand(user=["x"])
+            with TaskGroup("b", default_args=shared):
+                task.lamindb_venv(load).partial(credentials="c", day="d").expand(user=["y"])
+            task.lamindb_venv(lamindb_setup=SiteSetup())(step)()
 
     built = two_instances()
     assert built.get_task("lamindb_flow_init").downstream_task_ids == {
@@ -1080,8 +1252,11 @@ def test_mapped_steps_get_their_task_groups_setup() -> None:
 
     @dag
     def grouped():
-        with TaskGroup("g", default_args={"lamindb_setup": SiteSetup()}):
-            task.lamindb_venv(auto_flow=True)(load).partial(credentials="c", day="d").expand(user=["a"])
+        with (
+            LaminDBFlow(lamindb_setup=SiteSetup()),
+            TaskGroup("g", default_args={"lamindb_setup": SiteSetup()}),
+        ):
+            task.lamindb_venv(load).partial(credentials="c", day="d").expand(user=["a"])
 
     built = grouped()
     mapped = built.get_task("g.load")
@@ -1094,11 +1269,12 @@ def test_mapped_steps_get_their_task_groups_setup() -> None:
 def test_a_single_step_may_opt_out_of_the_setup(configured_setup) -> None:
     @dag
     def opted_out():
-        task.lamindb_venv(auto_flow=True)(step)()
-        task.lamindb_venv(auto_flow=True, lamindb_setup=remote.LaminDBSetup(), task_id="plain")(step)()
-        task.lamindb_venv(auto_flow=True, lamindb_setup=remote.LaminDBSetup())(load).partial(
-            credentials="c", day="d"
-        ).expand(user=["a"])
+        with LaminDBFlow():
+            task.lamindb_venv(step)()
+            task.lamindb_venv(lamindb_setup=remote.LaminDBSetup(), task_id="plain")(step)()
+            task.lamindb_venv(lamindb_setup=remote.LaminDBSetup())(load).partial(
+                credentials="c", day="d"
+            ).expand(user=["a"])
 
     built = opted_out()
     assert remote.resolve_setup(built.get_task("lamindb_flow_init").lamindb_setup) is configured_setup
@@ -1218,12 +1394,15 @@ def test_lamindb_branch_is_templated_and_reaches_steps_and_flow_operators(
     fake_lamindb.Branch.filter.assert_called_once()
 
 
-@pytest.mark.parametrize(
-    ("branch", "flow_branch"), [("feature-x", "feature-x"), ("{{ params.branch }}", None)]
-)
-def test_auto_flow_copies_only_a_literal_branch(branch: str, flow_branch: str | None) -> None:
-    op = _single_task(task.lamindb_venv(auto_flow=True, lamindb_branch=branch), step)
-    assert op.get_dag().get_task("lamindb_flow_init").lamindb_branch == flow_branch
+def test_flow_scopes_do_not_copy_the_branch_of_their_steps() -> None:
+    @dag
+    def test_dag():
+        with LaminDBFlow(lamindb_branch="feature-x"):
+            task.lamindb_venv(lamindb_branch="{{ params.branch }}")(step)()
+
+    built = test_dag()
+    assert built.get_task("lamindb_flow_init").lamindb_branch == "feature-x"
+    assert built.get_task("step").lamindb_branch == "{{ params.branch }}"
 
 
 def test_lamindb_branch_reaches_pod_steps(fake_lamindb: MagicMock, make_context, lamindb_connection) -> None:
@@ -1241,16 +1420,18 @@ def test_lamindb_branch_reaches_pod_steps(fake_lamindb: MagicMock, make_context,
     assert "'branch': 'feature-x'" in seen["source"]
 
 
-def test_mapped_pod_steps_are_auto_wired() -> None:
+def test_mapped_pod_steps_join_a_scope() -> None:
     pytest.importorskip("airflow.providers.cncf.kubernetes")
 
     @dag
     def test_dag():
-        task.lamindb_k8s(image="python:3.12", auto_flow=True, lamindb_instance="owner/name")(load).partial(
-            credentials="c", day="d"
-        ).expand(user=["a", "b"])
+        with LaminDBFlow(lamindb_instance="owner/name"):
+            task.lamindb_k8s(image="python:3.12", lamindb_instance="owner/name")(load).partial(
+                credentials="c", day="d"
+            ).expand(user=["a", "b"])
 
     built = test_dag()
     init = built.get_task("lamindb_flow_init")
     assert init.downstream_task_ids == {"load", "lamindb_flow_finish"}
     assert init.lamindb_instance == "owner/name"
+    assert built.get_task("load").partial_kwargs["lamindb_scope"] == ""

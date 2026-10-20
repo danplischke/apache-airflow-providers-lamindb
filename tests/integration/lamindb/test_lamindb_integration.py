@@ -412,3 +412,266 @@ def test_flow_steps_and_their_records_are_on_the_branch(dag_module, run_id, feat
         runtime.run_connected(save_record, ("x",), {}, branch="trash")
     runtime.finish_flow_run(kwargs["reference"], True)
     assert ln.Run.filter(uid=flow_run.uid).one().status == "completed"
+
+
+@pytest.fixture
+def unique_dag_file(tmp_path, run_id):
+    """A DAG file of its own (unique source and name), so tests don't share a transform."""
+    from types import SimpleNamespace
+
+    def write(body: str = "", *, newline: bytes = b"\n", name: str | None = None) -> SimpleNamespace:
+        path = tmp_path / (name or f"standalone_{run_id}.py")
+        lines = [f"# {run_id}", "from airflow.sdk import DAG", f'dag = DAG("standalone_{run_id}")', body]
+        path.write_bytes(newline.join(line.encode() for line in lines))
+        return SimpleNamespace(fileloc=str(path), dag_id=f"standalone_{run_id}", name=path.name)
+
+    return write
+
+
+def standalone_step(dag, fn, *args, step_reference="http://airflow/ti", **kwargs):
+    from airflow.providers.lamindb.utils import runtime
+    from airflow.providers.lamindb.utils.dag_run import dag_source
+
+    return runtime.run_step(
+        fn, args, kwargs, None, dag_source(dag), step_reference=step_reference, fileloc=dag.fileloc
+    )
+
+
+def test_standalone_step_is_recorded_without_a_parent(unique_dag_file):
+    import lamindb as ln
+
+    dag = unique_dag_file()
+
+    def extract(count: int = 10) -> dict:
+        return {"count": count}
+
+    assert standalone_step(dag, extract, count=4, step_reference="http://airflow/solo") == {"count": 4}
+
+    run = ln.Run.filter(reference="http://airflow/solo").one()
+    assert run.initiated_by_run is None
+    assert run.entrypoint == "extract"
+    assert run.status == "completed"
+    assert run.params == {"count": 4}
+    assert run.reference_type == "airflow_task_instance"
+    assert run.transform.key == dag.name  # the DAG file's, not a wrapper script's
+    assert run.transform.kind == "script"
+    assert run.transform.source_code is not None
+    assert ln.context.run is None
+
+
+def test_standalone_steps_and_the_flow_run_share_the_dag_files_transform(dag_module, run_id, unique_dag_file):
+    import lamindb as ln
+
+    from airflow.providers.lamindb.utils import runtime
+    from airflow.providers.lamindb.utils.dag_run import dag_source
+
+    dag = unique_dag_file()
+
+    def solo():
+        return 1
+
+    # standalone first: the flow init then finds its transform by the file's hash
+    standalone_step(dag, solo, step_reference=f"http://airflow/{run_id}/a")
+    first = ln.Run.filter(reference=f"http://airflow/{run_id}/a").one()
+    flow_run = runtime.start_flow_run(
+        f"{dag.dag_id}/{run_id}", dag.fileloc, dag.dag_id, {"dag_id": dag.dag_id}
+    )
+    assert flow_run.transform.uid == first.transform.uid
+    assert flow_run.transform.key == dag.name
+
+    # and the other way around: a scoped step uses the flow run's transform and key
+    runtime.run_step(solo, (), {}, f"{dag.dag_id}/{run_id}", dag_source(dag))
+    child = ln.Run.filter(initiated_by_run=flow_run).one()
+    assert child.transform.uid == flow_run.transform.uid
+    runtime.finish_flow_run(f"{dag.dag_id}/{run_id}", True)
+    assert ln.Transform.filter(key=dag.name).count() == 1
+
+
+def test_standalone_step_of_an_edited_dag_is_a_new_version_of_the_same_transform(unique_dag_file, run_id):
+    import lamindb as ln
+
+    def solo():
+        return 1
+
+    v1 = unique_dag_file("# one")
+    standalone_step(v1, solo, step_reference=f"http://airflow/{run_id}/v1")
+    v2 = unique_dag_file("# two")  # same file name, edited
+    standalone_step(v2, solo, step_reference=f"http://airflow/{run_id}/v2")
+    standalone_step(v2, solo, step_reference=f"http://airflow/{run_id}/v2-again")
+
+    t1 = ln.Run.filter(reference=f"http://airflow/{run_id}/v1").one().transform
+    t2 = ln.Run.filter(reference=f"http://airflow/{run_id}/v2").one().transform
+    again = ln.Run.filter(reference=f"http://airflow/{run_id}/v2-again").one().transform
+    assert t1.key == t2.key == v1.name
+    assert t1.uid[:-4] == t2.uid[:-4]  # versions of one transform
+    assert t1.uid != t2.uid
+    assert t2.is_latest
+    assert not ln.Transform.get(uid=t1.uid).is_latest
+    assert again.uid == t2.uid
+
+
+def test_standalone_step_of_a_renamed_file_never_asks_whether_it_was_renamed(unique_dag_file, run_id):
+    """Same source under another key makes lamindb prompt, which hangs a virtualenv or pod."""
+    import lamindb as ln
+
+    def solo():
+        return 1
+
+    original = unique_dag_file("# keep", name=f"original_{run_id}.py")
+    standalone_step(original, solo, step_reference=f"http://airflow/{run_id}/o")
+    renamed = unique_dag_file("# keep", name=f"renamed_{run_id}.py")
+    standalone_step(renamed, solo, step_reference=f"http://airflow/{run_id}/r")
+
+    runs = ln.Run.filter(reference__startswith=f"http://airflow/{run_id}/")
+    assert {run.transform.uid for run in runs} == {runs[0].transform.uid}  # one transform, original key
+    assert runs[0].transform.key == original.name
+
+
+def test_crlf_dag_files_hash_like_what_the_flow_init_stores(unique_dag_file, run_id):
+    import lamindb as ln
+
+    from airflow.providers.lamindb.utils import runtime
+
+    dag = unique_dag_file(newline=b"\r\n")
+    flow_run = runtime.start_flow_run(
+        f"{dag.dag_id}/{run_id}", dag.fileloc, dag.dag_id, {"dag_id": dag.dag_id}
+    )
+    runtime.finish_flow_run(f"{dag.dag_id}/{run_id}", True)
+
+    def solo():
+        return 1
+
+    standalone_step(dag, solo, step_reference=f"http://airflow/{run_id}/crlf")
+
+    run = ln.Run.filter(reference=f"http://airflow/{run_id}/crlf").one()
+    assert run.transform.uid == flow_run.transform.uid  # the same hash: no second transform
+    assert ln.Transform.filter(key=dag.name).count() == 1
+
+
+def test_standalone_step_errors_and_each_attempt_is_a_run(unique_dag_file, run_id):
+    import lamindb as ln
+
+    dag = unique_dag_file()
+    calls = []
+
+    def flaky():
+        calls.append(1)
+        if len(calls) == 1:
+            raise ValueError("first attempt fails")
+        return "ok"
+
+    with pytest.raises(ValueError, match="first attempt"):
+        standalone_step(dag, flaky, step_reference=f"http://airflow/{run_id}/try1")
+    assert standalone_step(dag, flaky, step_reference=f"http://airflow/{run_id}/try2") == "ok"
+
+    assert ln.Run.filter(reference=f"http://airflow/{run_id}/try1").one().status == "errored"
+    assert ln.Run.filter(reference=f"http://airflow/{run_id}/try2").one().status == "completed"
+    assert ln.context.run is None
+
+
+def test_standalone_step_in_a_fresh_interpreter(unique_dag_file, run_id, instance, tmp_path):
+    """Through the shipped source: no flow run lookup, the DAG file's key and no leftover state."""
+    import lamindb as ln
+
+    from airflow.providers.lamindb.utils.dag_run import dag_source
+
+    dag = unique_dag_file()
+    user_source = "def compute(x: int = 1) -> int:\n    return x * 3\n"
+    config = {
+        "flow_run_reference": None,
+        "source_code": dag_source(dag),
+        "fileloc": dag.fileloc,
+        "step_reference": f"http://airflow/{run_id}/fresh",
+        "instance": instance,
+    }
+    script = step_script(user_source, "compute", "compute(x=5)", config)
+
+    assert "RESULT=15" in run_script(script, tmp_path).stdout
+
+    run = ln.Run.filter(reference=f"http://airflow/{run_id}/fresh").one()
+    assert (run.initiated_by_run, run.status, run.params) == (None, "completed", {"x": 5})
+    assert run.transform.key == dag.name
+
+
+def test_parallel_standalone_steps_of_a_new_dag_share_one_transform(
+    unique_dag_file, run_id, instance, tmp_path
+):
+    """The first run of a DAG starts all its standalone (mapped) steps at once."""
+    import lamindb as ln
+
+    from airflow.providers.lamindb.utils.dag_run import dag_source
+
+    dag = unique_dag_file()
+    processes = []
+    for index in range(4):
+        config = {
+            "flow_run_reference": None,
+            "source_code": dag_source(dag),
+            "fileloc": dag.fileloc,
+            "step_reference": f"http://airflow/{run_id}/par{index}",
+            "instance": instance,
+        }
+        script = step_script("def work() -> int:\n    return 1\n", "work", "work()", config)
+        path = tmp_path / f"par{index}.py"
+        path.write_text(script)
+        processes.append(
+            subprocess.Popen(
+                [sys.executable, str(path)],
+                cwd=tmp_path,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                stdin=subprocess.DEVNULL,
+                text=True,
+            )
+        )
+    results = [(p.communicate(timeout=300), p.returncode) for p in processes]
+
+    assert [code for _, code in results] == [0, 0, 0, 0], [err for (_, err), _ in results]
+    runs = ln.Run.filter(reference__startswith=f"http://airflow/{run_id}/par")
+    assert runs.count() == 4
+    assert len({run.transform.uid for run in runs}) == 1
+    assert ln.Transform.filter(key=dag.name).count() == 1
+
+
+def test_sibling_scopes_have_flow_runs_of_their_own(unique_dag_file, run_id):
+    import lamindb as ln
+
+    from airflow.providers.lamindb.utils import runtime
+    from airflow.providers.lamindb.utils.dag_run import dag_source, flow_run_reference
+
+    dag = unique_dag_file()
+    default_ref = flow_run_reference(dag.dag_id, run_id)
+    enrich_ref = flow_run_reference(dag.dag_id, run_id, "enrich")
+    assert default_ref != enrich_ref
+    default = runtime.start_flow_run(default_ref, dag.fileloc, dag.dag_id, {})
+    enrich = runtime.start_flow_run(enrich_ref, dag.fileloc, dag.dag_id, {})
+    assert default.uid != enrich.uid
+    assert default.transform.uid == enrich.transform.uid
+
+    def step_in_scope():
+        return 1
+
+    runtime.run_step(step_in_scope, (), {}, enrich_ref, dag_source(dag))
+    assert ln.Run.filter(initiated_by_run=enrich).count() == 1
+    assert ln.Run.filter(initiated_by_run=default).count() == 0
+
+    runtime.finish_flow_run(enrich_ref, False)
+    runtime.finish_flow_run(default_ref, True)
+    assert (ln.Run.get(uid=enrich.uid).status, ln.Run.get(uid=default.uid).status) == ("errored", "completed")
+
+
+def test_scoped_step_without_its_flow_run_does_not_fall_back_to_standalone(unique_dag_file, run_id):
+    import lamindb as ln
+
+    dag = unique_dag_file()
+
+    def never():
+        raise AssertionError("must not run")
+
+    from airflow.providers.lamindb.utils import runtime
+    from airflow.providers.lamindb.utils.dag_run import dag_source
+
+    runs_before = ln.Run.filter().count()
+    with pytest.raises(LookupError, match="No LaminDB flow run found"):
+        runtime.run_step(never, (), {}, f"{dag.dag_id}/{run_id}/enrich", dag_source(dag), fileloc=dag.fileloc)
+    assert ln.Run.filter().count() == runs_before
