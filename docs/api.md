@@ -15,6 +15,11 @@
       members: [lamindb_k8s_task]
       toc_label: decorators.kubernetes
 
+::: airflow.providers.lamindb.utils.remote
+    options:
+      members: [LaminDBSetup]
+      toc_label: utils.remote
+
 ::: airflow.providers.lamindb.triggers.records
     options:
       members: [LaminDBRecordEventTrigger, LaminDBArtifactEventTrigger]

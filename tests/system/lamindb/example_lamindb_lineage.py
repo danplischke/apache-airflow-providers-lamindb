@@ -127,3 +127,17 @@ with DAG("lamindb_example_mapped", params={"samples": ["S1", "S2"], "fail_on": "
 
     measure.partial(fail_on="{{ params.fail_on }}").expand(sample=list_samples())
     # --8<-- [end:howto_lamindb_mapped_steps]
+
+
+# With the [lamindb] setup_class option set to system.lamindb.site_setup.SiteSetup, every LaminDB task
+# of the installation runs that setup, auto-wired flow tasks included; the DAG doesn't mention it.
+with DAG("lamindb_example_setup") as dag_setup:
+
+    @task.lamindb_venv(system_site_packages=True, auto_flow=True)
+    def use_site_setup() -> None:
+        import os
+
+        assert os.environ["SITE_LAMINDB_PRELOADED"] == "False"
+        assert os.environ["SITE_TOKEN"]
+
+    use_site_setup()

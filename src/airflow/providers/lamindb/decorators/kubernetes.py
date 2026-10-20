@@ -10,8 +10,10 @@ from airflow.providers.lamindb.hooks.lamindb import LaminDBHook
 from airflow.providers.lamindb.operators.flow import wire_flow_tasks
 from airflow.providers.lamindb.utils.remote import (
     ExcludeTemplated,
+    LaminDBSetup,
     RemoteLaminDBStepMixin,
     flow_lamindb_kwargs,
+    resolve_setup,
 )
 
 
@@ -39,6 +41,7 @@ def _lamindb_k8s_decorated_operator_class() -> type:
             lamindb_instance: str | None = None,
             lamindb_space: str | None = None,
             lamindb_branch: str | None = None,
+            lamindb_setup: LaminDBSetup | None = None,
             lamindb_exclude_params: Sequence[str] = (),
             lamindb_exclude_templated: ExcludeTemplated = "secrets",
             **kwargs: Any,
@@ -48,6 +51,7 @@ def _lamindb_k8s_decorated_operator_class() -> type:
                 lamindb_instance=lamindb_instance,
                 lamindb_space=lamindb_space,
                 lamindb_branch=lamindb_branch,
+                lamindb_setup=lamindb_setup,
                 lamindb_exclude_params=lamindb_exclude_params,
                 lamindb_exclude_templated=lamindb_exclude_templated,
                 **kwargs,
@@ -78,7 +82,8 @@ def lamindb_k8s_task(
     ``auto_flow`` (wire flow operators, which run in a virtualenv on the worker, if the
     DAG has none yet; default ``False``), ``track`` (record the call in LaminDB; with
     ``False`` it runs exactly as under ``@task.kubernetes``), ``connect`` (with ``track=False``,
-    still connect the pod to the instance, without recording anything), and ``lamindb_exclude_params``
+    still connect the pod to the instance, without recording anything), ``lamindb_setup`` (a
+    ``LaminDBSetup`` whose bootstrap code runs in the pod), and ``lamindb_exclude_params``
     and ``lamindb_exclude_templated`` (arguments not to record, as for ``@task.lamindb_venv``).
     The image must have lamindb 2.8.1 or newer installed (the step fails on older versions)
     and credentials for the instance, e.g. ``LAMIN_API_KEY`` from a Kubernetes secret. The
@@ -100,6 +105,9 @@ def lamindb_k8s_task(
             'Install with: pip install "apache-airflow-providers-lamindb[cncf.kubernetes]"'
         ) from e
 
+    # mapped steps aren't initialised when the DAG is parsed; check the [lamindb] setup_class here
+    if kwargs.get("track", True) or kwargs.get("connect", False):
+        resolve_setup(kwargs.get("lamindb_setup"))
     return lamindb_task_decorator_factory(
         python_callable=python_callable,
         multiple_outputs=multiple_outputs,

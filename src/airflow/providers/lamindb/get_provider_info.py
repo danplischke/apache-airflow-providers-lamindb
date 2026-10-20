@@ -89,4 +89,24 @@ def get_provider_info() -> dict[str, object]:
                 "class-name": "airflow.providers.lamindb.decorators.kubernetes.lamindb_k8s_task",
             },
         ],
+        "config": {
+            "lamindb": {
+                "description": "Settings of the LaminDB provider.",
+                "options": {
+                    "setup_class": {
+                        "description": (
+                            "Import path of a ``LaminDBSetup`` subclass that prepares the\n"
+                            "virtualenvs and pods of all LaminDB tasks: bootstrap code before\n"
+                            "lamindb is imported, and environment variables resolved when a task\n"
+                            "runs. A ``lamindb_setup`` argument, also in a DAG's ``default_args``,\n"
+                            "overrides it. Empty for none.\n"
+                        ),
+                        "version_added": None,
+                        "type": "string",
+                        "example": "mycompany.airflow.SiteSetup",
+                        "default": "",
+                    }
+                },
+            }
+        },
     }

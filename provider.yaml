@@ -80,3 +80,19 @@ task-decorators:
     class-name: airflow.providers.lamindb.decorators.python_virtualenv.lamindb_venv_task
   - name: lamindb_k8s
     class-name: airflow.providers.lamindb.decorators.kubernetes.lamindb_k8s_task
+
+config:
+  lamindb:
+    description: Settings of the LaminDB provider.
+    options:
+      setup_class:
+        description: |
+          Import path of a ``LaminDBSetup`` subclass that prepares the
+          virtualenvs and pods of all LaminDB tasks: bootstrap code before
+          lamindb is imported, and environment variables resolved when a task
+          runs. A ``lamindb_setup`` argument, also in a DAG's ``default_args``,
+          overrides it. Empty for none.
+        version_added: ~
+        type: string
+        example: mycompany.airflow.SiteSetup
+        default: ""

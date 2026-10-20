@@ -102,13 +102,22 @@ def start_flow_run_kwargs(dag_module, run_id: str) -> dict:
 
 
 def step_script(
-    user_source: str, callable_name: str, call: str, config: dict, runtime_function: str = "run_step"
+    user_source: str,
+    callable_name: str,
+    call: str,
+    config: dict,
+    runtime_function: str = "run_step",
+    bootstrap: str = "",
 ) -> str:
     """The step source a virtualenv/pod receives, then called by name like Airflow's template."""
     from airflow.providers.lamindb.utils.remote import build_remote_step_source
 
     script = build_remote_step_source(
-        user_source=user_source, callable_name=callable_name, config=config, runtime_function=runtime_function
+        user_source=user_source,
+        callable_name=callable_name,
+        config=config,
+        runtime_function=runtime_function,
+        bootstrap=bootstrap,
     )
     return script + f'\nimport json\nprint("RESULT=" + json.dumps({call}))\n'
 
@@ -325,6 +334,39 @@ def test_flow_steps_and_their_records_are_created_in_the_space(dag_module, run_i
         runtime.run_step(
             save_record, ("x",), {}, kwargs["reference"], dag_source(dag_module.dag), space="missing"
         )
+    runtime.finish_flow_run(kwargs["reference"], True)
+
+
+def test_bootstrap_runs_before_lamindb_is_imported(dag_module, run_id, instance, tmp_path):
+    import lamindb as ln
+
+    from airflow.providers.lamindb.utils import runtime
+    from airflow.providers.lamindb.utils.dag_run import dag_source
+
+    kwargs = start_flow_run_kwargs(dag_module, run_id)
+    flow_run = runtime.start_flow_run(**kwargs)
+    bootstrap = "import os, sys\nos.environ['LAMINDB_IMPORTED_AT_BOOTSTRAP'] = str('lamindb' in sys.modules)"
+    user_source = textwrap.dedent(
+        """
+        def probe() -> list:
+            import sys
+
+            import os
+
+            return [os.environ["LAMINDB_IMPORTED_AT_BOOTSTRAP"] == "True", "lamindb" in sys.modules]
+        """
+    )
+    config = {
+        "flow_run_reference": kwargs["reference"],
+        "source_code": dag_source(dag_module.dag),
+        "instance": instance,
+    }
+    script = step_script(user_source, "probe", "probe()", config, bootstrap=bootstrap)
+
+    result = json.loads(run_script(script, tmp_path).stdout.split("RESULT=")[1])
+
+    assert result == [False, True]  # not imported at bootstrap; imported by the time the step ran
+    assert ln.Run.filter(initiated_by_run=flow_run, entrypoint="probe").one().status == "completed"
     runtime.finish_flow_run(kwargs["reference"], True)
 
 
