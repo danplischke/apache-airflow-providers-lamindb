@@ -117,6 +117,35 @@ The lineage operators and decorators accept these arguments, also through a DAG'
 `lamindb_instance`
 :   The instance slug `owner/name`; overrides the connection's.
 
+`lamindb_space`
+:   The name or uid of a [space](https://docs.lamin.ai/permissions) to record in, instead of
+    lamindb's default. Templated; an empty rendered value means the default. On the flow init
+    operator, it's the space of the flow run, and of the DAG file's transform when that is first
+    recorded; a transform keeps its space when later flow runs are in another one. Steps record in the
+    flow run's space and so do the records their function saves, unless the step sets its own
+    `lamindb_space`. With `connect=True`, it's the space of the records the function saves. An unknown
+    space, or one you have no access to, fails the task before anything is recorded; there is no
+    fallback to the default space. A retried flow init keeps its run's space and fails if it's given
+    another one. Auto-wired flow tasks copy a step's literal space, not a templated one.
+
+    LaminHub enforces access to spaces; the provider has no permission checks of its own. A step in
+    another space than its flow run needs access to both, and artifacts saved in a space need a
+    storage location in it (see lamindb's `NoStorageLocationForSpace`).
+
+`lamindb_branch`
+:   The name or uid of a [branch](https://docs.lamin.ai/lamindb.branch) to record on, instead of the
+    instance's current one, for example a draft branch that is reviewed and merged later. Templated; an
+    empty rendered value means the default. On the flow init operator, it's the branch of the flow run.
+    Steps record their runs on the flow run's branch, and so do the records their function saves, unless
+    the step sets its own `lamindb_branch`. With `connect=True`, it's the branch of the records the
+    function saves.
+
+    The DAG file's transform stays on the branch lamindb finds it on (by default `main`), so steps and
+    later flow runs on other branches still find it by its source. Steps find their flow run on any
+    branch. An unknown branch fails the task before anything is recorded, and so do `archive` and
+    `trash`. A retried flow init keeps its run's branch and fails if it's given another one.
+    Auto-wired flow tasks copy a step's literal branch, not a templated one.
+
 `lamindb_version` (virtualenvs only)
 :   The lamindb version to install, 2.8.1 or newer. Defaults to the instance's version on LaminHub,
     so that the virtualenv speaks the instance's schema, else the latest. The virtualenvs install

@@ -110,6 +110,11 @@ def lamindb_requirement_lines(requirements: Iterable[Any]) -> list[str]:
     return [line for line in _requirement_lines(requirements) if _LAMINDB_REQUIREMENT.match(line)]
 
 
+def space_name(space: Any) -> str | None:
+    """A rendered ``lamindb_space`` or ``lamindb_branch`` as a string; empty means lamindb's default."""
+    return str(space).strip() or None if space is not None else None
+
+
 def is_template(value: Any) -> bool:
     """Whether ``value`` is a string with Jinja markup, known only once Airflow renders it."""
     return isinstance(value, str) and ("{{" in value or "{%" in value)
@@ -450,6 +455,12 @@ class RemoteLaminDBStepMixin:
         the virtualenv or pod instead.
     :param lamindb_instance: instance slug (``owner/name``) to connect to remotely; overrides the
         connection's instance.
+    :param lamindb_branch: name or uid of the branch the step run, and records the function saves,
+        are on; defaults to the flow run's branch. The DAG file's transform stays on the branch
+        lamindb finds it on. With ``connect=True``, the branch records the function saves are on.
+    :param lamindb_space: name or uid of the space the step run, and records the function saves,
+        are created in; defaults to the flow run's space. With ``connect=True``, the space records
+        the function saves are created in.
     :param auto_flow: wire ``init >> step >> finish`` with the DAG's flow operators,
         adding virtualenv ones if the DAG has none yet. Default ``False``. The concrete
         operator does the wiring once fully initialised. Ignored when ``track`` is ``False``.
@@ -477,6 +488,8 @@ class RemoteLaminDBStepMixin:
         *,
         lamindb_conn_id: str | None = LaminDBHook.default_conn_name,
         lamindb_instance: str | None = None,
+        lamindb_space: str | None = None,
+        lamindb_branch: str | None = None,
         auto_flow: bool = False,
         track: bool = True,
         connect: bool = False,
@@ -487,6 +500,8 @@ class RemoteLaminDBStepMixin:
         super().__init__(**kwargs)
         self.lamindb_conn_id = lamindb_conn_id
         self.lamindb_instance = lamindb_instance
+        self.lamindb_space = lamindb_space
+        self.lamindb_branch = lamindb_branch
         self.track = track
         self.connect = connect
         self.auto_flow = auto_flow and track
@@ -523,6 +538,9 @@ class RemoteLaminDBStepMixin:
         )
         return sorted({*self.lamindb_exclude_params, *self._lamindb_templated_params, *masked})
 
+    def _lamindb_space(self) -> str | None:
+        return space_name(self.lamindb_space)
+
     @contextmanager
     def _lamindb_environment(self, remote: RemoteLaminDB) -> Iterator[None]:
         """Prepare the remote environment; pods bring lamindb and credentials in their image."""
@@ -541,11 +559,17 @@ class RemoteLaminDBStepMixin:
                 "step_reference": task_instance_url(context),
                 "instance": remote.instance,
                 "exclude_params": self._lamindb_exclude_params(),
+                "space": self._lamindb_space(),
+                "branch": space_name(self.lamindb_branch),
             }
         else:
             # not part of the flow run, so it may connect to any instance
             self._lamindb_runtime_function = "run_connected"
-            self._lamindb_remote = {"instance": remote.instance}
+            self._lamindb_remote = {
+                "instance": remote.instance,
+                "space": self._lamindb_space(),
+                "branch": space_name(self.lamindb_branch),
+            }
         try:
             with self._lamindb_environment(remote):
                 return super().execute(context)  # type: ignore[misc]

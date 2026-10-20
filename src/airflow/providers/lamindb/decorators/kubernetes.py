@@ -7,7 +7,7 @@ from typing import Any
 
 from airflow.providers.lamindb.hooks.lamindb import LaminDBHook
 from airflow.providers.lamindb.operators.flow import wire_flow_tasks
-from airflow.providers.lamindb.utils.remote import ExcludeTemplated, RemoteLaminDBStepMixin
+from airflow.providers.lamindb.utils.remote import ExcludeTemplated, RemoteLaminDBStepMixin, is_template
 from airflow.sdk.bases.decorator import task_decorator_factory
 
 
@@ -22,6 +22,8 @@ def _lamindb_k8s_decorated_operator_class() -> type:
             *_KubernetesDecoratedOperator.template_fields,
             "lamindb_conn_id",
             "lamindb_instance",
+            "lamindb_space",
+            "lamindb_branch",
         )
 
         # BaseOperatorMeta expects the most-derived class to define __init__; the lamindb
@@ -31,6 +33,8 @@ def _lamindb_k8s_decorated_operator_class() -> type:
             *,
             lamindb_conn_id: str | None = LaminDBHook.default_conn_name,
             lamindb_instance: str | None = None,
+            lamindb_space: str | None = None,
+            lamindb_branch: str | None = None,
             lamindb_exclude_params: Sequence[str] = (),
             lamindb_exclude_templated: ExcludeTemplated = "secrets",
             **kwargs: Any,
@@ -38,13 +42,19 @@ def _lamindb_k8s_decorated_operator_class() -> type:
             super().__init__(
                 lamindb_conn_id=lamindb_conn_id,
                 lamindb_instance=lamindb_instance,
+                lamindb_space=lamindb_space,
+                lamindb_branch=lamindb_branch,
                 lamindb_exclude_params=lamindb_exclude_params,
                 lamindb_exclude_templated=lamindb_exclude_templated,
                 **kwargs,
             )
             if self.auto_flow:
                 wire_flow_tasks(
-                    self, lamindb_conn_id=self.lamindb_conn_id, lamindb_instance=self.lamindb_instance
+                    self,
+                    lamindb_conn_id=self.lamindb_conn_id,
+                    lamindb_instance=self.lamindb_instance,
+                    lamindb_space=None if is_template(self.lamindb_space) else self.lamindb_space,
+                    lamindb_branch=None if is_template(self.lamindb_branch) else self.lamindb_branch,
                 )
 
     return LaminDBK8sDecoratedOperator
@@ -59,7 +69,9 @@ def lamindb_k8s_task(
 
     Accepts every ``@task.kubernetes`` argument, plus ``lamindb_conn_id`` (Airflow
     connection of type ``lamindb``; the pod only gets its instance, not its API key),
-    ``lamindb_instance`` (instance slug; overrides the connection's; both templated),
+    ``lamindb_instance`` (instance slug; overrides the connection's), ``lamindb_space``
+    and ``lamindb_branch`` (space and branch of the step run and the records it saves; default to
+    the flow run's; all four templated),
     ``auto_flow`` (wire flow operators, which run in a virtualenv on the worker, if the
     DAG has none yet; default ``False``), ``track`` (record the call in LaminDB; with
     ``False`` it runs exactly as under ``@task.kubernetes``), ``connect`` (with ``track=False``,
