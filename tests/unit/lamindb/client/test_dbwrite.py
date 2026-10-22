@@ -7,7 +7,6 @@ from airflow.providers.lamindb.client.dbwrite import (
     changed_fields,
     classify_record_write,
     dbwrite_summary,
-    is_branch_move,
     is_upload_completion,
     parse_json_value,
     previous_values,
@@ -74,8 +73,6 @@ def test_write_helpers():
         "space_id": 1,
         "run_id": None,
     }
-    assert is_branch_move(dbwrite(1, "UPDATE", "t", 1, data={"branch_id": 5}, branch_id=1))
-    assert not is_branch_move(dbwrite(1, "UPDATE", "t", 1, data={"key": 5}, branch_id=1))
 
 
 @pytest.mark.parametrize(

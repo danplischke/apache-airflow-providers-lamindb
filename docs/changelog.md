@@ -65,6 +65,8 @@ longer completed with these packages. `execution.requirements.lamindb_requiremen
   `DbWriteResponse` fields except `data`, as before.
 - `triggers.branches.BRANCH_TABLE` and `BRANCH_BLOCK_TABLE` are removed: the branch triggers take
   the table names from the instance schema, like the record triggers.
+- `client.dbwrite.is_branch_move` is removed; it was unused. `classify_record_write` reports branch
+  moves as `created` or `deleted` events.
 - Requirements are recognised as lamindb with `packaging`, so pip's name normalisation applies, for
   example to `lamindb.core`.
 - Tests check the branch status codes and field enums that the worker keeps without lamindb against

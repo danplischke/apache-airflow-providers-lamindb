@@ -75,13 +75,6 @@ def classify_record_write(
     return None
 
 
-def is_branch_move(write: DbWriteResponse | Mapping[str, Any]) -> bool:
-    """Whether an ``UPDATE`` moved a record to another branch."""
-    parsed = DbWriteResponse.model_validate(write)
-    data = previous_values(parsed)
-    return parsed.event_type == "UPDATE" and "branch_id" in data and data["branch_id"] != parsed.branch_id
-
-
 def is_upload_completion(write: DbWriteResponse | Mapping[str, Any]) -> bool:
     """
     Whether an artifact ``UPDATE`` marks the completion of an upload to storage.
