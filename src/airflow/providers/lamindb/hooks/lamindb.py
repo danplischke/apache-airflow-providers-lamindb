@@ -188,8 +188,9 @@ class LaminDBHook(BaseHook):
         :param registry: Registry name such as ``core.artifact``, ``core.run`` or ``bionty.gene``,
             or a [`LaminDBRegistry`][airflow.providers.lamindb.client.enums.LaminDBRegistry] member.
         :param filter: Filter built with [`F`][airflow.providers.lamindb.client.filters.F], e.g.
-            ``F(ArtifactField.SUFFIX) == ".csv"``, or a LaminHub REST filter such as
-            ``{"suffix": {"eq": ".csv"}}``, see https://docs.lamin.ai/rest
+            ``F(ArtifactField.SUFFIX) == ".csv"``. Convert a LaminHub REST filter dict
+            (https://docs.lamin.ai/rest) with
+            [`FilterExpression.from_dict`][airflow.providers.lamindb.client.filters.FilterExpression.from_dict].
         :param select: Fields (and relations such as ``created_by(handle)``) to return.
         :param order_by: Sort order, for example ``["-created_at"]`` or
             ``[RecordOrder(field="created_at", descending=True)]``. Defaults to ascending ``id``.

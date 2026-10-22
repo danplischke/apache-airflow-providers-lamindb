@@ -34,9 +34,14 @@ def storage_ongoing(aux: ArtifactAux | JsonValue) -> bool:
 
 
 def is_internal_artifact(record: ArtifactRecordResponse | Mapping[str, Any]) -> bool:
-    """Whether an artifact is one LaminDB creates internally (run logs, environments, configs)."""
+    """Whether an artifact is one LaminDB creates internally (run logs, environments, configs).
+
+    Only ``kind`` is read, so an odd value in another field, such as ``_aux``, doesn't change the answer.
+    """
+    if isinstance(record, ArtifactRecordResponse):
+        return record.is_internal
     try:
-        return ArtifactRecordResponse.model_validate(record).is_internal
+        return ArtifactRecordResponse.model_validate({"kind": record.get("kind")}).is_internal
     except ValidationError:
         return False
 

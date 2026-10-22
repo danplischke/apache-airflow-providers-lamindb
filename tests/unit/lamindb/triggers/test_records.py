@@ -527,3 +527,9 @@ def test_ready_records():
     records = [artifact(1), artifact(2, aux={"so": 1})]
     assert ready_records(records, wait_for_upload=False) == records
     assert ready_records(records, wait_for_upload=True) == [artifact(1)]
+
+
+def test_ready_records_keeps_artifacts_with_an_odd_aux():
+    """An unreadable _aux is no upload in progress, as for the write log; it must not fail the sensor."""
+    records = [artifact(1, aux='{"so": "pending"}'), artifact(2, aux="[1]"), artifact(3, aux={"so": 1})]
+    assert ready_records(records, wait_for_upload=True) == records[:2]
