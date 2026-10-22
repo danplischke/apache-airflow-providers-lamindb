@@ -12,7 +12,12 @@ from airflow.providers.lamindb.execution.environment import (
     lamindb_virtualenv_env,
 )
 from airflow.providers.lamindb.execution.requirements import check_lamindb_version
-from airflow.providers.lamindb.execution.setup import LaminDBSetup, resolve_setup, setup_execution_env
+from airflow.providers.lamindb.execution.setup import (
+    LaminDBSetup,
+    resolve_setup,
+    setup_execution_env,
+    setup_requirements,
+)
 from airflow.providers.lamindb.hooks.lamindb import LaminDBHook
 from airflow.providers.lamindb.operators.step import RemoteLaminDBStepMixin, reject_auto_flow
 from airflow.providers.standard.decorators.python_virtualenv import _PythonVirtualenvDecoratedOperator
@@ -68,7 +73,7 @@ class LaminDBVirtualenvDecoratedOperator(RemoteLaminDBStepMixin, _PythonVirtuale
 
     @contextmanager
     def _lamindb_environment(self, remote: RemoteLaminDB, context: Any) -> Iterator[None]:
-        ensure_lamindb_requirement(self, remote, self.lamindb_version)
+        ensure_lamindb_requirement(self, remote, self.lamindb_version, setup_requirements(self.lamindb_setup))
         with lamindb_virtualenv_env(self, remote, setup_execution_env(self.lamindb_setup, context)):
             yield
 
@@ -99,8 +104,8 @@ def lamindb_virtualenv_task(
     - ``track``: record the call in LaminDB. Default ``True``; with ``False`` the
       function runs exactly as under ``@task.virtualenv``, and lamindb is not added
       to ``requirements``.
-    - ``lamindb_setup``: a ``LaminDBSetup`` that prepares the virtualenv: bootstrap code and
-      environment variables resolved when the task runs. Give all LaminDB tasks of a DAG
+    - ``lamindb_setup``: a ``LaminDBSetup`` that prepares the virtualenv: default requirements,
+      bootstrap code and environment variables resolved when the task runs. Give all LaminDB tasks of a DAG
       the same one, e.g. through ``default_args``.
     - ``connect``: with ``track=False``, still install lamindb and connect to the
       instance with the connection's credentials before the function runs, without

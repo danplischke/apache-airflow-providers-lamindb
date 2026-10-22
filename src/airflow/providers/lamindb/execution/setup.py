@@ -22,7 +22,7 @@ class LaminDBSetup:
 
     1. Airflow renders the templates.
     2. The worker resolves the lamindb connection and calls [`execution_env`][].
-    3. The virtualenv is built and lamindb installed, or the pod started.
+    3. The virtualenv is built with lamindb and the setup's [`requirements`][], or the pod started.
     4. In the virtualenv or pod, the [`bootstrap_source`][] runs, then lamindb connects, then the
        task's function runs.
 
@@ -68,6 +68,17 @@ class LaminDBSetup:
         """
         return {}
 
+    def requirements(self) -> list[str]:
+        """Default requirements installed in every LaminDB virtualenv, in addition to lamindb.
+
+        For example ``["bionty", "pandas>=2"]``, packages all of a site's tasks need. They are
+        added to a task's ``requirements`` when it runs, after the task's own; a package the task lists
+        itself is not added again, so tasks pin their own versions. lamindb itself is not allowed here:
+        pass ``lamindb_version`` instead, or list it in the task's ``requirements``. Pods don't use
+        them: the image brings its packages. Each element must be a string.
+        """
+        return []
+
 
 @functools.cache
 def configured_setup() -> LaminDBSetup | None:
@@ -108,6 +119,17 @@ def setup_execution_env(setup: LaminDBSetup | None, context: Any) -> dict[str, s
             f"{setup!r}.execution_env() must return strings; the values of {', '.join(invalid)} are not"
         )
     return env
+
+
+def setup_requirements(setup: LaminDBSetup | None) -> list[str]:
+    setup = resolve_setup(setup)
+    if setup is None:
+        return []
+    requirements = list(setup.requirements())
+    invalid = sorted(repr(r) for r in requirements if not isinstance(r, str))
+    if invalid:
+        raise TypeError(f"{setup!r}.requirements() must return strings; {', '.join(invalid)} are not")
+    return requirements
 
 
 def setup_bootstrap_source(setup: LaminDBSetup | None) -> str:

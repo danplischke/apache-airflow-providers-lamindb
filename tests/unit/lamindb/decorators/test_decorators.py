@@ -930,6 +930,56 @@ def test_lamindb_setup_prepares_the_flow_operators(make_context, lamindb_connect
     assert init.env_vars is None
 
 
+class PackagesSetup(execution_setup.LaminDBSetup):
+    def requirements(self) -> list[str]:
+        return ["bionty", "pandas>=2"]
+
+
+def test_lamindb_setup_requirements_are_installed_in_the_step_virtualenv(
+    fake_lamindb: MagicMock, make_context, lamindb_connection
+) -> None:
+    op = _single_task(
+        task.lamindb_virtualenv(lamindb_setup=PackagesSetup(), requirements=["pandas==1.5"]), step
+    )
+    assert op.requirements == ["pandas==1.5"]  # added when the task runs
+    with patch.object(lamindb_step, "dag_source", return_value="# dag source"):
+        _, seen = _execute_connected(op, make_context())
+    assert seen["requirements"] == ["pandas==1.5", "bionty", "lamindb==2.11.0"]
+
+
+def test_lamindb_setup_requirements_are_installed_for_the_flow_operators(
+    make_context, lamindb_connection
+) -> None:
+    from airflow.providers.lamindb.operators.flow import LaminDBFlowInitOperator
+
+    init = LaminDBFlowInitOperator(task_id="init", lamindb_setup=PackagesSetup(), lamindb_version="2.11.1")
+    seen = {}
+
+    def fake_venv_execute(self, context):
+        seen["requirements"] = list(self.requirements)
+        return "flowuid"
+
+    with patch.object(type(init).__mro__[2], "execute", fake_venv_execute):
+        init.execute(make_context())
+
+    assert seen["requirements"] == ["bionty", "pandas>=2", "lamindb==2.11.1"]
+
+
+def test_lamindb_setup_requirements_must_be_strings(
+    fake_lamindb: MagicMock, make_context, lamindb_connection
+) -> None:
+    class BrokenSetup(execution_setup.LaminDBSetup):
+        def requirements(self) -> list[str]:
+            return ["bionty", 2]  # type: ignore[list-item]
+
+    op = _single_task(task.lamindb_virtualenv(lamindb_setup=BrokenSetup()), step)
+    with (
+        patch.object(lamindb_step, "dag_source", return_value="# dag source"),
+        pytest.raises(TypeError, match=r"requirements\(\) must return strings; 2 are not"),
+    ):
+        _execute_connected(op, make_context())
+
+
 def test_lamindb_setup_reaches_the_flow_tasks_of_a_scope() -> None:
     setup = SiteSetup()
 

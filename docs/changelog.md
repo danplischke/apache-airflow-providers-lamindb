@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- `LaminDBSetup.requirements()` lists default requirements installed in the virtualenvs of LaminDB
+  steps and flow operators. A task's own `requirements` take precedence for the same package; pod
+  steps don't install them.
+
 ## 0.0.2
 
 **Breaking:** the modules are reorganised by layer. Old import paths are removed; update imports as

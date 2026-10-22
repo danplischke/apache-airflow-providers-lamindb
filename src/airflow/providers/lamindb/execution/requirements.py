@@ -85,3 +85,24 @@ def add_lamindb_requirement(requirements: list[str], lamindb_version: str | None
     """
     if not lamindb_requirement_lines(requirements):
         requirements.append(lamindb_requirement(lamindb_version))
+
+
+def add_default_requirements(requirements: list[str], defaults: Iterable[str]) -> None:
+    """Append each of ``defaults`` to ``requirements`` unless a requirement of the same project is listed.
+
+    Defaults that aren't requirements of a project, such as paths or URLs, are appended unless listed
+    verbatim. lamindb is not a default: it is pinned with ``lamindb_version``.
+    """
+    # projects by name, other lines such as paths verbatim
+    listed = {_requirement_name(line) or line for line in _requirement_lines(requirements)}
+    for default in _requirement_lines(defaults):
+        name = _requirement_name(default)
+        if name in _LAMINDB_NAMES:
+            raise ValueError(
+                f"LaminDBSetup.requirements() lists {default!r}; pin lamindb with lamindb_version, or "
+                "list it in the task's requirements"
+            )
+        key = name or default
+        if key not in listed:
+            requirements.append(default)
+            listed.add(key)

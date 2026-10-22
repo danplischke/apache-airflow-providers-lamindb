@@ -17,6 +17,7 @@ from airflow.providers.lamindb.exceptions import LaminDBVersionError
 from airflow.providers.lamindb.execution import runtime
 from airflow.providers.lamindb.execution.environment import RemoteLaminDB, lamindb_virtualenv_env
 from airflow.providers.lamindb.execution.requirements import (
+    add_default_requirements,
     add_lamindb_requirement,
     lamindb_requirement,
     lamindb_requirement_lines,
@@ -142,6 +143,27 @@ def test_remote_step_source_embeds_runtime_and_keeps_user_source() -> None:
 def test_add_lamindb_requirement(requirements: list[str], expected: list[str]) -> None:
     add_lamindb_requirement(requirements, "9.9")
     assert requirements == expected
+
+
+@pytest.mark.parametrize(
+    ("requirements", "defaults", "expected"),
+    [
+        ([], ["bionty", "pandas>=2"], ["bionty", "pandas>=2"]),
+        (["Pandas==1.5"], ["pandas>=2", "bionty"], ["Pandas==1.5", "bionty"]),  # the task's pin wins
+        (["numpy\npandas  # rendered file"], ["pandas>=2"], ["numpy\npandas  # rendered file"]),
+        (["./pkg"], ["./pkg", "./other", "bionty", "bionty>1"], ["./pkg", "./other", "bionty"]),
+        (["pandas"], [], ["pandas"]),
+    ],
+)
+def test_add_default_requirements(requirements: list[str], defaults: list[str], expected: list[str]) -> None:
+    add_default_requirements(requirements, defaults)
+    assert requirements == expected
+
+
+@pytest.mark.parametrize("default", ["lamindb", "lamindb[bionty]>=2.11", "lamindb-core"])
+def test_default_requirements_must_not_list_lamindb(default: str) -> None:
+    with pytest.raises(ValueError, match="pin lamindb with lamindb_version"):
+        add_default_requirements([], [default])
 
 
 def test_lamindb_requirement_lines() -> None:

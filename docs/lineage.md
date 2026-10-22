@@ -356,6 +356,11 @@ or `AIRFLOW__LAMINDB__SETUP_CLASS=mycompany.airflow.SiteSetup`. Every LaminDB ta
 DAGs don't mention it. The class is loaded once per process; an import path that doesn't work fails
 the DAGs when they are parsed.
 
+- `requirements()` returns default requirements installed in every LaminDB virtualenv, besides
+  lamindb, e.g. `["bionty", "pandas>=2"]`. They are added after the task's own `requirements` when it
+  runs; a package the task lists itself is not added again, so a task can pin another version. They
+  may not list lamindb: pin it with `lamindb_version`, or in the task's `requirements`. Pods don't
+  install them: their image brings its packages.
 - `bootstrap_source()` returns Python source that runs in the virtualenv or pod before lamindb is
   imported. It runs as its own module, so it may be indented or start with `from __future__`, and its
   names don't leak into the task's script. In a virtualenv it runs before Airflow unpickles the
