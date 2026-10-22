@@ -18,18 +18,18 @@ print("import and provider info OK")
 assert importlib.util.find_spec("lamindb") is None, "lamindb must not be a dependency of the worker"
 print("lamindb not installed")
 
-for name in ("lamindb_venv", "lamindb_k8s"):
+for name in ("lamindb_virtualenv", "lamindb_kubernetes"):
     assert hasattr(task, name), f"@task.{name} is not registered"
 print("task decorators registered")
 
 if importlib.util.find_spec("airflow.providers.cncf") is None:
     try:
-        task.lamindb_k8s(lambda: None)
+        task.lamindb_kubernetes(lambda: None)
     except ImportError as e:
         if "apache-airflow-providers-lamindb[k8s]" not in str(e):
-            raise SystemExit(f"@task.lamindb_k8s gives no install hint: {e}") from e
+            raise SystemExit(f"@task.lamindb_kubernetes gives no install hint: {e}") from e
     else:
-        raise SystemExit("@task.lamindb_k8s worked without apache-airflow-providers-cncf-kubernetes")
-    print("@task.lamindb_k8s gives the install hint")
+        raise SystemExit("@task.lamindb_kubernetes worked without apache-airflow-providers-cncf-kubernetes")
+    print("@task.lamindb_kubernetes gives the install hint")
 else:
     print("cncf.kubernetes is installed; install hint not checked")

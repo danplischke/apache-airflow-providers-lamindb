@@ -269,4 +269,4 @@ def test_removed_venv_names_do_not_import(module: str) -> None:
     import importlib
 
     with pytest.raises(AttributeError):
-        _ = importlib.import_module(module).LaminDBVenvFlowInitOperator
+        _ = importlib.import_module(module).LaminDBVirtualenvFlowInitOperator

@@ -33,23 +33,46 @@ LaminHub API URL (host, optional)
 
 Cache directory (`cache_dir` extra, optional)
 :   Absolute path of a lamindb cache that the virtualenvs of the lineage operators and
-    `@task.lamindb_venv` steps share, for example a directory on a volume mounted on every worker.
+    `@task.lamindb_virtualenv` steps share, for example a directory on a volume mounted on every worker.
     It's passed as `LAMIN_CACHE_DIR`, so artifacts that one task loaded or saved are not
     downloaded again by the next task. Without it, lamindb uses its default cache directory on each
     worker. Override it per task with `lamindb_cache_dir`.
 
-    The cache directory must be writable by every task that uses it. `@task.lamindb_k8s` pods
+    The cache directory must be writable by every task that uses it. `@task.lamindb_kubernetes` pods
     don't get it: mount a volume into the pod and set `LAMIN_CACHE_DIR` in its `env_vars`.
+
+## Hook request and response validation
+
+The synchronous and asynchronous hook methods use the same
+[Pydantic wire models](../api.md#airflow.providers.lamindb.hooks.models) for request parameters
+and bodies, authentication responses, and instance settings. Their method signatures are unchanged:
+pass normal Python arguments and record dictionaries; the hook validates and serializes them.
+
+Model validation failures raise `pydantic.ValidationError` before an HTTP request is made. Existing
+filter validation still raises `ValueError` or `TypeError` for invalid filter expressions. Pagination
+limits and offsets must be non-negative integers, and `include_foreign_keys` must be a boolean,
+not a string such as `"false"`. A limit of zero returns no records. The hook still splits larger
+limits into pages of at most 200 records.
+
+Record fields remain registry-specific JSON data, not a fixed provider schema. Explicit `None`
+values in inserts and updates are sent as JSON `null`, including inside nested fields.
+An explicitly empty `branch_ids=[]` scope is preserved; omitting the scope is different.
+
+Malformed authentication and settings responses raise `LaminDBApiError` without including raw
+response values in the error message. Unknown response fields are ignored; database credentials
+returned by the settings endpoint are not retained. Missing or empty owner/name and regional API
+URL fields still fall back to the requested instance slug and configured LaminHub API URL.
+Response validation checks field types, not whether a returned instance ID belongs to a slug.
 
 ## Lineage operators and decorators
 
-The flow operators and `@task.lamindb_venv` steps pass the connection to lamindb in their virtualenv:
+The flow operators and `@task.lamindb_virtualenv` steps pass the connection to lamindb in their virtualenv:
 the API key as `LAMIN_API_KEY` and a temporary, empty `LAMIN_SETTINGS_DIR`, so lamindb never reads
 the worker's `~/.lamin`. Both are set only while the task runs and are never rendered. With a
 connection, the virtualenv installs the instance's lamindb version unless `lamindb_version` is given;
 either must be 2.8.1 or newer.
 
-`@task.lamindb_k8s` pods only get the instance from the connection. Mount the API key from a
+`@task.lamindb_kubernetes` pods only get the instance from the connection. Mount the API key from a
 Kubernetes secret, because environment variables of a pod are readable in its spec.
 
 Pass `lamindb_conn_id` to use another connection for a task, or `lamindb_conn_id=None` to use
@@ -70,7 +93,7 @@ def pick_connection() -> str:
     return "lamindb_staging"
 
 
-@task.lamindb_venv(lamindb_conn_id=CONN_ID)
+@task.lamindb_virtualenv(lamindb_conn_id=CONN_ID)
 def process(): ...
 
 

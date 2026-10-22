@@ -95,10 +95,10 @@ link = "https://pypi.org/project/apache-airflow-providers-lamindb/"
 full_output = "llms-full.txt"
 markdown_description = """
 Apache Airflow 3 provider for [LaminDB](https://lamin.ai). It records tasks as LaminDB runs, optionally grouped
-under DAG-run flow runs with `LaminDBFlow`, with lamindb running in a virtualenv (`@task.lamindb_venv`) or a Kubernetes pod
-(`@task.lamindb_k8s`), never on the worker. Event triggers schedule DAGs on artifacts, records and branches
+under DAG-run flow runs with `LaminDBFlow`, with lamindb running in a virtualenv (`@task.lamindb_virtualenv`) or a Kubernetes pod
+(`@task.lamindb_kubernetes`), never on the worker. Event triggers schedule DAGs on artifacts, records and branches
 changing in a LaminHub-hosted instance, and deferrable sensors wait for them inside a DAG. Install with
-`pip install apache-airflow-providers-lamindb` (add the `[k8s]` extra for `@task.lamindb_k8s`); it needs
+`pip install apache-airflow-providers-lamindb` (add the `[k8s]` extra for `@task.lamindb_kubernetes`); it needs
 Apache Airflow 3.3.0 or newer and lamindb 2.8.1 or newer.
 """
 
@@ -109,7 +109,7 @@ Basics = [
 ]
 Guides = [
   { "connections/lamindb.md" = "The lamindb connection type: API key, instance, LaminHub API URL, cache directory, templated connection ids" },
-  { "lineage.md" = "Tracked tasks and optional flow scopes: @task.lamindb_venv, @task.lamindb_k8s, LaminDBFlow, the flow operators, migration from auto_flow, settings, limitations" },
+  { "lineage.md" = "Tracked tasks and optional flow scopes: @task.lamindb_virtualenv, @task.lamindb_kubernetes, LaminDBFlow, the flow operators, migration from auto_flow, settings, limitations" },
   { "triggers.md" = "Event-driven scheduling on artifacts, records and branches, delivery guarantees, cursor stores, event payloads" },
   { "sensors.md" = "Deferrable sensors for branches, records and artifacts, and LaminDBHook" },
   { "filters.md" = "Building LaminHub REST filters with F, the field enums and the operators" },

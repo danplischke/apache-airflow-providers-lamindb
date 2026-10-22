@@ -81,12 +81,14 @@ def get_provider_info() -> dict[str, object]:
         ],
         "task-decorators": [
             {
-                "name": "lamindb_venv",
-                "class-name": "airflow.providers.lamindb.decorators.python_virtualenv.lamindb_venv_task",
+                "name": "lamindb_virtualenv",
+                "class-name": (
+                    "airflow.providers.lamindb.decorators.python_virtualenv.lamindb_virtualenv_task"
+                ),
             },
             {
-                "name": "lamindb_k8s",
-                "class-name": "airflow.providers.lamindb.decorators.kubernetes.lamindb_k8s_task",
+                "name": "lamindb_kubernetes",
+                "class-name": "airflow.providers.lamindb.decorators.kubernetes.lamindb_kubernetes_task",
             },
         ],
         "config": {

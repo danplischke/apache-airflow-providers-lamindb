@@ -21,7 +21,7 @@ def pair(x=None, y=None):
 
 
 def venv(task_id: str, **kwargs):
-    return task.lamindb_venv(noop, task_id=task_id, **kwargs)
+    return task.lamindb_virtualenv(noop, task_id=task_id, **kwargs)
 
 
 def test_steps_are_standalone_by_default() -> None:
@@ -76,7 +76,7 @@ def test_only_tasks_created_in_the_block_are_members() -> None:
 
 
 def test_pre_decorated_callables_are_members_when_called_in_the_block() -> None:
-    decorated = task.lamindb_venv(noop)
+    decorated = task.lamindb_virtualenv(noop)
     with DAG("d", schedule=None) as dag:
         decorated.override(task_id="alone")()
         with LaminDBFlow():
@@ -129,7 +129,7 @@ def test_mapped_invocations_join_with_no_extra_lifecycle_tasks() -> None:
         venv("m").expand(x=produce)
         with TaskGroup("group"):
             venv("k").expand_kwargs([{"x": 1}, {"x": 2}])
-        task.lamindb_venv(pair, task_id="partial").partial(x=1).expand(y=[1])
+        task.lamindb_virtualenv(pair, task_id="partial").partial(x=1).expand(y=[1])
         venv("override").override(retries=2).expand(x=[1])
 
     steps = {"m", "group.k", "partial", "override"}
@@ -215,7 +215,7 @@ def test_lamindb_scope_from_default_args_fails() -> None:
 def test_mapped_steps_reject_auto_flow_from_default_args_when_unmapped() -> None:
     """Mapped steps are only created when they run, so the check happens then, with the same error."""
     with DAG("d", schedule=None, default_args={"auto_flow": True}) as dag:
-        task.lamindb_venv(noop, task_id="m").expand(x=[1])
+        task.lamindb_virtualenv(noop, task_id="m").expand(x=[1])
 
     with pytest.raises(TypeError, match="auto_flow was removed"):
         dag.get_task("m").unmap({"op_kwargs": {"x": 1}})
@@ -342,7 +342,7 @@ def test_scope_operators_get_the_scope_arguments_and_nothing_from_the_steps() ->
 def test_scope_operators_are_templated_for_the_scope_and_members() -> None:
     assert {"lamindb_scope"} <= set(LaminDBFlowInitOperator.template_fields)
     assert {"lamindb_scope", "lamindb_members"} <= set(LaminDBFlowFinishOperator.template_fields)
-    assert "lamindb_scope" in type(task.lamindb_venv(noop)(noop).operator).template_fields
+    assert "lamindb_scope" in type(task.lamindb_virtualenv(noop)(noop).operator).template_fields
 
 
 def test_scope_identity_survives_serialization_and_unmapping() -> None:
@@ -351,7 +351,7 @@ def test_scope_identity_survives_serialization_and_unmapping() -> None:
             venv("plain_step")()
             venv("m").expand(x=[1, 2])
         with LaminDBFlow("enrich"):
-            task.lamindb_venv(pair, task_id="n").partial(x=1).expand(y=[1])
+            task.lamindb_virtualenv(pair, task_id="n").partial(x=1).expand(y=[1])
         venv("alone")()
         venv("alone_mapped").expand(x=[1])
 
@@ -385,15 +385,15 @@ def test_flow_operators_without_a_scope_use_the_default_ids() -> None:
 
 def dag_task_operator():
     with DAG("tmp", schedule=None) as tmp:
-        task.lamindb_venv(noop, task_id="t")()
+        task.lamindb_virtualenv(noop, task_id="t")()
     return tmp.get_task("t")
 
 
 def test_auto_flow_is_rejected_with_a_migration_hint() -> None:
     with pytest.raises(TypeError, match=r"auto_flow was removed.*with LaminDBFlow\(\)"):
-        task.lamindb_venv(auto_flow=True)
+        task.lamindb_virtualenv(auto_flow=True)
     with pytest.raises(TypeError, match=r"auto_flow was removed"):
-        task.lamindb_venv(auto_flow=False)
+        task.lamindb_virtualenv(auto_flow=False)
     step = dag_task_operator()
     with pytest.raises(TypeError, match=r"auto_flow was removed"):
         type(step)(task_id="b", python_callable=noop, auto_flow=True)
@@ -402,13 +402,13 @@ def test_auto_flow_is_rejected_with_a_migration_hint() -> None:
 def test_auto_flow_is_rejected_for_pod_steps() -> None:
     pytest.importorskip("airflow.providers.cncf.kubernetes")
     with pytest.raises(TypeError, match=r"auto_flow was removed"):
-        task.lamindb_k8s(image="python:3.12", auto_flow=True)
+        task.lamindb_kubernetes(image="python:3.12", auto_flow=True)
 
 
 def test_partial_and_override_stay_standard_task_decorators() -> None:
     from airflow.sdk.bases.decorator import _TaskDecorator
 
-    decorated = task.lamindb_venv(noop)
+    decorated = task.lamindb_virtualenv(noop)
     assert type(decorated) is _TaskDecorator
     assert type(decorated.partial(x=1)) is _TaskDecorator
     assert type(decorated.override(task_id="other")) is _TaskDecorator

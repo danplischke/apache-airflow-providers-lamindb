@@ -8,6 +8,7 @@ import httpx
 import pytest
 import respx
 from airflow.sdk import Connection
+from pydantic import ValidationError
 
 from airflow.providers.lamindb.exceptions import LaminDBApiError, LaminDBVersionError
 from airflow.providers.lamindb.hooks.lamindb import (
@@ -173,6 +174,48 @@ class TestRegistry:
 
 
 class TestAuthentication:
+    @pytest.mark.parametrize("async_mode", [False, True])
+    async def test_settings_fall_back_to_requested_slug_and_hub(self, hook, mock_api, async_mode):
+        mock_api.get(f"{HUB}/instances/owner/name/settings").mock(
+            return_value=httpx.Response(200, json={"id": INSTANCE_ID})
+        )
+        try:
+            instance = await hook.aget_instance() if async_mode else hook.get_instance()
+            assert instance.slug == "owner/name"
+            assert instance.id == INSTANCE_ID
+            assert instance.api_url == HUB
+        finally:
+            await hook.aclose()
+
+    @pytest.mark.parametrize("async_mode", [False, True])
+    async def test_malformed_token_response_is_sanitized(self, hook, mock_api, async_mode):
+        mock_api.post(f"{HUB}/account/jwt").mock(
+            return_value=httpx.Response(200, json={"accessToken": {"private": "sensitive-value"}})
+        )
+        try:
+            with pytest.raises(LaminDBApiError, match="access token") as err:
+                await hook.aget_instance() if async_mode else hook.get_instance()
+            assert "sensitive-value" not in str(err.value)
+            assert hook._access_token is None
+        finally:
+            await hook.aclose()
+
+    @pytest.mark.parametrize("async_mode", [False, True])
+    @pytest.mark.parametrize(
+        "invalid", [{"id": ["sensitive-value"]}, {"owner": ["sensitive-value"]}, {"public": "false"}]
+    )
+    async def test_malformed_settings_response_is_sanitized(self, hook, mock_api, async_mode, invalid):
+        mock_api.get(f"{HUB}/instances/owner/name/settings").mock(
+            return_value=httpx.Response(200, json={**SETTINGS, **invalid})
+        )
+        try:
+            with pytest.raises(LaminDBApiError, match="Unexpected settings response") as err:
+                await hook.aget_instance() if async_mode else hook.get_instance()
+            assert "sensitive-value" not in str(err.value)
+            assert hook._instance is None
+        finally:
+            await hook.aclose()
+
     def test_token_exchange_and_bearer_header(self, hook, mock_api):
         instance = hook.get_instance()
         assert instance.id == INSTANCE_ID
@@ -269,14 +312,59 @@ class TestRetries:
 
 
 class TestQueries:
-    def test_query_records_paginates(self, hook, mock_api):
+    @pytest.mark.parametrize("async_mode", [False, True])
+    async def test_query_optional_fields_keep_their_wire_shape(self, hook, mock_api, async_mode):
+        route = mock_api.post(f"{RECORDS_URL}/core/artifact").mock(return_value=httpx.Response(200, json=[]))
+        kwargs = {
+            "filter": {"description": {"eq": None}},
+            "branch_ids": [],
+            "select": [],
+            "search": "",
+        }
+        try:
+            if async_mode:
+                await hook.aquery_records("core.artifact", **kwargs)
+            else:
+                hook.query_records("core.artifact", **kwargs)
+            assert request_body(route.calls.last) == {
+                "filter": {"description": {"eq": None}},
+                "order_by": [{"field": "id", "descending": False}],
+                "scope": {"branch_ids": []},
+            }
+        finally:
+            await hook.aclose()
+
+    @pytest.mark.parametrize("kwargs", [{"offset": -1}, {"limit": -1}, {"include_foreign_keys": "false"}])
+    async def test_query_params_are_validated_before_http(self, hook, mock_api, kwargs):
+        route = mock_api.post(f"{RECORDS_URL}/core/artifact").mock(return_value=httpx.Response(200, json=[]))
+        try:
+            with pytest.raises(ValidationError):
+                hook.query_records("core.artifact", **kwargs)
+            with pytest.raises(ValidationError):
+                await hook.aquery_records("core.artifact", **kwargs)
+            assert not mock_api.calls
+            assert not route.called
+        finally:
+            await hook.aclose()
+
+    @pytest.mark.parametrize("async_mode", [False, True])
+    async def test_query_records_paginates(self, hook, mock_api, async_mode):
         pages = [[{"id": i} for i in range(200)], [{"id": i} for i in range(200, 400)], [{"id": 400}]]
         route = mock_api.post(f"{RECORDS_URL}/core/artifact").mock(
             side_effect=[httpx.Response(200, json=page) for page in pages]
         )
-        records = hook.query_records(
-            "core.artifact", {"suffix": {"eq": ".csv"}}, order_by=["-created_at"], limit=450, branch_ids=[1]
-        )
+        method = hook.aquery_records if async_mode else hook.query_records
+        try:
+            result = method(
+                "core.artifact",
+                {"suffix": {"eq": ".csv"}},
+                order_by=["-created_at"],
+                limit=450,
+                branch_ids=[1],
+            )
+            records = await result if async_mode else result
+        finally:
+            await hook.aclose()
         assert len(records) == 401
         params = [dict(call.request.url.params) for call in route.calls]
         assert [(p["limit"], p["offset"]) for p in params] == [("200", "0"), ("200", "200"), ("50", "400")]
@@ -371,6 +459,44 @@ class TestQueries:
 
 
 class TestWrites:
+    @pytest.mark.parametrize("async_mode", [False, True])
+    async def test_write_bodies_preserve_dynamic_fields_and_nulls(self, hook, mock_api, async_mode):
+        record = {"description": None, "custom_field": {"values": [None, True, 1, 1.5, "value"]}}
+        insert = mock_api.put(f"{RECORDS_URL}/core/ulabel").mock(
+            return_value=httpx.Response(200, json=[record])
+        )
+        update = mock_api.patch(f"{RECORDS_URL}/core/ulabel/u1").mock(return_value=httpx.Response(204))
+        try:
+            if async_mode:
+                assert await hook.ainsert_records("core.ulabel", [record]) == [record]
+                assert await hook.aupdate_record("core.ulabel", "u1", record) is None
+            else:
+                assert hook.insert_records("core.ulabel", [record]) == [record]
+                assert hook.update_record("core.ulabel", "u1", record) is None
+            assert request_body(insert.calls.last) == [record]
+            assert request_body(update.calls.last) == record
+        finally:
+            await hook.aclose()
+
+    @pytest.mark.parametrize("async_mode", [False, True])
+    @pytest.mark.parametrize("operation", ["insert", "update"])
+    async def test_write_bodies_are_validated_before_http(self, hook, mock_api, async_mode, operation):
+        invalid = {"description": object()}
+        mock_api.put(f"{RECORDS_URL}/core/ulabel").mock(return_value=httpx.Response(200, json=[]))
+        mock_api.patch(f"{RECORDS_URL}/core/ulabel/u1").mock(return_value=httpx.Response(204))
+        if operation == "insert":
+            method = hook.ainsert_records if async_mode else hook.insert_records
+            args = ("core.ulabel", [invalid])
+        else:
+            method = hook.aupdate_record if async_mode else hook.update_record
+            args = ("core.ulabel", "u1", invalid)
+        try:
+            with pytest.raises(ValidationError):
+                await method(*args) if async_mode else method(*args)
+            assert not mock_api.calls
+        finally:
+            await hook.aclose()
+
     @pytest.mark.parametrize(
         "response", [[{"id": 1, "uid": "u1", "name": "treated"}], {"id": 1, "uid": "u1", "name": "treated"}]
     )

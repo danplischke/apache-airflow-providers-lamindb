@@ -1,4 +1,4 @@
-"""``@task.lamindb_k8s``: run the function as a LaminDB step in a Kubernetes pod."""
+"""``@task.lamindb_kubernetes``: run the function as a LaminDB step in a Kubernetes pod."""
 
 from __future__ import annotations
 
@@ -16,13 +16,13 @@ from airflow.providers.lamindb.utils.remote import (
 from airflow.sdk.bases.decorator import task_decorator_factory
 
 
-def _lamindb_k8s_decorated_operator_class() -> type:
+def _lamindb_kubernetes_decorated_operator_class() -> type:
     from airflow.providers.cncf.kubernetes.decorators.kubernetes import _KubernetesDecoratedOperator
 
-    class LaminDBK8sDecoratedOperator(RemoteLaminDBStepMixin, _KubernetesDecoratedOperator):
-        """``@task.lamindb_k8s``: LaminDB step in a Kubernetes pod."""
+    class LaminDBKubernetesDecoratedOperator(RemoteLaminDBStepMixin, _KubernetesDecoratedOperator):
+        """``@task.lamindb_kubernetes``: LaminDB step in a Kubernetes pod."""
 
-        custom_operator_name = "@task.lamindb_k8s"
+        custom_operator_name = "@task.lamindb_kubernetes"
         template_fields: Sequence[str] = (
             *_KubernetesDecoratedOperator.template_fields,
             "lamindb_scope",
@@ -57,15 +57,15 @@ def _lamindb_k8s_decorated_operator_class() -> type:
                 **kwargs,
             )
 
-    return LaminDBK8sDecoratedOperator
+    return LaminDBKubernetesDecoratedOperator
 
 
-def lamindb_k8s_task(
+def lamindb_kubernetes_task(
     python_callable: Callable[..., Any] | None = None,
     multiple_outputs: bool | None = None,
     **kwargs: Any,
 ):
-    """``@task.lamindb_k8s``: run the function as a LaminDB step in a Kubernetes pod.
+    """``@task.lamindb_kubernetes``: run the function as a LaminDB step in a Kubernetes pod.
 
     Accepts every ``@task.kubernetes`` argument, plus ``lamindb_conn_id`` (Airflow
     connection of type ``lamindb``; the pod only gets its instance, not its API key),
@@ -76,7 +76,7 @@ def lamindb_k8s_task(
     ``False`` it runs exactly as under ``@task.kubernetes``), ``connect`` (with ``track=False``,
     still connect the pod to the instance, without recording anything), ``lamindb_setup`` (a
     ``LaminDBSetup`` whose bootstrap code runs in the pod), and ``lamindb_exclude_params``
-    and ``lamindb_exclude_templated`` (arguments not to record, as for ``@task.lamindb_venv``).
+    and ``lamindb_exclude_templated`` (arguments not to record, as for ``@task.lamindb_virtualenv``).
     The image must have lamindb 2.8.1 or newer installed (the step fails on older versions)
     and credentials for the instance, e.g. ``LAMIN_API_KEY`` from a Kubernetes secret. The
     worker needs no lamindb. Requires
@@ -90,10 +90,10 @@ def lamindb_k8s_task(
     """
     reject_auto_flow(kwargs)
     try:
-        operator_class = _lamindb_k8s_decorated_operator_class()
+        operator_class = _lamindb_kubernetes_decorated_operator_class()
     except ImportError as e:
         raise ImportError(
-            "@task.lamindb_k8s requires apache-airflow-providers-cncf-kubernetes. "
+            "@task.lamindb_kubernetes requires apache-airflow-providers-cncf-kubernetes. "
             'Install with: pip install "apache-airflow-providers-lamindb[k8s]"'
         ) from e
 

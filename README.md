@@ -3,7 +3,7 @@
 An [Apache Airflow](https://airflow.apache.org) 3 provider for [LaminDB](https://lamin.ai) with two parts:
 
 - **[Lineage](#lineage-tracked-tasks-and-optional-flows)**: records tasks as LaminDB runs, and
-  optionally DAG runs as flow runs around them, with `@task.lamindb_venv` / `@task.lamindb_k8s`
+  optionally DAG runs as flow runs around them, with `@task.lamindb_virtualenv` / `@task.lamindb_kubernetes`
   decorators that run lamindb in a virtualenv or a Kubernetes pod.
 - **[Event-driven scheduling](#event-driven-scheduling)**: triggers DAGs on changes in LaminDB instances
   hosted on LaminHub, with triggers, sensors, filters and a hook for the
@@ -15,7 +15,7 @@ Both parts use the same Airflow connection, and the worker never needs the `lami
 
 ```bash
 pip install apache-airflow-providers-lamindb
-pip install "apache-airflow-providers-lamindb[k8s]"  # adds @task.lamindb_k8s
+pip install "apache-airflow-providers-lamindb[k8s]"  # adds @task.lamindb_kubernetes
 ```
 
 Requires `apache-airflow>=3.3.0` and `apache-airflow-providers-standard`. Airflow 3.3.0 added the asset
@@ -61,7 +61,7 @@ from airflow.sdk import DAG, task
 
 with DAG("my_pipeline") as dag:
 
-    @task.lamindb_venv
+    @task.lamindb_virtualenv
     def extract(count: int = 10) -> dict:
         return {"count": count}
 
@@ -70,7 +70,7 @@ with DAG("my_pipeline") as dag:
         # a plain Airflow task: not recorded in LaminDB
         return {"count": data["count"] * 2}
 
-    @task.lamindb_venv(requirements=["pandas"])
+    @task.lamindb_virtualenv(requirements=["pandas"])
     def report(data: dict) -> None:
         import pandas as pd
 
@@ -89,9 +89,9 @@ with DAG("my_pipeline_with_flow") as dag:
         report(double(extract(count=3)))
 ```
 
-- `@task.lamindb_venv(...)` works like `@task.virtualenv`; the function runs as a tracked task in a
+- `@task.lamindb_virtualenv(...)` works like `@task.virtualenv`; the function runs as a tracked task in a
   virtualenv that installs `lamindb-core` in the instance's version.
-- `@task.lamindb_k8s(image=..., ...)` works like `@task.kubernetes`; the image needs
+- `@task.lamindb_kubernetes(image=..., ...)` works like `@task.kubernetes`; the image needs
   lamindb and an API key for the instance, for example from a Kubernetes secret.
 - `LaminDBFlow(...)` is an optional context manager. Every task invocation created inside it,
   mapped ones included, belongs to the scope; on exit it adds the flow's init and finish tasks (a
@@ -115,7 +115,7 @@ lamindb settings directory, so lamindb never reads the worker's `~/.lamin`. A st
 another connection, for example to run under another API key:
 
 ```python
-@task.lamindb_venv(lamindb_conn_id="lamindb_curator")
+@task.lamindb_virtualenv(lamindb_conn_id="lamindb_curator")
 def curate(data: dict) -> None: ...
 ```
 

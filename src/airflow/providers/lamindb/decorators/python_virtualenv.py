@@ -1,4 +1,4 @@
-"""``@task.lamindb_venv``: run the function as a LaminDB step inside a virtualenv."""
+"""``@task.lamindb_virtualenv``: run the function as a LaminDB step inside a virtualenv."""
 
 from __future__ import annotations
 
@@ -23,10 +23,10 @@ from airflow.providers.standard.decorators.python_virtualenv import _PythonVirtu
 from airflow.sdk.bases.decorator import task_decorator_factory
 
 
-class LaminDBVenvDecoratedOperator(RemoteLaminDBStepMixin, _PythonVirtualenvDecoratedOperator):
-    """``@task.lamindb_venv``: LaminDB step inside a virtualenv."""
+class LaminDBVirtualenvDecoratedOperator(RemoteLaminDBStepMixin, _PythonVirtualenvDecoratedOperator):
+    """``@task.lamindb_virtualenv``: LaminDB step inside a virtualenv."""
 
-    custom_operator_name = "@task.lamindb_venv"
+    custom_operator_name = "@task.lamindb_virtualenv"
     template_fields: Sequence[str] = (
         *_PythonVirtualenvDecoratedOperator.template_fields,
         "lamindb_scope",
@@ -74,12 +74,12 @@ class LaminDBVenvDecoratedOperator(RemoteLaminDBStepMixin, _PythonVirtualenvDeco
             yield
 
 
-def lamindb_venv_task(
+def lamindb_virtualenv_task(
     python_callable: Callable[..., Any] | None = None,
     multiple_outputs: bool | None = None,
     **kwargs: Any,
 ):
-    """``@task.lamindb_venv``: run the function as a LaminDB step inside a virtualenv.
+    """``@task.lamindb_virtualenv``: run the function as a LaminDB step inside a virtualenv.
 
     Accepts every ``@task.virtualenv`` argument, plus:
 
@@ -123,6 +123,6 @@ def lamindb_venv_task(
     return task_decorator_factory(
         python_callable=python_callable,
         multiple_outputs=multiple_outputs,
-        decorated_operator_class=LaminDBVenvDecoratedOperator,
+        decorated_operator_class=LaminDBVirtualenvDecoratedOperator,
         **kwargs,
     )

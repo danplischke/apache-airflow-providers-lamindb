@@ -40,7 +40,7 @@ def test_flow_scopes_work_without_lamindb_on_worker(no_lamindb: None) -> None:
         pass
 
     with DAG("d", schedule=None) as dag, LaminDBFlow():
-        task.lamindb_venv(a)()
+        task.lamindb_virtualenv(a)()
 
     assert {"a", "lamindb_flow_init", "lamindb_flow_finish"} == set(dag.task_ids)
 
@@ -71,7 +71,7 @@ def test_venv_step_works_without_lamindb_on_worker(no_lamindb: None, make_contex
 
     @dag
     def test_dag():
-        @task.lamindb_venv(lamindb_conn_id=None)
+        @task.lamindb_virtualenv(lamindb_conn_id=None)
         def step():
             return 1
 

@@ -15,29 +15,29 @@ block. Standalone tasks need no flow run; they record the source, parameters, en
 outcome of each task run, with a reference to the Airflow task instance. A `LaminDBFlow` block adds a
 flow run around its tasks, for pipeline-level lineage.
 
-lamindb runs in a virtualenv (`@task.lamindb_venv` and the flow operators) or a Kubernetes pod
-(`@task.lamindb_k8s`), never on the worker, so its version doesn't have to fit Airflow's
+lamindb runs in a virtualenv (`@task.lamindb_virtualenv` and the flow operators) or a Kubernetes pod
+(`@task.lamindb_kubernetes`), never on the worker, so its version doesn't have to fit Airflow's
 dependencies. The tasks connect with the [lamindb connection](connections/lamindb.md) (see
 [LaminDB settings](#lamindb-settings)).
 
-## @task.lamindb_venv
+## @task.lamindb_virtualenv
 
-`@task.lamindb_venv` works like `@task.virtualenv` and accepts all of its arguments. The function
+`@task.lamindb_virtualenv` works like `@task.virtualenv` and accepts all of its arguments. The function
 runs in a virtualenv and is tracked by default: lamindb records its parameters and outcome, and
 artifacts the function saves are linked to the task run. Plain Airflow tasks can sit in between and
 exchange XComs with the tracked ones. Each attempt of a task, including retries and every map index,
 is its own run.
 
 ```python title="tests/system/lamindb/example_lamindb_lineage.py"
---8<-- "tests/system/lamindb/example_lamindb_lineage.py:howto_decorator_lamindb_venv"
+--8<-- "tests/system/lamindb/example_lamindb_lineage.py:howto_decorator_lamindb_virtualenv"
 ```
 
 lamindb is added to `requirements` when the task runs (see `lamindb_version` under
 [LaminDB settings](#lamindb-settings)), unless you list it yourself.
 
-## @task.lamindb_k8s
+## @task.lamindb_kubernetes
 
-`@task.lamindb_k8s` works like `@task.kubernetes` and accepts all of its arguments; it needs
+`@task.lamindb_kubernetes` works like `@task.kubernetes` and accepts all of its arguments; it needs
 `pip install "apache-airflow-providers-lamindb[k8s]"`. The image must have lamindb 2.8.1 or newer
 installed, and the pod needs the API key, for example from a Kubernetes secret. The connection only provides the instance,
 because environment variables of a pod are readable in its spec.
@@ -46,7 +46,7 @@ because environment variables of a pod are readable in its spec.
 from airflow.providers.cncf.kubernetes.secret import Secret
 
 
-@task.lamindb_k8s(
+@task.lamindb_kubernetes(
     image="my-registry/pipeline:1.0",  # with lamindb installed
     secrets=[Secret("env", "LAMIN_API_KEY", "lamin", "api-key")],
 )
@@ -170,7 +170,7 @@ to flow operators implicitly, and `auto_flow` is removed.
 
 | Before | Now |
 |---|---|
-| `@task.lamindb_venv(auto_flow=True)` | Drop it: the task is tracked standalone. For a flow run around tasks, create them inside `with LaminDBFlow(...):`. |
+| `@task.lamindb_virtualenv(auto_flow=True)` | Drop it: the task is tracked standalone. For a flow run around tasks, create them inside `with LaminDBFlow(...):`. |
 | `with LaminDBFlowInitOperator() >> LaminDBFlowFinishOperator():` around the steps | `with LaminDBFlow(...):` around the steps. |
 | `scope.add_task(mapped)` | Remove it: mapped invocations created inside the block join. |
 | Flow settings (`lamindb_conn_id`, `lamindb_version`, ...) copied from the first step | Pass them to `LaminDBFlow(...)`. |
@@ -205,7 +205,7 @@ The lineage operators and decorators accept these arguments, also through a DAG'
     does not exist; there is no fallback to lamindb's own configuration.
 
     `None` uses lamindb's own configuration (`LAMIN_API_KEY`, `~/.lamin`) instead, for example for
-    instances that aren't hosted on LaminHub, or for `@task.lamindb_k8s` steps whose pods bring their
+    instances that aren't hosted on LaminHub, or for `@task.lamindb_kubernetes` steps whose pods bring their
     own credentials. Then also pass `lamindb_instance` or set `LAMIN_CURRENT_INSTANCE`: the virtualenv
     runs outside your project directory. A `LaminDBFlow` takes its own `lamindb_conn_id`, which is not
     borrowed from the tasks in it; with `None` its lifecycle operators use the worker's lamindb
@@ -259,7 +259,7 @@ The lineage operators and decorators accept these arguments, also through a DAG'
     keep versions strings: a number such as `2.10` renders as `2.1`.
 
     ```python
-    @task.lamindb_venv(lamindb_version="{{ ti.xcom_pull(task_ids='pick_versions')[ti.map_index] }}")
+    @task.lamindb_virtualenv(lamindb_version="{{ ti.xcom_pull(task_ids='pick_versions')[ti.map_index] }}")
     def process(sample: str) -> None: ...
 
 
@@ -274,7 +274,7 @@ for example from your own `requirements` or the pod's image, fails when it start
 A task can use another connection than the rest of the DAG, for example to run under another API key:
 
 ```python
-@task.lamindb_venv(lamindb_conn_id="lamindb_curator")
+@task.lamindb_virtualenv(lamindb_conn_id="lamindb_curator")
 def curate(data: dict) -> None: ...
 ```
 
@@ -387,7 +387,7 @@ with DAG("sequencing", default_args={"lamindb_setup": SequencingSetup()}):
     ...
 
 
-@task.lamindb_venv(lamindb_setup=LaminDBSetup())  # opts out: the base class does nothing
+@task.lamindb_virtualenv(lamindb_setup=LaminDBSetup())  # opts out: the base class does nothing
 def plain_step() -> None: ...
 ```
 

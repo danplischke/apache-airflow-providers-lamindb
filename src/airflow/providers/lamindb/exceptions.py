@@ -7,7 +7,7 @@ from airflow.sdk.exceptions import AirflowException, AirflowFailException
 
 class LaminDBApiError(AirflowException):
     """
-    Raised when the LaminHub REST API returns an error response.
+    Raised when the LaminHub REST API returns an error or malformed response.
 
     ``transient`` is true when the request may succeed if repeated later: network errors, rate
     limiting (429) and server errors (5xx).

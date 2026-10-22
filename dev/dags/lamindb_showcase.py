@@ -30,13 +30,13 @@ with DAG(
     tags=["lamindb"],
 ):
 
-    @task.lamindb_venv
+    @task.lamindb_virtualenv
     def measure(count: int) -> list[float]:
         import random
 
         return [round(random.uniform(1, 2), 3) for _ in range(count)]
 
-    @task.lamindb_venv
+    @task.lamindb_virtualenv
     def square(value: float) -> float:
         return round(value**2, 3)
 
@@ -46,7 +46,7 @@ with DAG(
         # results into a list, which a virtualenv task cannot receive
         return [round(v * factor, 3) for v in values]
 
-    @task.lamindb_venv
+    @task.lamindb_virtualenv
     def save_table(values: list[float]) -> str:
         import csv
         import tempfile
@@ -61,7 +61,7 @@ with DAG(
             artifact = ln.Artifact(path, key="airflow-showcase/squares.csv").save()
         return artifact.uid
 
-    @task.lamindb_venv
+    @task.lamindb_virtualenv
     def summarize(uid: str) -> dict:
         import csv
 
@@ -87,11 +87,11 @@ with DAG(
     tags=["lamindb"],
 ):
 
-    @task.lamindb_venv
+    @task.lamindb_virtualenv
     def download() -> dict:
         return {"rows": 100}
 
-    @task.lamindb_venv
+    @task.lamindb_virtualenv
     def validate(data: dict, fail: bool) -> dict:
         if fail:
             raise ValueError("validation failed on purpose")

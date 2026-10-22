@@ -12,12 +12,12 @@
 
 ::: airflow.providers.lamindb.decorators.python_virtualenv
     options:
-      members: [lamindb_venv_task]
+      members: [lamindb_virtualenv_task]
       toc_label: decorators.python_virtualenv
 
 ::: airflow.providers.lamindb.decorators.kubernetes
     options:
-      members: [lamindb_k8s_task]
+      members: [lamindb_kubernetes_task]
       toc_label: decorators.kubernetes
 
 ::: airflow.providers.lamindb.utils.remote
@@ -59,6 +59,11 @@
     options:
       members: [LaminDBHook, LaminDBInstance, Registry, DEFAULT_HUB_API_URL]
       toc_label: hooks.lamindb
+
+::: airflow.providers.lamindb.hooks.models
+    options:
+      members: [RecordQueryParams, RecordQueryBody, RecordOrder, RecordScope, RecordInsertBody, RecordUpdateBody, TokenRequest, TokenResponse, InstanceSettingsResponse]
+      toc_label: hooks.models
 
 ::: airflow.providers.lamindb.utils.filters
     options:

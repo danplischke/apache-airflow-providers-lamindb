@@ -30,7 +30,7 @@ state store that the event triggers use to resume after restarts.
 
 The worker doesn't need the `lamindb` Python package. The triggers, sensors and hook talk to the
 [LaminHub REST API](https://docs.lamin.ai/rest), and the lineage operators install `lamindb-core` in a
-virtualenv or use a Kubernetes pod's image. `@task.lamindb_k8s` needs
+virtualenv or use a Kubernetes pod's image. `@task.lamindb_kubernetes` needs
 `pip install "apache-airflow-providers-lamindb[k8s]"`.
 
 LaminDB instances, and the lamindb in lineage virtualenvs and pods, must be on lamindb 2.8.1 or newer.

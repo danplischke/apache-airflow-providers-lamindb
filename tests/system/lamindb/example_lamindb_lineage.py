@@ -18,12 +18,12 @@ from airflow.providers.lamindb.operators.flow import (
 
 # A LaminDBFlow block gives its tasks a flow run for the DAG run; tasks outside it are standalone.
 with DAG("lamindb_example_ok") as dag_ok:
-    # --8<-- [start:howto_decorator_lamindb_venv]
-    @task.lamindb_venv(system_site_packages=True)
+    # --8<-- [start:howto_decorator_lamindb_virtualenv]
+    @task.lamindb_virtualenv(system_site_packages=True)
     def extract(count: int = 10) -> dict:
         return {"count": count}
 
-    @task.lamindb_venv(system_site_packages=True)
+    @task.lamindb_virtualenv(system_site_packages=True)
     def transform(data: dict) -> dict:
         return {"count": data["count"] * 2}
 
@@ -32,14 +32,14 @@ with DAG("lamindb_example_ok") as dag_ok:
         # a plain Airflow task: not recorded in LaminDB
         return data["count"] + 1
 
-    @task.lamindb_venv(system_site_packages=True)
+    @task.lamindb_virtualenv(system_site_packages=True)
     def report(value: int) -> dict:
         import lamindb as ln
 
         assert ln.context.run is not None, "step run context missing in venv"
         return {"value": value * 10, "run_uid": ln.context.run.uid}
 
-    # --8<-- [end:howto_decorator_lamindb_venv]
+    # --8<-- [end:howto_decorator_lamindb_virtualenv]
 
     # --8<-- [start:howto_lamindb_flow_scope]
     with LaminDBFlow(system_site_packages=True):
@@ -51,11 +51,11 @@ with DAG("lamindb_example_ok") as dag_ok:
 # parent flow run.
 with DAG("lamindb_example_standalone") as dag_standalone:
 
-    @task.lamindb_venv(system_site_packages=True)
+    @task.lamindb_virtualenv(system_site_packages=True)
     def solo(count: int = 5) -> int:
         return count + 1
 
-    @task.lamindb_venv(system_site_packages=True)
+    @task.lamindb_virtualenv(system_site_packages=True)
     def solo_next(value: int) -> int:
         return value * 2
 
@@ -65,7 +65,7 @@ with DAG("lamindb_example_standalone") as dag_standalone:
 # The flow operators on their own are Airflow's setup and teardown only: they do not parent the tasks.
 with DAG("lamindb_example_operators") as dag_operators:
 
-    @task.lamindb_venv(system_site_packages=True)
+    @task.lamindb_virtualenv(system_site_packages=True)
     def inner() -> int:
         return 1
 
@@ -82,7 +82,7 @@ with (
     LaminDBFlow(system_site_packages=True),
 ):
 
-    @task.lamindb_venv(system_site_packages=True)
+    @task.lamindb_virtualenv(system_site_packages=True)
     def boom() -> None:
         raise ValueError("step failed on purpose")
 
@@ -95,11 +95,11 @@ with DAG(
     "lamindb_example_scopes", params={"fail_enrich": False}, render_template_as_native_obj=True
 ) as dag_scopes:
 
-    @task.lamindb_venv(system_site_packages=True)
+    @task.lamindb_virtualenv(system_site_packages=True)
     def stage_one() -> int:
         return 1
 
-    @task.lamindb_venv(system_site_packages=True)
+    @task.lamindb_virtualenv(system_site_packages=True)
     def stage_two(fail: bool = False) -> int:
         if fail:
             raise ValueError("enrich failed on purpose")
@@ -118,7 +118,7 @@ with (
     LaminDBFlow(system_site_packages=True),
 ):
     # --8<-- [start:howto_lamindb_recorded_params]
-    @task.lamindb_venv(system_site_packages=True, lamindb_exclude_params=["session"])
+    @task.lamindb_virtualenv(system_site_packages=True, lamindb_exclude_params=["session"])
     def fetch(sample: str, credentials: str, session: str = "default") -> dict:
         return {"sample": sample, "credentials_length": len(credentials)}
 
@@ -134,7 +134,7 @@ with (
 # connect=True with track=False: connected to the instance, but nothing is recorded.
 with DAG("lamindb_example_connect") as dag_connect:
     # --8<-- [start:howto_lamindb_connect_only]
-    @task.lamindb_venv(system_site_packages=True, track=False, connect=True)
+    @task.lamindb_virtualenv(system_site_packages=True, track=False, connect=True)
     def count_artifacts() -> int:
         import lamindb as ln
 
@@ -151,7 +151,7 @@ with DAG("lamindb_example_mapped", params={"samples": ["S1", "S2"], "fail_on": "
     def list_samples(**context) -> list[str]:
         return context["params"]["samples"]
 
-    @task.lamindb_venv(system_site_packages=True)
+    @task.lamindb_virtualenv(system_site_packages=True)
     def measure(sample: str, fail_on: str = "") -> int:
         if sample == fail_on:
             raise ValueError(f"measuring {sample} failed on purpose")
@@ -166,7 +166,7 @@ with DAG("lamindb_example_mapped", params={"samples": ["S1", "S2"], "fail_on": "
 # of the installation runs that setup, a flow scope's tasks included; the DAG doesn't mention it.
 with DAG("lamindb_example_setup") as dag_setup:
 
-    @task.lamindb_venv(system_site_packages=True)
+    @task.lamindb_virtualenv(system_site_packages=True)
     def use_site_setup() -> None:
         import os
 

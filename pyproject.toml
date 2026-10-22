@@ -39,6 +39,7 @@ dependencies = [
     "apache-airflow-providers-standard>=1.15.0",
     "httpx>=0.27.0",
     "packaging>=22",
+    "pydantic>=2.10",
 ]
 
 [project.optional-dependencies]

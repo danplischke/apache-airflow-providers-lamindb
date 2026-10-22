@@ -9,9 +9,21 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 import httpx
+from pydantic import ValidationError
 
 from airflow.providers.lamindb import __version__
 from airflow.providers.lamindb.exceptions import LaminDBApiError, LaminDBVersionError
+from airflow.providers.lamindb.hooks.models import (
+    InstanceSettingsResponse,
+    RecordInsertBody,
+    RecordOrder,
+    RecordQueryBody,
+    RecordQueryParams,
+    RecordScope,
+    RecordUpdateBody,
+    TokenRequest,
+    TokenResponse,
+)
 from airflow.providers.lamindb.utils.filters import (
     FilterLike,
     combine_filters,
@@ -41,8 +53,6 @@ _TOKEN_REFRESH_MARGIN = 60.0
 _DEFAULT_TOKEN_LIFETIME = 600.0
 _MAX_RETRY_DELAY = 60.0
 _USER_AGENT = f"apache-airflow-providers-lamindb/{__version__}"
-# Only non-sensitive instance settings are kept (the settings endpoint also returns DB credentials).
-_KEPT_SETTINGS = ("id", "owner", "name", "lnid", "api_url", "schema_str", "public", "lamindb_version")
 
 
 @dataclass(frozen=True)
@@ -277,9 +287,10 @@ class LaminDBHook(BaseHook):
         )
 
     def _store_token(self, payload: Any) -> str:
-        token = payload.get("accessToken") if isinstance(payload, dict) else None
-        if not token:
-            raise LaminDBApiError("LaminHub did not return an access token for the API key.")
+        try:
+            token = TokenResponse.model_validate(payload).access_token
+        except ValidationError:
+            raise LaminDBApiError("LaminHub did not return an access token for the API key.") from None
         self._access_token = token
         self._access_token_expiry = _jwt_expiry(token) or time.time() + _DEFAULT_TOKEN_LIFETIME
         return token
@@ -390,7 +401,7 @@ class LaminDBHook(BaseHook):
             payload = self._send(
                 "POST",
                 f"{config.hub_api_url}/account/jwt",
-                json={"api_key": config.api_key},
+                json=TokenRequest(api_key=config.api_key).model_dump(),
                 authenticate=False,
             )
             return self._store_token(payload)
@@ -404,7 +415,7 @@ class LaminDBHook(BaseHook):
             payload = await self._asend(
                 "POST",
                 f"{config.hub_api_url}/account/jwt",
-                json={"api_key": config.api_key},
+                json=TokenRequest(api_key=config.api_key).model_dump(),
                 authenticate=False,
             )
             return self._store_token(payload)
@@ -418,18 +429,21 @@ class LaminDBHook(BaseHook):
 
     @staticmethod
     def _instance_from_settings(config: _HubConfig, settings: Any) -> LaminDBInstance:
-        if not isinstance(settings, dict) or not settings.get("id"):
-            raise LaminDBApiError(f"Unexpected settings response for instance {config.owner}/{config.name}.")
-        kept = {key: settings.get(key) for key in _KEPT_SETTINGS}
+        try:
+            parsed = InstanceSettingsResponse.model_validate(settings)
+        except ValidationError:
+            raise LaminDBApiError(
+                f"Unexpected settings response for instance {config.owner}/{config.name}."
+            ) from None
         instance = LaminDBInstance(
-            owner=kept["owner"] or config.owner,
-            name=kept["name"] or config.name,
-            id=str(kept["id"]),
-            api_url=(kept["api_url"] or config.hub_api_url).rstrip("/"),
-            lnid=kept["lnid"],
-            schema_str=kept["schema_str"],
-            public=kept["public"],
-            lamindb_version=kept["lamindb_version"],
+            owner=parsed.owner or config.owner,
+            name=parsed.name or config.name,
+            id=str(parsed.id),
+            api_url=(parsed.api_url or config.hub_api_url).rstrip("/"),
+            lnid=parsed.lnid,
+            schema_str=parsed.schema_str,
+            public=parsed.public,
+            lamindb_version=parsed.lamindb_version,
         )
         # an unknown version passes; lineage tasks check the lamindb they install instead
         if instance.lamindb_version and not lamindb_version_supported(instance.lamindb_version):
@@ -441,9 +455,7 @@ class LaminDBHook(BaseHook):
         return instance
 
     @staticmethod
-    def _records_request(
-        instance: LaminDBInstance,
-        registry: Registry,
+    def _query_request(
         *,
         filter: FilterLike | None,
         select: Sequence[str] | None,
@@ -453,19 +465,16 @@ class LaminDBHook(BaseHook):
         include_foreign_keys: bool,
         search: str | None,
         branch_ids: Sequence[int] | None,
-    ) -> tuple[str, dict[str, Any], dict[str, Any]]:
-        url = _registry_url(instance, registry)
-        params = {"limit": limit, "offset": offset, "include_foreign_keys": include_foreign_keys}
-        body: dict[str, Any] = {"order_by": normalize_order_by(order_by)}
-        if normalized := normalize_filter(filter):
-            body["filter"] = normalized
-        if select:
-            body["select"] = list(select)
-        if search:
-            body["search"] = search
-        if branch_ids is not None:
-            body["scope"] = {"branch_ids": list(branch_ids)}
-        return url, params, body
+    ) -> tuple[RecordQueryParams, RecordQueryBody]:
+        params = RecordQueryParams(limit=limit, offset=offset, include_foreign_keys=include_foreign_keys)
+        body = RecordQueryBody(
+            order_by=[RecordOrder(**entry) for entry in normalize_order_by(order_by)],
+            filter=normalize_filter(filter),
+            select=list(select) if select else None,
+            search=search or None,
+            scope=RecordScope(branch_ids=list(branch_ids)) if branch_ids is not None else None,
+        )
+        return params, body
 
     @staticmethod
     def _check_page(page: Any, registry: Registry) -> list[dict[str, Any]]:
@@ -554,24 +563,30 @@ class LaminDBHook(BaseHook):
         :param include_foreign_keys: Include foreign key columns (``run_id``, ``branch_id``, ...).
         :param search: Full-text search string.
         :param branch_ids: Restrict the query scope to these branch ids.
+
+        Invalid request fields raise ``pydantic.ValidationError`` before HTTP requests are made.
+        ``limit`` and ``offset`` must be non-negative integers.
         """
+        query_params, query_body = self._query_request(
+            filter=filter,
+            select=select,
+            order_by=order_by,
+            limit=limit,
+            offset=offset,
+            include_foreign_keys=include_foreign_keys,
+            search=search,
+            branch_ids=branch_ids,
+        )
         reg = self.get_registry(registry)
         instance = self.get_instance()
+        url = _registry_url(instance, reg)
+        body = query_body.model_dump(mode="json", exclude_none=True)
         results: list[dict[str, Any]] = []
         while len(results) < limit:
             page_size = min(MAX_PAGE_SIZE, limit - len(results))
-            url, params, body = self._records_request(
-                instance,
-                reg,
-                filter=filter,
-                select=select,
-                order_by=order_by,
-                limit=page_size,
-                offset=offset + len(results),
-                include_foreign_keys=include_foreign_keys,
-                search=search,
-                branch_ids=branch_ids,
-            )
+            params = query_params.model_copy(
+                update={"limit": page_size, "offset": offset + len(results)}
+            ).model_dump()
             page = self._check_page(self._send("POST", url, params=params, json=body), reg)
             results.extend(page)
             if len(page) < page_size:
@@ -636,17 +651,19 @@ class LaminDBHook(BaseHook):
         ``{"type_id": 3}``. Inserts are not retried after errors that may have reached LaminHub, so a
         failed request never creates a record twice.
         """
+        body = RecordInsertBody.model_validate(list(records)).model_dump(mode="json")
         reg = self.get_registry(registry)
         url = _registry_url(self.get_instance(), reg)
-        return _written_rows(self._send("PUT", url, json=list(records), idempotent=False), reg)
+        return _written_rows(self._send("PUT", url, json=body, idempotent=False), reg)
 
     def update_record(
         self, registry: str | Registry, uid: str, values: Mapping[str, Any]
     ) -> dict[str, Any] | None:
         """Update fields of the record with ``uid`` and return the updated row (if LaminHub returns it)."""
+        body = RecordUpdateBody.model_validate(dict(values)).model_dump(mode="json")
         reg = self.get_registry(registry)
         url = f"{_registry_url(self.get_instance(), reg)}/{uid}"
-        rows = _written_rows(self._send("PATCH", url, json=dict(values)), reg)
+        rows = _written_rows(self._send("PATCH", url, json=body), reg)
         return rows[0] if rows else None
 
     def test_connection(self) -> tuple[bool, str]:
@@ -699,23 +716,26 @@ class LaminDBHook(BaseHook):
         branch_ids: Sequence[int] | None = None,
     ) -> list[dict[str, Any]]:
         """Async version of [`query_records`][]."""
+        query_params, query_body = self._query_request(
+            filter=filter,
+            select=select,
+            order_by=order_by,
+            limit=limit,
+            offset=offset,
+            include_foreign_keys=include_foreign_keys,
+            search=search,
+            branch_ids=branch_ids,
+        )
         reg = await self.aget_registry(registry)
         instance = await self.aget_instance()
+        url = _registry_url(instance, reg)
+        body = query_body.model_dump(mode="json", exclude_none=True)
         results: list[dict[str, Any]] = []
         while len(results) < limit:
             page_size = min(MAX_PAGE_SIZE, limit - len(results))
-            url, params, body = self._records_request(
-                instance,
-                reg,
-                filter=filter,
-                select=select,
-                order_by=order_by,
-                limit=page_size,
-                offset=offset + len(results),
-                include_foreign_keys=include_foreign_keys,
-                search=search,
-                branch_ids=branch_ids,
-            )
+            params = query_params.model_copy(
+                update={"limit": page_size, "offset": offset + len(results)}
+            ).model_dump()
             page = self._check_page(await self._asend("POST", url, params=params, json=body), reg)
             results.extend(page)
             if len(page) < page_size:
@@ -767,15 +787,17 @@ class LaminDBHook(BaseHook):
         self, registry: str | Registry, records: Sequence[Mapping[str, Any]]
     ) -> list[dict[str, Any]]:
         """Async version of [`insert_records`][]."""
+        body = RecordInsertBody.model_validate(list(records)).model_dump(mode="json")
         reg = await self.aget_registry(registry)
         url = _registry_url(await self.aget_instance(), reg)
-        return _written_rows(await self._asend("PUT", url, json=list(records), idempotent=False), reg)
+        return _written_rows(await self._asend("PUT", url, json=body, idempotent=False), reg)
 
     async def aupdate_record(
         self, registry: str | Registry, uid: str, values: Mapping[str, Any]
     ) -> dict[str, Any] | None:
         """Async version of [`update_record`][]."""
+        body = RecordUpdateBody.model_validate(dict(values)).model_dump(mode="json")
         reg = await self.aget_registry(registry)
         url = f"{_registry_url(await self.aget_instance(), reg)}/{uid}"
-        rows = _written_rows(await self._asend("PATCH", url, json=dict(values)), reg)
+        rows = _written_rows(await self._asend("PATCH", url, json=body), reg)
         return rows[0] if rows else None
