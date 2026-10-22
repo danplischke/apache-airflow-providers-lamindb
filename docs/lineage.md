@@ -356,6 +356,32 @@ or `AIRFLOW__LAMINDB__SETUP_CLASS=mycompany.airflow.SiteSetup`. Every LaminDB ta
 DAGs don't mention it. The class is loaded once per process; an import path that doesn't work fails
 the DAGs when they are parsed.
 
+- `virtualenv_options()` returns a
+  [`VirtualenvOptions`][airflow.providers.lamindb.execution.setup.VirtualenvOptions] with defaults for
+  the virtualenvs, each for tasks that don't set that argument themselves:
+    - `requirements`: packages installed besides lamindb, after the task's own; a package the task
+      lists itself is not added again, so a task can pin another version. lamindb may not be listed:
+      pin it with `lamindb_version`, or in the task's `requirements`.
+    - `venv_cache_path`: absolute path of a folder on each worker in which Airflow caches the
+      virtualenvs, one per set of requirements, indexes and Python version, instead of building one
+      for every task run. Airflow never removes them, so prune the folder yourself. `""` opts a task
+      out.
+    - `index_urls` and `index_urls_from_connection_ids`: package indexes; the first URL replaces
+      PyPI. Prefer `package_index` connections for private indexes, so that credentials stay out of
+      code. A task that sets either argument chooses all its indexes, and the setup's don't apply.
+
+  Pods don't use them: the image brings its packages.
+
+  ```python
+  class SiteSetup(LaminDBSetup):
+      def virtualenv_options(self) -> VirtualenvOptions:
+          return VirtualenvOptions(
+              requirements=["bionty"],
+              venv_cache_path="/opt/airflow/venv-cache",
+              index_urls_from_connection_ids=["pypi_internal"],
+          )
+  ```
+
 - `bootstrap_source()` returns Python source that runs in the virtualenv or pod before lamindb is
   imported. It runs as its own module, so it may be indented or start with `from __future__`, and its
   names don't leak into the task's script. In a virtualenv it runs before Airflow unpickles the

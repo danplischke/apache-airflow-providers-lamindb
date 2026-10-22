@@ -22,7 +22,7 @@
 
 ::: airflow.providers.lamindb.execution.setup
     options:
-      members: [LaminDBSetup]
+      members: [LaminDBSetup, VirtualenvOptions]
       toc_label: execution.setup
 
 ::: airflow.providers.lamindb.triggers.records

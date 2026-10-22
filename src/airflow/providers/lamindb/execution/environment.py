@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
 from typing import Any
@@ -13,10 +13,12 @@ from airflow.exceptions import AirflowNotFoundException
 from airflow.providers.lamindb.client.client import parse_instance_slug
 from airflow.providers.lamindb.exceptions import LaminDBVersionError
 from airflow.providers.lamindb.execution.requirements import (
+    add_default_requirements,
     add_lamindb_requirement,
     check_lamindb_version,
     lamindb_requirement_lines,
 )
+from airflow.providers.lamindb.execution.setup import LaminDBSetup, setup_virtualenv_options
 from airflow.providers.lamindb.hooks.lamindb import LaminDBHook
 
 log = logging.getLogger(__name__)
@@ -87,21 +89,47 @@ class RemoteLaminDB:
             self._hook.close()
 
 
-def ensure_lamindb_requirement(operator: Any, remote: RemoteLaminDB, lamindb_version: str | None) -> None:
-    """Add lamindb to a virtualenv operator's ``requirements`` unless listed.
+def ensure_lamindb_requirement(
+    operator: Any,
+    remote: RemoteLaminDB,
+    lamindb_version: str | None,
+    default_requirements: Sequence[str] = (),
+) -> None:
+    """Add lamindb, and ``default_requirements`` not listed yet, to a virtualenv operator's ``requirements``.
 
-    Pinned to ``lamindb_version``, else to the instance's version on LaminHub (with a connection),
-    else to any supported version. The remote side must speak the instance's schema version. A
-    listed lamindb is not resolved here; the virtualenv checks the version it installed.
+    lamindb unless listed, pinned to ``lamindb_version``, else to the instance's version on LaminHub
+    (with a connection), else to any supported version. The remote side must speak the instance's
+    schema version. A listed lamindb is not resolved here; the virtualenv checks the version it
+    installed. ``default_requirements`` come from ``LaminDBSetup.requirements``.
     """
     if lamindb_version is not None:
         lamindb_version = str(lamindb_version).strip()
         check_lamindb_version(lamindb_version)
     requirements = list(operator.requirements)
+    add_default_requirements(requirements, default_requirements)
     if not lamindb_requirement_lines(requirements):
         lamindb_version = lamindb_version or remote.instance_lamindb_version()
     add_lamindb_requirement(requirements, lamindb_version)
     operator.requirements = requirements
+
+
+def prepare_virtualenv(
+    operator: Any, remote: RemoteLaminDB, lamindb_version: str | None, setup: LaminDBSetup | None
+) -> None:
+    """Give a virtualenv operator lamindb and its setup's ``VirtualenvOptions``.
+
+    Set at execute time, after Airflow recorded the rendered template fields, so index URLs don't
+    show there. The setup's indexes apply only if the operator sets none of its own.
+    """
+    options = setup_virtualenv_options(setup)
+    ensure_lamindb_requirement(operator, remote, lamindb_version, options.requirements)
+    if operator.venv_cache_path is None:
+        operator.venv_cache_path = options.venv_cache_path
+    if operator.index_urls is None and operator.index_urls_from_connection_ids is None:
+        if options.index_urls is not None:
+            operator.index_urls = list(options.index_urls)
+        if options.index_urls_from_connection_ids is not None:
+            operator.index_urls_from_connection_ids = list(options.index_urls_from_connection_ids)
 
 
 @contextmanager

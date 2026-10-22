@@ -23,8 +23,8 @@ from airflow.providers.lamindb.execution.dag_run import (
 )
 from airflow.providers.lamindb.execution.environment import (
     RemoteLaminDB,
-    ensure_lamindb_requirement,
     lamindb_virtualenv_env,
+    prepare_virtualenv,
 )
 from airflow.providers.lamindb.execution.parameters import space_name
 from airflow.providers.lamindb.execution.requirements import check_lamindb_version
@@ -145,7 +145,7 @@ class _LaminDBFlowOperator(PythonVirtualenvOperator):
 
     def execute(self, context: Any) -> Any:
         remote = RemoteLaminDB.resolve(self.lamindb_conn_id, self.lamindb_instance, self.lamindb_cache_dir)
-        ensure_lamindb_requirement(self, remote, self.lamindb_version)
+        prepare_virtualenv(self, remote, self.lamindb_version, self.lamindb_setup)
         # a single named argument: a **kwargs signature would make PythonOperator pass the whole context
         config_models: dict[str, type[FlowStartConfig] | type[FlowFinishConfig]] = {
             "start_flow_run": FlowStartConfig,
