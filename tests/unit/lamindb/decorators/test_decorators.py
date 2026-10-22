@@ -930,114 +930,134 @@ def test_lamindb_setup_prepares_the_flow_operators(make_context, lamindb_connect
     assert init.env_vars is None
 
 
-class PackagesSetup(execution_setup.LaminDBSetup):
-    def requirements(self) -> list[str]:
-        return ["bionty", "pandas>=2"]
+class VenvSetup(execution_setup.LaminDBSetup):
+    def __init__(self, **options) -> None:
+        self.options = options
+
+    def virtualenv_options(self) -> execution_setup.VirtualenvOptions:
+        return execution_setup.VirtualenvOptions(**self.options)
 
 
-def test_lamindb_setup_requirements_are_installed_in_the_step_virtualenv(
-    fake_lamindb: MagicMock, make_context, lamindb_connection
-) -> None:
-    op = _single_task(
-        task.lamindb_virtualenv(lamindb_setup=PackagesSetup(), requirements=["pandas==1.5"]), step
-    )
-    assert op.requirements == ["pandas==1.5"]  # added when the task runs
-    with patch.object(lamindb_step, "dag_source", return_value="# dag source"):
-        _, seen = _execute_connected(op, make_context())
-    assert seen["requirements"] == ["pandas==1.5", "bionty", "lamindb==2.11.0"]
+SITE_VENV = {
+    "requirements": ["bionty", "pandas>=2"],
+    "venv_cache_path": "/opt/venv-cache",
+    "index_urls": ["https://pypi.internal/simple"],
+    "index_urls_from_connection_ids": "pypi_internal",
+}
+VENV_FIELDS = ("requirements", "venv_cache_path", "index_urls", "index_urls_from_connection_ids")
 
 
-def test_lamindb_setup_requirements_are_installed_for_the_flow_operators(
-    make_context, lamindb_connection
-) -> None:
-    from airflow.providers.lamindb.operators.flow import LaminDBFlowInitOperator
-
-    init = LaminDBFlowInitOperator(task_id="init", lamindb_setup=PackagesSetup(), lamindb_version="2.11.1")
-    seen = {}
-
-    def fake_venv_execute(self, context):
-        seen["requirements"] = list(self.requirements)
-        return "flowuid"
-
-    with patch.object(type(init).__mro__[2], "execute", fake_venv_execute):
-        init.execute(make_context())
-
-    assert seen["requirements"] == ["bionty", "pandas>=2", "lamindb==2.11.1"]
-
-
-def test_lamindb_setup_requirements_must_be_strings(
-    fake_lamindb: MagicMock, make_context, lamindb_connection
-) -> None:
-    class BrokenSetup(execution_setup.LaminDBSetup):
-        def requirements(self) -> list[str]:
-            return ["bionty", 2]  # type: ignore[list-item]
-
-    op = _single_task(task.lamindb_virtualenv(lamindb_setup=BrokenSetup()), step)
-    with (
-        patch.object(lamindb_step, "dag_source", return_value="# dag source"),
-        pytest.raises(TypeError, match=r"requirements\(\) must return strings; 2 are not"),
-    ):
-        _execute_connected(op, make_context())
-
-
-class CachedSetup(execution_setup.LaminDBSetup):
-    def __init__(self, path="/opt/venv-cache") -> None:
-        self.path = path
-
-    def venv_cache_path(self):
-        return self.path
-
-
-@pytest.mark.parametrize(
-    ("task_path", "expected"),
-    [(None, "/opt/venv-cache"), ("/task/cache", "/task/cache"), ("", "")],  # "" opts out
-)
-def test_lamindb_setup_venv_cache_path_is_the_default_for_steps(
-    fake_lamindb: MagicMock, make_context, lamindb_connection, task_path, expected
-) -> None:
-    op = _single_task(task.lamindb_virtualenv(lamindb_setup=CachedSetup(), venv_cache_path=task_path), step)
+def _venv_seen(op, context) -> dict:
+    """Execute in a fake venv; returns the virtualenv arguments it ran with."""
     seen: dict = {}
 
     def fake_venv_execute(self, context):
-        seen["venv_cache_path"] = self.venv_cache_path
+        seen.update({name: getattr(self, name) for name in VENV_FIELDS})
         return 1
 
     with (
         patch.object(lamindb_step, "dag_source", return_value="# dag source"),
         patch.object(type(op).__mro__[2], "execute", fake_venv_execute),
     ):
-        op.execute(make_context())
-    assert seen["venv_cache_path"] == expected
+        op.execute(context)
+    return seen
 
 
-def test_lamindb_setup_venv_cache_path_reaches_the_flow_operators(make_context, lamindb_connection) -> None:
+def test_lamindb_setup_virtualenv_options_are_the_defaults_of_steps(
+    fake_lamindb: MagicMock, make_context, lamindb_connection
+) -> None:
+    op = _single_task(task.lamindb_virtualenv(lamindb_setup=VenvSetup(**SITE_VENV)), step)
+    assert op.requirements == []  # applied when the task runs
+    assert op.index_urls is None
+    assert _venv_seen(op, make_context()) == {
+        "requirements": ["bionty", "pandas>=2", "lamindb==2.11.0"],
+        "venv_cache_path": "/opt/venv-cache",
+        "index_urls": ["https://pypi.internal/simple"],
+        "index_urls_from_connection_ids": ["pypi_internal"],
+    }
+
+
+@pytest.mark.parametrize(
+    ("task_args", "expected"),
+    [
+        (  # the task's own requirement pins and cache path win; "" opts out of the cache
+            {"requirements": ["pandas==1.5"], "venv_cache_path": ""},
+            {"requirements": ["pandas==1.5", "bionty", "lamindb==2.11.0"], "venv_cache_path": ""},
+        ),
+        (  # a task that sets one index argument chooses all its indexes
+            {"index_urls": ["https://pypi.org/simple"]},
+            {"index_urls": ["https://pypi.org/simple"], "index_urls_from_connection_ids": None},
+        ),
+        (
+            {"index_urls_from_connection_ids": ["other_index"]},
+            {"index_urls": None, "index_urls_from_connection_ids": ["other_index"]},
+        ),
+    ],
+)
+def test_task_arguments_take_precedence_over_the_virtualenv_options(
+    fake_lamindb: MagicMock, make_context, lamindb_connection, task_args, expected
+) -> None:
+    op = _single_task(task.lamindb_virtualenv(lamindb_setup=VenvSetup(**SITE_VENV), **task_args), step)
+    seen = _venv_seen(op, make_context())
+    assert {name: seen[name] for name in expected} == expected
+
+
+def test_lamindb_setup_virtualenv_options_reach_the_flow_operators(make_context, lamindb_connection) -> None:
     from airflow.providers.lamindb.operators.flow import LaminDBFlowInitOperator
 
-    init = LaminDBFlowInitOperator(task_id="init", lamindb_setup=CachedSetup())
+    init = LaminDBFlowInitOperator(
+        task_id="init", lamindb_setup=VenvSetup(**SITE_VENV), lamindb_version="2.11.1"
+    )
     seen = {}
 
     def fake_venv_execute(self, context):
-        seen["venv_cache_path"] = self.venv_cache_path
+        seen.update({name: getattr(self, name) for name in VENV_FIELDS})
         return "flowuid"
 
     with patch.object(type(init).__mro__[2], "execute", fake_venv_execute):
         init.execute(make_context())
-    assert seen["venv_cache_path"] == "/opt/venv-cache"
+
+    assert seen == {
+        "requirements": ["bionty", "pandas>=2", "lamindb==2.11.1"],
+        "venv_cache_path": "/opt/venv-cache",
+        "index_urls": ["https://pypi.internal/simple"],
+        "index_urls_from_connection_ids": ["pypi_internal"],
+    }
 
 
 @pytest.mark.parametrize(
-    ("path", "error", "match"),
-    [("relative/cache", ValueError, "absolute path"), (42, TypeError, "a path or None")],
+    ("options", "error", "match"),
+    [
+        ({"requirements": ["bionty", 2]}, TypeError, "requirements must be strings; 2 are not"),
+        ({"index_urls": [None]}, TypeError, "index_urls must be strings"),
+        ({"venv_cache_path": "relative/cache"}, ValueError, "absolute path"),
+        ({"venv_cache_path": 42}, TypeError, "a path or None"),
+    ],
 )
-def test_lamindb_setup_venv_cache_path_must_be_an_absolute_path(path, error, match) -> None:
+def test_virtualenv_options_are_validated(options, error, match) -> None:
     with pytest.raises(error, match=match):
-        execution_setup.setup_venv_cache_path(CachedSetup(path))
+        execution_setup.VirtualenvOptions(**options)
 
 
-def test_lamindb_setup_venv_cache_path_accepts_path_objects() -> None:
+def test_virtualenv_options_normalize_their_values() -> None:
     from pathlib import Path
 
-    assert execution_setup.setup_venv_cache_path(CachedSetup(Path("/opt/cache"))) == "/opt/cache"
+    options = execution_setup.VirtualenvOptions(
+        requirements="bionty", venv_cache_path=Path("/opt/cache"), index_urls=["https://a/simple"]
+    )
+    assert options.requirements == ("bionty",)
+    assert options.venv_cache_path == "/opt/cache"
+    assert options.index_urls == ("https://a/simple",)
+    assert options.index_urls_from_connection_ids is None
+
+
+def test_virtualenv_options_must_be_virtualenv_options() -> None:
+    class BrokenSetup(execution_setup.LaminDBSetup):
+        def virtualenv_options(self):
+            return {"requirements": ["bionty"]}
+
+    with pytest.raises(TypeError, match=r"virtualenv_options\(\) must return VirtualenvOptions"):
+        execution_setup.setup_virtualenv_options(BrokenSetup())
 
 
 def test_lamindb_setup_reaches_the_flow_tasks_of_a_scope() -> None:

@@ -2,11 +2,10 @@
 
 ## 0.0.3
 
-- `LaminDBSetup.requirements()` lists default requirements installed in the virtualenvs of LaminDB
-  steps and flow operators. A task's own `requirements` take precedence for the same package; pod
-  steps don't install them.
-- `LaminDBSetup.venv_cache_path()` sets the folder Airflow caches those virtualenvs in, for tasks
-  that don't set `venv_cache_path` themselves.
+- `LaminDBSetup.virtualenv_options()` returns `VirtualenvOptions`: default requirements, virtualenv
+  cache folder and package indexes for the virtualenvs of LaminDB steps and flow operators, for
+  tasks that don't set them. A task's own requirements take precedence for the same package; pod
+  steps don't use them.
 
 ## 0.0.2
 

@@ -18,7 +18,7 @@ from airflow.providers.lamindb.execution.requirements import (
     check_lamindb_version,
     lamindb_requirement_lines,
 )
-from airflow.providers.lamindb.execution.setup import LaminDBSetup, setup_requirements, setup_venv_cache_path
+from airflow.providers.lamindb.execution.setup import LaminDBSetup, setup_virtualenv_options
 from airflow.providers.lamindb.hooks.lamindb import LaminDBHook
 
 log = logging.getLogger(__name__)
@@ -116,13 +116,20 @@ def ensure_lamindb_requirement(
 def prepare_virtualenv(
     operator: Any, remote: RemoteLaminDB, lamindb_version: str | None, setup: LaminDBSetup | None
 ) -> None:
-    """Give a virtualenv operator lamindb and its setup's requirements, and the setup's cache path.
+    """Give a virtualenv operator lamindb and its setup's ``VirtualenvOptions``.
 
-    The setup's ``venv_cache_path`` is used only if the operator's is ``None``.
+    Set at execute time, after Airflow recorded the rendered template fields, so index URLs don't
+    show there. The setup's indexes apply only if the operator sets none of its own.
     """
-    ensure_lamindb_requirement(operator, remote, lamindb_version, setup_requirements(setup))
+    options = setup_virtualenv_options(setup)
+    ensure_lamindb_requirement(operator, remote, lamindb_version, options.requirements)
     if operator.venv_cache_path is None:
-        operator.venv_cache_path = setup_venv_cache_path(setup)
+        operator.venv_cache_path = options.venv_cache_path
+    if operator.index_urls is None and operator.index_urls_from_connection_ids is None:
+        if options.index_urls is not None:
+            operator.index_urls = list(options.index_urls)
+        if options.index_urls_from_connection_ids is not None:
+            operator.index_urls_from_connection_ids = list(options.index_urls_from_connection_ids)
 
 
 @contextmanager

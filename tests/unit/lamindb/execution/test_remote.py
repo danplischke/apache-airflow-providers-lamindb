@@ -162,7 +162,9 @@ def test_add_default_requirements(requirements: list[str], defaults: list[str], 
 
 @pytest.mark.parametrize("default", ["lamindb", "lamindb[bionty]>=2.11", "lamindb-core"])
 def test_default_requirements_must_not_list_lamindb(default: str) -> None:
-    with pytest.raises(ValueError, match="pin lamindb with lamindb_version"):
+    with pytest.raises(
+        ValueError, match=r"VirtualenvOptions\.requirements lists .*; pin lamindb with lamindb_version"
+    ):
         add_default_requirements([], [default])
 
 

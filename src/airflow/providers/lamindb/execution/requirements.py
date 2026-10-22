@@ -99,7 +99,7 @@ def add_default_requirements(requirements: list[str], defaults: Iterable[str]) -
         name = _requirement_name(default)
         if name in _LAMINDB_NAMES:
             raise ValueError(
-                f"LaminDBSetup.requirements() lists {default!r}; pin lamindb with lamindb_version, or "
+                f"VirtualenvOptions.requirements lists {default!r}; pin lamindb with lamindb_version, or "
                 "list it in the task's requirements"
             )
         key = name or default
