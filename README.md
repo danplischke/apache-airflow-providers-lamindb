@@ -24,7 +24,7 @@ state store that the event triggers use to resume after restarts.
 Supports lamindb 2.8.1 and newer only, for LaminDB instances and for the lamindb that lineage tasks
 run. Older versions fail deliberately with an explicit error.
 
-Lineage tasks install `lamindb-core` in their own virtualenv or use the pod's image, so its version
+Lineage tasks install `lamindb` in their own virtualenv or use the pod's image, so its version
 does not have to fit Airflow's dependencies. Tested end to end with Airflow 3.3.2 and lamindb 2.8.1
 and 2.11.0.
 
@@ -90,7 +90,7 @@ with DAG("my_pipeline_with_flow") as dag:
 ```
 
 - `@task.lamindb_virtualenv(...)` works like `@task.virtualenv`; the function runs as a tracked task in a
-  virtualenv that installs `lamindb-core` in the instance's version.
+  virtualenv that installs `lamindb` in the instance's version.
 - `@task.lamindb_kubernetes(image=..., ...)` works like `@task.kubernetes`; the image needs
   lamindb and an API key for the instance, for example from a Kubernetes secret.
 - `LaminDBFlow(...)` is an optional context manager. Every task invocation created inside it,
@@ -198,7 +198,7 @@ Wait for a completed run of a script, filtering with enums instead of LaminHub R
 
 ```python
 from airflow.providers.lamindb.sensors.records import LaminDBRecordSensor
-from airflow.providers.lamindb.utils.filters import (
+from airflow.providers.lamindb.client.filters import (
     F,
     LaminDBRegistry,
     RunField,

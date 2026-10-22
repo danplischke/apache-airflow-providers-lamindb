@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from airflow.providers.lamindb.utils.remote import RemoteLaminDB
+from airflow.providers.lamindb.execution.environment import RemoteLaminDB
 
 if TYPE_CHECKING:
     from unit.lamindb.fakes import FakeHook
@@ -36,7 +36,7 @@ def lamindb_connection(monkeypatch):
 @pytest.fixture(autouse=True)
 def _fresh_configured_setup():
     """The [lamindb] setup_class is read once per process; tests change it through the environment."""
-    from airflow.providers.lamindb.utils.remote import configured_setup
+    from airflow.providers.lamindb.execution.setup import configured_setup
 
     configured_setup.cache_clear()
     yield

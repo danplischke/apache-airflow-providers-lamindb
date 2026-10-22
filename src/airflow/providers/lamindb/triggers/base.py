@@ -8,14 +8,23 @@ from collections import deque
 from collections.abc import AsyncIterator, Iterable, Mapping
 from typing import TYPE_CHECKING, Any
 
+from airflow.providers.lamindb.client.client import MAX_PAGE_SIZE, LaminDBInstance
+from airflow.providers.lamindb.client.dbwrite import dbwrite_summary
+from airflow.providers.lamindb.client.models import UserRecordResponse
 from airflow.providers.lamindb.exceptions import LaminDBApiError
-from airflow.providers.lamindb.hooks.lamindb import MAX_PAGE_SIZE, LaminDBHook, LaminDBInstance
+from airflow.providers.lamindb.hooks.lamindb import LaminDBHook
 from airflow.providers.lamindb.triggers.cursors import CursorBackend, CursorStore
-from airflow.providers.lamindb.utils.dbwrite import dbwrite_summary
+from airflow.providers.lamindb.triggers.events import (
+    BranchBlockEventPayload,
+    BranchStatusEventPayload,
+    DbWriteEventPayload,
+    RecordEventPayload,
+    UserSummary,
+)
 from airflow.triggers.base import BaseEventTrigger, TriggerEvent
 
 if TYPE_CHECKING:
-    from airflow.providers.lamindb.utils.filters import Filter
+    from airflow.providers.lamindb.client.filters import FilterExpression
 
 _MAX_ERROR_BACKOFF = 600.0
 
@@ -69,7 +78,7 @@ class LaminDBDbWriteEventTrigger(BaseEventTrigger):
         self.batch_size = batch_size
         self.max_batches_per_poll = max_batches_per_poll
         self.cursor_store = CursorStore.coerce(cursor_store)
-        self._users: dict[int, dict[str, Any]] = {}
+        self._users: dict[int, UserRecordResponse] = {}
 
     # -- subclass API --------------------------------------------------------------------------------
 
@@ -80,7 +89,7 @@ class LaminDBDbWriteEventTrigger(BaseEventTrigger):
     async def _setup(self, hook: LaminDBHook) -> None:
         """Resolve anything that requires the API (registries, branch ids); called before polling."""
 
-    def _dbwrite_filter(self) -> Filter:
+    def _dbwrite_filter(self) -> FilterExpression:
         """Filter for the database writes this trigger is interested in."""
         raise NotImplementedError
 
@@ -228,17 +237,28 @@ class LaminDBDbWriteEventTrigger(BaseEventTrigger):
         except LaminDBApiError:
             self.log.warning("Could not look up LaminDB users %s", sorted(missing), exc_info=True)
 
-    def _user_summary(self, user_id: int | None) -> dict[str, Any] | None:
+    def _user_summary(self, user_id: int | None) -> UserSummary | None:
         if user_id is None:
             return None
-        user = self._users.get(user_id, {})
-        return {"id": user_id, "handle": user.get("handle"), "name": user.get("name")}
+        user = self._users.get(user_id) or UserRecordResponse()
+        return UserSummary(id=user_id, handle=user.handle, name=user.name)
 
     def _payload(self, instance: LaminDBInstance, write: Mapping[str, Any], **fields: Any) -> dict[str, Any]:
-        return {
-            "instance": instance.slug,
-            "instance_id": instance.id,
-            **fields,
-            "changed_by": self._user_summary(write.get("created_by_id")),
-            "dbwrite": dbwrite_summary(write),
-        }
+        event_model: type[DbWriteEventPayload] = DbWriteEventPayload
+        event = fields.get("event")
+        if event in ("created", "updated", "deleted"):
+            event_model = RecordEventPayload
+        elif event == "status_changed":
+            event_model = BranchStatusEventPayload
+        elif event == "block_created":
+            event_model = BranchBlockEventPayload
+        payload = event_model.model_validate(
+            {
+                "instance": instance.slug,
+                "instance_id": instance.id,
+                **fields,
+                "changed_by": self._user_summary(write.get("created_by_id")),
+                "dbwrite": dbwrite_summary(write),
+            }
+        )
+        return payload.model_dump(exclude_unset=True, by_alias=True)

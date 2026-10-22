@@ -4,7 +4,9 @@ from typing import Any
 
 import pytest
 from airflow.triggers.base import TriggerEvent
+from pydantic import ValidationError
 
+from airflow.providers.lamindb.client.filters import F
 from airflow.providers.lamindb.exceptions import LaminDBApiError, LaminDBVersionError
 from airflow.providers.lamindb.triggers import base
 from airflow.providers.lamindb.triggers.base import LaminDBDbWriteEventTrigger
@@ -26,7 +28,7 @@ class EchoTrigger(LaminDBDbWriteEventTrigger):
         return {"table": self.table}
 
     def _dbwrite_filter(self):
-        return {"table_name": {"eq": self.table}}
+        return F("table_name") == self.table
 
     async def _events_for(self, hook, instance, writes):
         await self._load_users(hook, writes)
@@ -79,6 +81,32 @@ def lamindb_cursor(hook, key: str, store: RecordCursorStore | None = None):
 
 def stored(cursor: int, instance_id: str = INSTANCE.id) -> dict[str, Any]:
     return {"dbwrite_id": cursor, "instance_id": instance_id}
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {
+            "event": "created",
+            "registry": "core.artifact",
+            "table_name": "lamindb_artifact",
+            "record_id": "invalid-id",
+            "record": None,
+            "previous": None,
+            "changed_fields": [],
+        },
+        {
+            "event": "status_changed",
+            "branch": {"id": 10, "status": "invalid-status"},
+            "from_status": "draft",
+            "to_status": "review",
+        },
+        {"event": "block_created", "kind": "comment", "block": {"id": "invalid-id"}, "branch": None},
+    ],
+)
+def test_builtin_event_fields_are_validated(fields):
+    with pytest.raises(ValidationError):
+        EchoTrigger()._payload(INSTANCE, dbwrite(1, "INSERT", "t", 1), **fields)
 
 
 class TestPolling:

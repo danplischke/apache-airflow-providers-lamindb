@@ -1,5 +1,85 @@
 # Changelog
 
+## 0.0.2
+
+**Breaking:** the modules are reorganised by layer. Old import paths are removed; update imports as
+follows.
+
+- `client/` is the LaminHub REST client and query language. It does not depend on the Airflow
+  task SDK.
+  - `hooks.models` → `client.models`.
+  - `utils.filters` → `client.filters`, `utils.enums` → `client.enums`, `utils.dbwrite` →
+    `client.dbwrite`.
+  - `utils.lamindb` is split: branch statuses → `client.branches`, artifact helpers
+    (`artifact_filter`, `storage_ongoing`, `is_internal_artifact`) → `client.artifacts`,
+    `normalize_str_list` → `client.enums`, `parse_json_value` → `client.dbwrite`, and
+    `resolve_branch_id`/`resolve_space_id` → `triggers.cursors`.
+  - From `hooks.lamindb`: `LaminDBInstance`, `parse_instance_slug`, `chunk_ids`, `MAX_PAGE_SIZE` and
+    `DEFAULT_HUB_API_URL` → `client.client`; `Registry`, `DBWRITE_REGISTRY`, `resolve_registry` and
+    `normalize_registry_name` → `client.registries`.
+  - New `LaminHubClient` and `LaminHubConfig` in `client.client`.
+- `LaminDBHook` delegates to a `LaminHubClient` (`get_client()`/`aget_client()`); its public query
+  and write methods are unchanged. `get_conn()` now returns the `LaminHubClient`, not an
+  `httpx.Client`; `get_async_conn()` is removed.
+- `execution/` is what runs tasks in virtualenvs and pods. It replaces `utils.remote`, `utils.runtime`,
+  `utils.models` and `utils.dag_run`:
+  - `utils.remote` is split into `execution.setup` (`LaminDBSetup`; update `[lamindb] setup_class`
+    subclasses), `execution.source`, `execution.requirements`, `execution.environment` and
+    `execution.parameters`.
+  - `utils.runtime` → `execution.runtime`, `utils.models` → `execution.config`,
+    `utils.dag_run` → `execution.dag_run`.
+- `RemoteLaminDBStepMixin`, `task_setting`, `check_same_setup`, `check_flow_instance` and
+  `reject_auto_flow` → `operators.step`.
+- `triggers.models` → `triggers.events`.
+
+**Breaking:** filters and responses are typed.
+
+- Filters are `FilterExpression`s only. Hook, client, sensor and trigger `filter` arguments, `&`/`|`,
+  `And`/`Or`, `combine_filters` and `artifact_filter(extra=...)` raise a `TypeError` for dicts;
+  parse JSON filters with `FilterExpression.from_dict`. `Filter` and `FilterLike` are removed.
+- `combine_filters`, `artifact_filter` and `branch_scope_filter` return a `FilterExpression` (call
+  `to_dict()` for the JSON form); `normalize_filter`, `filter_field_paths`, `is_local_filter` and
+  `matches_filter` take one.
+- `order_by` takes field names or `RecordOrder`, not dicts.
+- `get_schema()` returns an `InstanceSchemaResponse` (`resolve_registry` takes one),
+  `get_branch()` a `BranchRecordResponse` and `get_users()` `{id: UserRecordResponse}`, also in the
+  async variants. `branch_summary()` returns a `BranchSummary`. Records of `query_records`,
+  `get_records_by_ids` and `query_dbwrites` stay dicts, because their columns depend on the registry
+  and `select`.
+- `registry` arguments are annotated as `LaminDBRegistry | Registry | str` (sensors and triggers:
+  `LaminDBRegistry | str`).
+
+**Breaking:** virtualenvs install `lamindb` instead of `lamindb-core` plus a hand-maintained list of
+`numpy`, `pandas` and `pandera` (`LAMINDB_CORE_COMPANIONS`/`LAMINDB_CORE_COMPANIONS_PANDAS_2`, now
+removed). lamindb's own metadata sets the pandas bound for each version. A listed `lamindb-core` is no
+longer completed with these packages. `execution.requirements.lamindb_requirements()` is now
+`lamindb_requirement()` and returns one requirement.
+
+**Breaking:** facts that lamindb and the instance schema already provide are no longer copied.
+
+- `execution.runtime` takes run status codes from `lamindb.base.types.RUN_STATUS_TO_CODE`; its
+  `STATUS_*` constants are removed. `lamindb_version_at_least` is removed; use
+  `lamindb_version_supported`.
+- `execution.dag_run.MAX_REFERENCE_LENGTH` is now the one in `execution.runtime`.
+- `client.dbwrite.DBWRITE_SUMMARY_FIELDS` is removed: event payloads include the declared
+  `DbWriteResponse` fields except `data`, as before.
+- `triggers.branches.BRANCH_TABLE` and `BRANCH_BLOCK_TABLE` are removed: the branch triggers take
+  the table names from the instance schema, like the record triggers.
+- Requirements are recognised as lamindb with `packaging`, so pip's name normalisation applies, for
+  example to `lamindb.core`.
+- Tests check the branch status codes and field enums that the worker keeps without lamindb against
+  lamindb itself.
+
+Fixes:
+
+- The code generated for virtualenvs and pods is composed from `ast` nodes. A callable name that is
+  not a Python identifier, or a step setting that is not a Python literal, now fails on the worker
+  instead of in the virtualenv or pod.
+- An artifact write with a malformed `_aux` or `kind` no longer stops the artifact event trigger.
+  `storage_ongoing` and `is_internal_artifact` return `False` for it.
+- `ArtifactRecordResponse.is_internal` and `is_internal_artifact` use the same kinds as the server-side
+  `artifact_filter` (`INTERNAL_ARTIFACT_KINDS`, now in `client.enums`), not any `__lamindb` prefix.
+
 ## 0.0.1
 
 Initial release.

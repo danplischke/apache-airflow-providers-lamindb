@@ -15,13 +15,13 @@ from typing import Any
 
 from airflow.exceptions import AirflowException
 from airflow.providers.lamindb.exceptions import LaminDBFlowWarning
+from airflow.providers.lamindb.execution.dag_run import DEFAULT_SCOPE, flow_task_ids, validate_scope_id
 from airflow.providers.lamindb.operators.flow import (
     _CREATED_BY_LAMINDB_FLOW,
     LaminDBFlowFinishOperator,
     LaminDBFlowInitOperator,
 )
-from airflow.providers.lamindb.utils.dag_run import DEFAULT_SCOPE, flow_task_ids, validate_scope_id
-from airflow.providers.lamindb.utils.remote import RemoteLaminDBStepMixin, check_same_setup, task_setting
+from airflow.providers.lamindb.operators.step import RemoteLaminDBStepMixin, check_same_setup, task_setting
 from airflow.sdk.definitions._internal.contextmanager import DagContext
 
 __all__ = ["LaminDBFlow"]

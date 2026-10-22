@@ -10,16 +10,16 @@ import respx
 from airflow.sdk import Connection
 from pydantic import ValidationError
 
-from airflow.providers.lamindb.exceptions import LaminDBApiError, LaminDBVersionError
-from airflow.providers.lamindb.hooks.lamindb import (
-    DBWRITE_REGISTRY,
-    DEFAULT_HUB_API_URL,
-    LaminDBHook,
-    Registry,
-    parse_instance_slug,
-    resolve_registry,
+from airflow.providers.lamindb.client.client import DEFAULT_HUB_API_URL, parse_instance_slug
+from airflow.providers.lamindb.client.filters import ArtifactField, Condition, F, LaminDBRegistry
+from airflow.providers.lamindb.client.models import (
+    BranchRecordResponse,
+    InstanceSchemaResponse,
+    UserRecordResponse,
 )
-from airflow.providers.lamindb.utils.filters import ArtifactField, F, LaminDBRegistry
+from airflow.providers.lamindb.client.registries import DBWRITE_REGISTRY, Registry, resolve_registry
+from airflow.providers.lamindb.exceptions import LaminDBApiError, LaminDBVersionError
+from airflow.providers.lamindb.hooks.lamindb import LaminDBHook
 
 HUB = "https://hub.example.com/api"
 API = "https://api.example.com/api"
@@ -37,6 +37,7 @@ SCHEMA = {
     "core": {
         "artifact": {"table_name": "lamindb_artifact"},
         "branch": {"table_name": "lamindb_branch"},
+        "branchblock": {"table_name": "lamindb_branchblock"},
         "user": {"table_name": "lamindb_user"},
         "ulabel": {"table_name": "lamindb_ulabel"},
     },
@@ -159,13 +160,24 @@ class TestRegistry:
         ],
     )
     def test_resolve(self, name, expected):
-        assert resolve_registry(SCHEMA, name) == expected
+        assert resolve_registry(InstanceSchemaResponse.model_validate(SCHEMA), name) == expected
 
     def test_unknown(self):
+        schema = InstanceSchemaResponse.model_validate(SCHEMA)
         with pytest.raises(ValueError, match=r"Unknown registry core\.nope"):
-            resolve_registry(SCHEMA, "core.nope")
+            resolve_registry(schema, "core.nope")
         with pytest.raises(ValueError, match="Unknown schema module 'nope'"):
-            resolve_registry(SCHEMA, "nope.thing")
+            resolve_registry(schema, "nope.thing")
+
+    @pytest.mark.parametrize("async_mode", [False, True])
+    async def test_get_schema_returns_the_model(self, hook, mock_api, async_mode):
+        try:
+            schema = await hook.aget_schema() if async_mode else hook.get_schema()
+            assert isinstance(schema, InstanceSchemaResponse)
+            assert schema.root["bionty"]["gene"].table_name == "bionty_gene"
+            assert schema == InstanceSchemaResponse.model_validate(SCHEMA)
+        finally:
+            await hook.aclose()
 
     def test_get_registry_uses_schema(self, hook, mock_api):
         assert hook.get_registry("bionty.gene").table_name == "bionty_gene"
@@ -196,7 +208,7 @@ class TestAuthentication:
             with pytest.raises(LaminDBApiError, match="access token") as err:
                 await hook.aget_instance() if async_mode else hook.get_instance()
             assert "sensitive-value" not in str(err.value)
-            assert hook._access_token is None
+            assert hook.get_client()._access_token is None
         finally:
             await hook.aclose()
 
@@ -212,7 +224,7 @@ class TestAuthentication:
             with pytest.raises(LaminDBApiError, match="Unexpected settings response") as err:
                 await hook.aget_instance() if async_mode else hook.get_instance()
             assert "sensitive-value" not in str(err.value)
-            assert hook._instance is None
+            assert hook.get_client()._instance is None
         finally:
             await hook.aclose()
 
@@ -307,16 +319,85 @@ class TestRetries:
 
     def test_backoff_respects_retry_after(self, hook):
         response = httpx.Response(429, headers={"Retry-After": "7"})
-        assert hook._backoff(0, response) == 7
-        assert LaminDBHook(retry_backoff=2)._backoff(3) == 16
+        assert hook.get_client()._backoff(0, response) == 7
+        assert LaminDBHook(None, "owner/name", retry_backoff=2).get_client()._backoff(3) == 16
 
 
 class TestQueries:
     @pytest.mark.parametrize("async_mode", [False, True])
+    @pytest.mark.parametrize(
+        "schema",
+        [
+            [],
+            {"core": []},
+            {"core": {"artifact": {"table_name": 123}}},
+            {"core": {"artifact": {"fields": ["invalid"]}}},
+        ],
+    )
+    async def test_schema_envelope_is_validated(self, hook, mock_api, async_mode, schema):
+        mock_api.get(f"{API}/instances/{INSTANCE_ID}/schema").mock(
+            return_value=httpx.Response(200, json=schema)
+        )
+        try:
+            with pytest.raises(LaminDBApiError, match="Unexpected schema response"):
+                await hook.aget_schema() if async_mode else hook.get_schema()
+            assert hook.get_client()._schema is None
+        finally:
+            await hook.aclose()
+
+    @pytest.mark.parametrize("async_mode", [False, True])
+    @pytest.mark.parametrize(
+        ("registry", "row"),
+        [
+            ("core.artifact", {"id": 1, "_aux": '{"so": 1, "custom": 2}', "extension": {"field": None}}),
+            ("core.artifact", {"created_by": {"handle": "alice"}}),
+            ("hubmodule.dbwrite", {"id": 1, "data": {"_aux": "null"}, "extension": "value"}),
+            ("hubmodule.dbwrite", {"id": 1}),
+        ],
+    )
+    async def test_partial_record_validation_preserves_dictionary_payloads(
+        self, hook, mock_api, async_mode, registry, row
+    ):
+        module, model = registry.split(".")
+        mock_api.post(f"{RECORDS_URL}/{module}/{model}").mock(return_value=httpx.Response(200, json=[row]))
+        try:
+            method = hook.aquery_records if async_mode else hook.query_records
+            result = method(registry)
+            records = await result if async_mode else result
+            assert records == [row]
+        finally:
+            await hook.aclose()
+
+    @pytest.mark.parametrize("async_mode", [False, True])
+    @pytest.mark.parametrize(
+        ("registry", "row"),
+        [
+            ("core.artifact", {"id": 1, "kind": 123}),
+            ("core.artifact", {"id": 1, "_aux": '{"so": "yes"}'}),
+            ("hubmodule.dbwrite", {"id": 1, "event_type": ["UPDATE"]}),
+            ("hubmodule.dbwrite", {"id": 1, "sqlrecord_id": "not-an-id"}),
+            ("hubmodule.dbwrite", {"id": 1, "data": ["invalid"]}),
+            ("core.branch", {"id": 1, "_status_code": "not-a-code"}),
+            ("core.branch", {"id": 1, "name": ["invalid-name"]}),
+            ("core.branchblock", {"id": 1, "branch_id": "not-an-id"}),
+            ("core.user", {"id": 1, "handle": ["invalid-handle"]}),
+        ],
+    )
+    async def test_known_record_fields_are_validated(self, hook, mock_api, async_mode, registry, row):
+        module, model = registry.split(".")
+        mock_api.post(f"{RECORDS_URL}/{module}/{model}").mock(return_value=httpx.Response(200, json=[row]))
+        try:
+            with pytest.raises(LaminDBApiError, match="Unexpected response when querying") as err:
+                await hook.aquery_records(registry) if async_mode else hook.query_records(registry)
+            assert "not-an-id" not in str(err.value)
+        finally:
+            await hook.aclose()
+
+    @pytest.mark.parametrize("async_mode", [False, True])
     async def test_query_optional_fields_keep_their_wire_shape(self, hook, mock_api, async_mode):
         route = mock_api.post(f"{RECORDS_URL}/core/artifact").mock(return_value=httpx.Response(200, json=[]))
         kwargs = {
-            "filter": {"description": {"eq": None}},
+            "filter": Condition("description", "eq", None),
             "branch_ids": [],
             "select": [],
             "search": "",
@@ -357,7 +438,7 @@ class TestQueries:
         try:
             result = method(
                 "core.artifact",
-                {"suffix": {"eq": ".csv"}},
+                F(ArtifactField.SUFFIX) == ".csv",
                 order_by=["-created_at"],
                 limit=450,
                 branch_ids=[1],
@@ -394,8 +475,10 @@ class TestQueries:
 
     def test_query_records_validates_filters(self, hook, mock_api):
         route = mock_api.post(f"{RECORDS_URL}/core/artifact").mock(return_value=httpx.Response(200, json=[]))
-        with pytest.raises(ValueError, match="Unknown filter operator 'equals'"):
-            hook.query_records("core.artifact", {"suffix": {"equals": ".csv"}})
+        with pytest.raises(TypeError, match=r"FilterExpression\.from_dict"):
+            hook.query_records("core.artifact", {"suffix": {"eq": ".csv"}})  # type: ignore[arg-type]
+        with pytest.raises(TypeError, match="Sort entries are strings or RecordOrder"):
+            hook.query_records("core.artifact", order_by=[{"field": "size"}])  # type: ignore[list-item]
         assert not route.called
 
     def test_query_records_default_order(self, hook, mock_api):
@@ -417,7 +500,9 @@ class TestQueries:
                 200, json=[{"id": i} for i in json.loads(request.content)["filter"]["and"][0]["id"]["in"]]
             )
         )
-        records = hook.get_records_by_ids("core.artifact", range(250), filter={"kind": {"eq": "dataset"}})
+        records = hook.get_records_by_ids(
+            "core.artifact", range(250), filter=F(ArtifactField.KIND) == "dataset"
+        )
         assert sorted(records) == list(range(250))
         assert route.call_count == 2
         assert request_body(route.calls[0])["filter"]["and"][1] == {"kind": {"eq": "dataset"}}
@@ -426,7 +511,7 @@ class TestQueries:
         route = mock_api.post(f"{RECORDS_URL}/hubmodule/dbwrite").mock(
             return_value=httpx.Response(200, json=[{"id": 11}])
         )
-        assert hook.query_dbwrites({"table_name": {"eq": "lamindb_branch"}}, after_id=10) == [{"id": 11}]
+        assert hook.query_dbwrites(F("table_name") == "lamindb_branch", after_id=10) == [{"id": 11}]
         assert request_body(route.calls[0]) == {
             "filter": {"and": [{"id": {"gt": 10}}, {"table_name": {"eq": "lamindb_branch"}}]},
             "order_by": [{"field": "id", "descending": False}],
@@ -450,7 +535,9 @@ class TestQueries:
         route = mock_api.post(f"{RECORDS_URL}/core/branch").mock(
             return_value=httpx.Response(200, json=[{"id": 5, "name": "main"}])
         )
-        assert hook.get_branch(branch) == {"id": 5, "name": "main"}
+        record = hook.get_branch(branch)
+        assert isinstance(record, BranchRecordResponse)
+        assert (record.id, record.name) == (5, "main")
         assert request_body(route.calls[0])["filter"] == expected_filter
 
     def test_get_branch_missing(self, hook, mock_api):
@@ -459,6 +546,29 @@ class TestQueries:
 
 
 class TestWrites:
+    @pytest.mark.parametrize("async_mode", [False, True])
+    @pytest.mark.parametrize("operation", ["insert", "update"])
+    async def test_known_write_response_fields_are_validated(self, hook, mock_api, async_mode, operation):
+        mock_api.put(f"{RECORDS_URL}/core/artifact").mock(
+            return_value=httpx.Response(200, json=[{"id": "invalid-record-id"}])
+        )
+        mock_api.patch(f"{RECORDS_URL}/core/artifact/u1").mock(
+            return_value=httpx.Response(200, json={"kind": ["invalid-kind"]})
+        )
+        if operation == "insert":
+            method = hook.ainsert_records if async_mode else hook.insert_records
+            args = ("core.artifact", [{"key": "a.csv"}])
+        else:
+            method = hook.aupdate_record if async_mode else hook.update_record
+            args = ("core.artifact", "u1", {"key": "a.csv"})
+        try:
+            with pytest.raises(LaminDBApiError, match="Unexpected response when writing") as err:
+                await method(*args) if async_mode else method(*args)
+            assert "invalid-record-id" not in str(err.value)
+            assert "invalid-kind" not in str(err.value)
+        finally:
+            await hook.aclose()
+
     @pytest.mark.parametrize("async_mode", [False, True])
     async def test_write_bodies_preserve_dynamic_fields_and_nulls(self, hook, mock_api, async_mode):
         record = {"description": None, "custom_field": {"values": [None, True, 1, 1.5, "value"]}}
@@ -622,18 +732,20 @@ class TestAsync:
         )
         try:
             assert (await hook.aget_instance()).id == INSTANCE_ID
-            assert await hook.aget_branch("main") == {"id": 1, "name": "main"}
+            assert await hook.aget_branch("main") == BranchRecordResponse(id=1, name="main")
             assert route.call_count == 2
             assert await hook.aget_latest_dbwrite_id() == 42
             assert await hook.aquery_dbwrites(after_id=1) == [{"id": 42}]
-            assert await hook.aget_users([7]) == {7: {"id": 7, "handle": "alice"}}
+            users = await hook.aget_users([7])
+            assert users == {7: UserRecordResponse(id=7, handle="alice")}
+            assert hook.get_users([7]) == users
             assert (await hook.aget_registry("bionty.gene")).table_name == "bionty_gene"
             auth_headers = {call.request.headers.get("authorization") for call in mock_api.calls[1:]}
             assert len(auth_headers) == 1
             assert next(iter(auth_headers)).startswith("Bearer ")
         finally:
             await hook.aclose()
-        assert hook._async_client is None
+        assert hook.get_client()._async_client is None
 
     async def test_async_error(self, connection, mock_api):
         hook = LaminDBHook("lamindb_test", retry_backoff=0, retries=0)

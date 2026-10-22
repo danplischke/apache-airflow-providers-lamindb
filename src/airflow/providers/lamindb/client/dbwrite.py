@@ -2,54 +2,48 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterable, Mapping
 from typing import Any, Literal
 
-from airflow.providers.lamindb.utils.lamindb import storage_ongoing
+from airflow.providers.lamindb.client.artifacts import storage_ongoing
+from airflow.providers.lamindb.client.models import DbWriteResponse
 
 RecordEvent = Literal["created", "updated", "deleted"]
 RECORD_EVENTS: tuple[RecordEvent, ...] = ("created", "updated", "deleted")
 
 _RAW_EVENTS: dict[str, RecordEvent] = {"INSERT": "created", "UPDATE": "updated", "DELETE": "deleted"}
 
-DBWRITE_SUMMARY_FIELDS = (
-    "id",
-    "uid",
-    "event_type",
-    "table_name",
-    "sqlrecord_id",
-    "created_at",
-    "created_by_id",
-    "branch_id",
-    "space_id",
-    "run_id",
-)
+_SUMMARY_FIELDS = set(DbWriteResponse.model_fields) - {"data"}
 
 
-def previous_values(write: Mapping[str, Any]) -> dict[str, Any]:
+def previous_values(write: DbWriteResponse | Mapping[str, Any]) -> dict[str, Any]:
     """
     Return the previous values logged with a write.
 
     ``UPDATE``: the previous values of the changed fields. ``DELETE``: the full previous row.
     ``INSERT``: empty.
     """
-    data = write.get("data")
-    return dict(data) if isinstance(data, Mapping) else {}
+    data = DbWriteResponse.model_validate(write).data
+    return dict(data) if data is not None else {}
 
 
-def changed_fields(write: Mapping[str, Any]) -> list[str]:
+def changed_fields(write: DbWriteResponse | Mapping[str, Any]) -> list[str]:
     """Return the fields changed by an ``UPDATE`` write."""
-    if write.get("event_type") != "UPDATE":
+    parsed = DbWriteResponse.model_validate(write)
+    if parsed.event_type != "UPDATE":
         return []
-    return sorted(previous_values(write))
+    return sorted(previous_values(parsed))
 
 
-def dbwrite_summary(write: Mapping[str, Any]) -> dict[str, Any]:
-    """The subset of a write log entry that is included in trigger event payloads."""
-    return {field: write.get(field) for field in DBWRITE_SUMMARY_FIELDS}
+def dbwrite_summary(write: DbWriteResponse | Mapping[str, Any]) -> dict[str, Any]:
+    """The known fields of a write log entry except ``data``, as included in trigger event payloads."""
+    return DbWriteResponse.model_validate(write).model_dump(include=_SUMMARY_FIELDS)
 
 
-def classify_record_write(write: Mapping[str, Any], branch_id: int | None) -> RecordEvent | None:
+def classify_record_write(
+    write: DbWriteResponse | Mapping[str, Any], branch_id: int | None
+) -> RecordEvent | None:
     """
     Classify a write to a record into a semantic record event.
 
@@ -60,11 +54,12 @@ def classify_record_write(write: Mapping[str, Any], branch_id: int | None) -> Re
     ``updated`` when it changes on the branch, and ``deleted`` when it is deleted from the branch or
     moves off it (``.delete()`` moves records to the trash branch).
     """
-    event_type = write.get("event_type")
+    parsed = DbWriteResponse.model_validate(write)
+    event_type = parsed.event_type
     if branch_id is None:
         return _RAW_EVENTS.get(str(event_type))
-    current_branch = write.get("branch_id")
-    data = previous_values(write)
+    current_branch = parsed.branch_id
+    data = previous_values(parsed)
     if event_type == "INSERT":
         return "created" if current_branch == branch_id else None
     if event_type == "UPDATE":
@@ -80,25 +75,23 @@ def classify_record_write(write: Mapping[str, Any], branch_id: int | None) -> Re
     return None
 
 
-def is_branch_move(write: Mapping[str, Any]) -> bool:
+def is_branch_move(write: DbWriteResponse | Mapping[str, Any]) -> bool:
     """Whether an ``UPDATE`` moved a record to another branch."""
-    data = previous_values(write)
-    return (
-        write.get("event_type") == "UPDATE"
-        and "branch_id" in data
-        and data["branch_id"] != write.get("branch_id")
-    )
+    parsed = DbWriteResponse.model_validate(write)
+    data = previous_values(parsed)
+    return parsed.event_type == "UPDATE" and "branch_id" in data and data["branch_id"] != parsed.branch_id
 
 
-def is_upload_completion(write: Mapping[str, Any]) -> bool:
+def is_upload_completion(write: DbWriteResponse | Mapping[str, Any]) -> bool:
     """
     Whether an artifact ``UPDATE`` marks the completion of an upload to storage.
 
     LaminDB flags artifacts whose upload is in progress with ``_aux = {"so": 1}`` and removes the flag
     once the upload succeeded (the artifact record is deleted if the upload fails).
     """
-    data = previous_values(write)
-    return write.get("event_type") == "UPDATE" and "_aux" in data and storage_ongoing(data["_aux"])
+    parsed = DbWriteResponse.model_validate(write)
+    data = previous_values(parsed)
+    return parsed.event_type == "UPDATE" and "_aux" in data and storage_ongoing(data["_aux"])
 
 
 def resolve_status_transitions(
@@ -136,3 +129,17 @@ def resolve_status_transitions(
         next_code[record_id] = previous_code
     transitions.reverse()
     return transitions
+
+
+def parse_json_value(value: Any) -> Any:
+    """
+    Decode JSON columns in the database write log.
+
+    Previous values of JSON fields (such as ``_aux``) are stored as JSON-encoded strings.
+    """
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except ValueError:
+            return value
+    return value

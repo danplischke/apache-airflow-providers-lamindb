@@ -4,23 +4,22 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from airflow.providers.lamindb.hooks.lamindb import LaminDBHook
-from airflow.providers.lamindb.utils.remote import (
-    ExcludeTemplated,
-    LaminDBSetup,
+from airflow.providers.lamindb.execution.environment import (
     RemoteLaminDB,
-    RemoteLaminDBStepMixin,
-    check_lamindb_version,
     ensure_lamindb_requirement,
     lamindb_virtualenv_env,
-    reject_auto_flow,
-    resolve_setup,
-    setup_execution_env,
 )
+from airflow.providers.lamindb.execution.requirements import check_lamindb_version
+from airflow.providers.lamindb.execution.setup import LaminDBSetup, resolve_setup, setup_execution_env
+from airflow.providers.lamindb.hooks.lamindb import LaminDBHook
+from airflow.providers.lamindb.operators.step import RemoteLaminDBStepMixin, reject_auto_flow
 from airflow.providers.standard.decorators.python_virtualenv import _PythonVirtualenvDecoratedOperator
 from airflow.sdk.bases.decorator import task_decorator_factory
+
+if TYPE_CHECKING:
+    from airflow.providers.lamindb.execution.parameters import ExcludeTemplated
 
 
 class LaminDBVirtualenvDecoratedOperator(RemoteLaminDBStepMixin, _PythonVirtualenvDecoratedOperator):
@@ -92,7 +91,7 @@ def lamindb_virtualenv_task(
       function saves; defaults to the flow run's space. Templated.
     - ``lamindb_branch``: name or uid of the branch for the step run and the records the
       function saves; defaults to the flow run's branch. Templated.
-    - ``lamindb_version``: version of ``lamindb-core`` added to ``requirements`` unless
+    - ``lamindb_version``: version of ``lamindb`` added to ``requirements`` unless
       you list lamindb yourself, 2.8.1 or newer; defaults to the instance's version on
       LaminHub (with a connection), else the latest. Templated, e.g. per mapped task.
     - ``lamindb_cache_dir``: absolute path of a lamindb cache shared between tasks, set as

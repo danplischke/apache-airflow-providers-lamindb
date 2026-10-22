@@ -29,7 +29,8 @@ least `min_count` records of a registry match a [filter](filters.md) on a branch
 --8<-- "tests/system/lamindb/example_lamindb_sensors.py:howto_sensor_lamindb_record"
 ```
 
-The same filter as a [LaminHub REST filter](https://docs.lamin.ai/rest):
+The same filter in the [LaminHub REST](https://docs.lamin.ai/rest) JSON form, parsed with
+`FilterExpression.from_dict`:
 `{"and": [{"transform.key": {"eq": "preprocess.py"}}, {"_status_code": {"eq": 0}}]}`.
 
 ## LaminDBArtifactSensor
@@ -51,9 +52,10 @@ LaminHub REST API directly. Every method also has an async variant with an `a` p
 - `query_records(registry, filter, order_by=..., limit=...)`: query any registry (paginated) with a
   [filter](filters.md)
 - `get_records_by_ids(registry, ids)`
-- `get_branch(name_or_id)`
+- `get_branch(name_or_id)`: a `BranchRecordResponse`, or `None`
+- `get_users(ids)`: `{id: UserRecordResponse}`
 - `query_dbwrites(filter, after_id=...)`: the database write log
-- `get_instance()` and `get_schema()`
+- `get_instance()` and `get_schema()` (an `InstanceSchemaResponse`)
 - `insert_records(registry, records)` and `update_record(registry, uid, values)`: write records; the
   API key needs write access to the instance. Inserts are not retried after errors that may have reached
   LaminHub, so a failed request never creates a record twice.

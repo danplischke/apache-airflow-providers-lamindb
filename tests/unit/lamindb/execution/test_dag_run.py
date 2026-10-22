@@ -1,12 +1,37 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
+from pydantic import ValidationError
 
-from airflow.providers.lamindb.utils import dag_run
+from airflow.providers.lamindb.execution import dag_run
+
+
+def test_flow_run_parameters_validate_the_fixed_envelope(make_context) -> None:
+    context = make_context()
+    context["dag"].dag_id = 123
+    with pytest.raises(ValidationError):
+        dag_run.flow_run_params(context)
+
+
+def test_flow_run_parameters_preserve_metadata_and_dynamic_conf(make_context) -> None:
+    context = make_context()
+    logical_date = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    context["dag_run"].logical_date = logical_date
+    context["dag_run"].conf = {"nested": {"values": [None, True, 1, "x"]}}
+    assert dag_run.flow_run_params(context) == {
+        "dag_id": "my_dag",
+        "run_id": "run_1",
+        "run_type": "manual",
+        "logical_date": str(logical_date),
+        "conf": {"nested": {"values": [None, True, 1, "x"]}},
+    }
+    context["dag_run"].conf = {}
+    assert "conf" not in dag_run.flow_run_params(context)
 
 
 def test_default_scope_reference_is_dag_and_run() -> None:

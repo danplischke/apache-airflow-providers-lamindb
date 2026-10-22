@@ -4,8 +4,15 @@ import re
 from collections.abc import Iterable, Mapping
 from typing import Any
 
+from airflow.providers.lamindb.client.client import LaminDBInstance
+from airflow.providers.lamindb.client.filters import FilterExpression, normalize_filter
+from airflow.providers.lamindb.client.models import (
+    BranchRecordResponse,
+    InstanceSchemaResponse,
+    UserRecordResponse,
+)
+from airflow.providers.lamindb.client.registries import Registry, resolve_registry
 from airflow.providers.lamindb.exceptions import LaminDBApiError
-from airflow.providers.lamindb.hooks.lamindb import LaminDBInstance, Registry, resolve_registry
 
 INSTANCE = LaminDBInstance(
     owner="owner", name="name", id="instance-uuid", api_url="https://api.example.com/api"
@@ -26,6 +33,7 @@ SCHEMA: dict[str, Any] = {
     },
     "bionty": {"gene": {"table_name": "bionty_gene", "fields": {"id": {}, "symbol": {}, "branch": {}}}},
 }
+SCHEMA_MODEL = InstanceSchemaResponse.model_validate(SCHEMA)
 
 _JSON_PATH = re.compile(r'^data\["(?P<key>[^"]+)"\]$')
 _MISSING = object()
@@ -41,15 +49,19 @@ def _field(row: Mapping[str, Any], path: str) -> Any:
     return row.get(path)
 
 
-def evaluate(node: Mapping[str, Any] | None, row: Mapping[str, Any]) -> bool:
-    """Evaluate a LaminHub REST filter like the server does, including ``data["key"]`` JSON paths."""
-    if not node:
-        return True
+def evaluate(filter: FilterExpression | None, row: Mapping[str, Any]) -> bool:
+    """Evaluate a filter like the server does, including ``data["key"]`` JSON paths."""
+    # normalize_filter rejects dicts, like the real client
+    node = normalize_filter(filter)
+    return True if node is None else _evaluate(node, row)
+
+
+def _evaluate(node: Mapping[str, Any], row: Mapping[str, Any]) -> bool:
     ((key, value),) = node.items()
     if key == "and":
-        return all(evaluate(child, row) for child in value)
+        return all(_evaluate(child, row) for child in value)
     if key == "or":
-        return any(evaluate(child, row) for child in value)
+        return any(_evaluate(child, row) for child in value)
     field = _field(row, key)
     ((operator, operand),) = value.items()
     if field is _MISSING:
@@ -128,11 +140,11 @@ class FakeHook:
         self._maybe_fail()
         return INSTANCE
 
-    async def aget_schema(self) -> dict[str, Any]:
-        return SCHEMA
+    async def aget_schema(self) -> InstanceSchemaResponse:
+        return SCHEMA_MODEL
 
     async def aget_registry(self, registry: str | Registry) -> Registry:
-        return resolve_registry(SCHEMA, registry)
+        return resolve_registry(SCHEMA_MODEL, registry)
 
     async def aget_latest_dbwrite_id(self) -> int:
         if self.latest_dbwrite_id is not None:
@@ -141,7 +153,7 @@ class FakeHook:
 
     async def aquery_dbwrites(
         self,
-        filter: Mapping[str, Any] | None = None,
+        filter: FilterExpression | None = None,
         *,
         after_id: int | None = None,
         limit: int = 200,
@@ -155,7 +167,7 @@ class FakeHook:
         return rows[:limit]
 
     async def aget_records_by_ids(
-        self, registry: str | Registry, ids: Iterable[int], filter: Mapping[str, Any] | None = None
+        self, registry: str | Registry, ids: Iterable[int], filter: FilterExpression | None = None
     ) -> dict[int, dict[str, Any]]:
         name = registry.name if isinstance(registry, Registry) else registry
         table = self.records.get(name, {})
@@ -164,7 +176,7 @@ class FakeHook:
     async def aquery_records(
         self,
         registry: str | Registry,
-        filter: Mapping[str, Any] | None = None,
+        filter: FilterExpression | None = None,
         *,
         order_by: Any = None,
         limit: int = 50,
@@ -176,13 +188,13 @@ class FakeHook:
         rows.sort(key=lambda r: r["id"], reverse=order_by == ["-id"])
         return rows[:limit]
 
-    async def aget_users(self, ids: Iterable[int]) -> dict[int, dict[str, Any]]:
-        return {i: self.users[i] for i in ids if i in self.users}
+    async def aget_users(self, ids: Iterable[int]) -> dict[int, UserRecordResponse]:
+        return {i: UserRecordResponse.model_validate(self.users[i]) for i in ids if i in self.users}
 
     def _log_write(self, event_type: str, registry: str, record_id: int, data: dict[str, Any] | None) -> None:
         """Log a write in the database write log, like LaminHub does for every write."""
         write_id = max((w["id"] for w in self.writes), default=0) + 1
-        table_name = resolve_registry(SCHEMA, registry).table_name
+        table_name = resolve_registry(SCHEMA_MODEL, registry).table_name
         self.writes.append(dbwrite(write_id, event_type, table_name, record_id, data=data))
 
     async def ainsert_records(
@@ -212,11 +224,11 @@ class FakeHook:
         self.updates.append((name, uid, dict(values)))
         return dict(record)
 
-    async def aget_branch(self, branch: str | int) -> dict[str, Any] | None:
+    async def aget_branch(self, branch: str | int) -> BranchRecordResponse | None:
         self._maybe_fail()
         for record in self.records.get("core.branch", {}).values():
             if record["id"] == branch or record["name"] == branch:
-                return record
+                return BranchRecordResponse.model_validate(record)
         return None
 
     async def aclose(self) -> None:

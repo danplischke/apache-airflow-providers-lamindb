@@ -6,10 +6,15 @@ from unittest.mock import MagicMock, patch
 import pytest
 from airflow.exceptions import AirflowException
 from airflow.sdk import DAG, dag, task
+from pydantic import ValidationError
 
 from airflow.providers.lamindb import LaminDBFlow
 from airflow.providers.lamindb.exceptions import LaminDBVersionError
-from airflow.providers.lamindb.utils import remote
+from airflow.providers.lamindb.execution import environment as execution_environment
+from airflow.providers.lamindb.execution import parameters as execution_parameters
+from airflow.providers.lamindb.execution import setup as execution_setup
+from airflow.providers.lamindb.execution import source as execution_source
+from airflow.providers.lamindb.operators import step as lamindb_step
 
 # these tests build flow operators on their own, which warns that they group no tasks
 pytestmark = pytest.mark.filterwarnings("ignore::airflow.providers.lamindb.exceptions.LaminDBFlowWarning")
@@ -31,6 +36,16 @@ def test_task_decorators_registered() -> None:
     assert all(hasattr(task, name) for name in ("lamindb_virtualenv", "lamindb_kubernetes"))
     # the in-process variant needed lamindb on the worker and was removed
     assert not hasattr(task, "lamindb")
+
+
+def test_step_config_is_validated_before_shipping(make_context, lamindb_connection) -> None:
+    op = _single_task(task.lamindb_virtualenv, step)
+    with (
+        patch.object(lamindb_step, "dag_source", return_value=123),
+        patch.object(type(op).__mro__[2], "execute", return_value=1),
+        pytest.raises(ValidationError),
+    ):
+        op.execute(make_context())
 
 
 def test_task_lamindb_virtualenv_keeps_xcom_args_and_dependencies() -> None:
@@ -95,7 +110,7 @@ def _execute_in_fake_venv(op, context):
         return namespace["step"]()
 
     with (
-        patch.object(remote, "dag_source", return_value="# dag source"),
+        patch.object(lamindb_step, "dag_source", return_value="# dag source"),
         patch.object(type(op).__mro__[2], "execute", fake_venv_execute),
     ):
         return op.execute(context), seen
@@ -122,7 +137,7 @@ def test_remote_step_ships_wrapped_source_only_during_execute(
     fake_lamindb.Run.filter.assert_not_called()
     context["ti"].xcom_pull.assert_not_called()
     assert op.get_python_source() == plain
-    assert seen["requirements"] == ["pandas", "lamindb-core==2.11.0", "numpy", "pandera>=0.24.0"]
+    assert seen["requirements"] == ["pandas", "lamindb==2.11.0"]
     assert seen["env_vars"]["LAMIN_API_KEY"] == "api-key"
     assert seen["settings_dir_existed"]
     assert op.env_vars is None
@@ -206,7 +221,7 @@ def test_step_ships_the_dag_file_name_and_its_task_attempt_reference(
         seen["source"] = self.get_python_source()
 
     with (
-        patch.object(remote, "dag_source", return_value="# dag source"),
+        patch.object(lamindb_step, "dag_source", return_value="# dag source"),
         patch.object(type(op).__mro__[2], "execute", fake_venv_execute),
     ):
         op.execute(context)
@@ -253,7 +268,7 @@ def test_scoped_mapped_steps_resolve_their_scope_when_unmapped(
         seen["source"] = self.get_python_source()
 
     with (
-        patch.object(remote, "dag_source", return_value="# dag source"),
+        patch.object(lamindb_step, "dag_source", return_value="# dag source"),
         patch.object(type(unmapped).__mro__[2], "execute", fake_venv_execute),
     ):
         unmapped.execute(context)
@@ -285,7 +300,7 @@ def test_step_without_connection_uses_lamindb_configuration(fake_lamindb: MagicM
     assert result == 1
     fake_lamindb.connect.assert_not_called()
     assert seen["env_vars"] == {}
-    assert seen["requirements"][0] == "lamindb-core>=2.8.1"
+    assert seen["requirements"][0] == "lamindb>=2.8.1"
 
 
 def test_untracked_steps_are_plain_tasks() -> None:
@@ -335,7 +350,7 @@ def test_task_lamindb_kubernetes_gets_only_the_instance_from_the_connection(
         seen["env_vars"] = self.env_vars
 
     with (
-        patch.object(remote, "dag_source", return_value="# dag source"),
+        patch.object(lamindb_step, "dag_source", return_value="# dag source"),
         patch.object(type(op).__mro__[2], "execute", fake_pod_execute),
     ):
         op.execute(context)
@@ -358,7 +373,7 @@ def test_task_lamindb_kubernetes_without_connection_uses_the_pod_configuration(
         seen["source"] = self.get_python_source()
 
     with (
-        patch.object(remote, "dag_source", return_value="# dag source"),
+        patch.object(lamindb_step, "dag_source", return_value="# dag source"),
         patch.object(type(op).__mro__[2], "execute", fake_pod_execute),
     ):
         op.execute(context)
@@ -403,7 +418,7 @@ def _render_and_execute(op, context):
         return namespace[self.python_callable.__name__](*self.op_args, **self.op_kwargs)
 
     with (
-        patch.object(remote, "dag_source", return_value="# dag source"),
+        patch.object(lamindb_step, "dag_source", return_value="# dag source"),
         patch.object(type(op).__mro__[2], "execute", fake_venv_execute),
     ):
         return op.execute(context)
@@ -563,7 +578,7 @@ def test_task_lamindb_kubernetes_ships_the_excluded_params(
         seen["source"] = self.get_python_source()
 
     with (
-        patch.object(remote, "dag_source", return_value="# dag source"),
+        patch.object(lamindb_step, "dag_source", return_value="# dag source"),
         patch.object(type(op).__mro__[2], "execute", fake_pod_execute),
     ):
         op.execute(context)
@@ -604,7 +619,7 @@ def test_connect_only_step_connects_without_recording(
     fake_lamindb.track.assert_not_called()
     fake_lamindb.Run.filter.assert_not_called()  # no flow run needed
     assert "run_connected" in seen["source"]
-    assert seen["requirements"] == ["lamindb-core==2.11.0", "numpy", "pandas>=2.0.0", "pandera>=0.24.0"]
+    assert seen["requirements"] == ["lamindb==2.11.0"]
     assert seen["env_vars"]["LAMIN_API_KEY"] == "api-key"
     assert not seen["settings_dir_exists_after"]
     assert op.env_vars is None
@@ -643,7 +658,7 @@ def test_connect_only_step_rejects_instances_on_older_lamindb(
     def too_old(self):
         raise LaminDBVersionError("runs lamindb 2.7.0")
 
-    monkeypatch.setattr(remote.RemoteLaminDB, "instance_lamindb_version", too_old)
+    monkeypatch.setattr(execution_environment.RemoteLaminDB, "instance_lamindb_version", too_old)
     op = _single_task(task.lamindb_virtualenv(track=False, connect=True), step)
     with pytest.raises(LaminDBVersionError, match=r"2\.7\.0"):
         _execute_connected(op, make_context())
@@ -700,7 +715,7 @@ def test_templated_lamindb_version_is_checked_once_rendered(
     context["params"] = {"pin": " 2.10.1 "}
     op.render_template_fields(context)
     _, seen = _execute_in_fake_venv(op, context)
-    assert seen["requirements"][0] == "lamindb-core==2.10.1"
+    assert seen["requirements"][0] == "lamindb==2.10.1"
 
 
 @pytest.mark.parametrize(
@@ -716,7 +731,7 @@ def test_rendered_lamindb_version_fails_before_installing(
     op.render_template_fields(context)
 
     with (
-        patch.object(remote, "dag_source", return_value="# dag source"),
+        patch.object(lamindb_step, "dag_source", return_value="# dag source"),
         patch.object(type(op).__mro__[2], "execute") as venv_execute,
         pytest.raises(LaminDBVersionError, match=error),
     ):
@@ -749,17 +764,16 @@ def test_mapped_steps_build_their_own_pinned_environment(
         mapped.render_template_fields(context)
         op = context["task"]
         with (
-            patch.object(remote, "dag_source", return_value="# dag source"),
+            patch.object(lamindb_step, "dag_source", return_value="# dag source"),
             patch.object(type(op).__mro__[2], "execute", fake_venv_execute),
         ):
             op.execute(context)
 
     assert [r[0] for r in requirements] == [
-        "lamindb-core==2.10.0",
-        "lamindb-core==2.11.0",
-        "lamindb-core==2.12.0",
+        "lamindb==2.10.0",
+        "lamindb==2.11.0",
+        "lamindb==2.12.0",
     ]
-    assert "pandas>=2.0.0" in requirements[0]  # lamindb 2.10 and newer allow pandas 3
     assert len(set(hashes)) == 3
 
 
@@ -847,7 +861,7 @@ def test_flow_init_starts_the_flow_run_in_its_space(make_context, lamindb_connec
     assert init._runtime_kwargs(make_context())["space"] is None
 
 
-class SiteSetup(remote.LaminDBSetup):
+class SiteSetup(execution_setup.LaminDBSetup):
     """Records how it was called; the token stands for a secret from an Airflow Variable."""
 
     def __init__(self) -> None:
@@ -872,7 +886,7 @@ def test_lamindb_setup_prepares_the_step_virtualenv(
     op.render_template_fields(context)
     context["ti"].xcom_pull.return_value = None
 
-    with patch.object(remote, "dag_source", return_value="# dag source"):
+    with patch.object(lamindb_step, "dag_source", return_value="# dag source"):
         result, seen = _execute_connected(op, context)
 
     assert result == 1
@@ -1061,7 +1075,7 @@ def test_sensitive_looking_names_are_still_recorded(fake_lamindb: MagicMock, mak
         return namespace["analyze"](*self.op_args, **self.op_kwargs)
 
     with (
-        patch.object(remote, "dag_source", return_value="# dag source"),
+        patch.object(lamindb_step, "dag_source", return_value="# dag source"),
         patch.object(type(op).__mro__[2], "execute", fake_venv_execute),
     ):
         op.execute(context)
@@ -1072,9 +1086,7 @@ def test_sensitive_looking_names_are_still_recorded(fake_lamindb: MagicMock, mak
     }
 
 
-@pytest.mark.parametrize(
-    ("pin", "expected"), [(2.11, "lamindb-core==2.11"), ("2.11.0", "lamindb-core==2.11.0")]
-)
+@pytest.mark.parametrize(("pin", "expected"), [(2.11, "lamindb==2.11"), ("2.11.0", "lamindb==2.11.0")])
 def test_natively_rendered_lamindb_version(
     fake_lamindb: MagicMock, make_context, lamindb_connection, pin, expected
 ):
@@ -1105,7 +1117,7 @@ def test_literal_lamindb_versions_may_be_numbers() -> None:
     ("space", "expected"), [(None, None), ("", None), ("  ", None), (" lab ", "lab"), (7, "7")]
 )
 def test_space_names(space, expected) -> None:
-    assert remote.space_name(space) == expected
+    assert execution_parameters.space_name(space) == expected
 
 
 def test_dags_with_a_lamindb_setup_serialize_the_same_on_every_parse() -> None:
@@ -1126,7 +1138,7 @@ def test_dags_with_a_lamindb_setup_serialize_the_same_on_every_parse() -> None:
     assert "test_decorators.SiteSetup()" in first
 
 
-class ConfiguredSetup(remote.LaminDBSetup):
+class ConfiguredSetup(execution_setup.LaminDBSetup):
     """Stands for an installation's [lamindb] setup_class."""
 
     def bootstrap_source(self) -> str:
@@ -1137,10 +1149,10 @@ class ConfiguredSetup(remote.LaminDBSetup):
 
 
 @pytest.fixture
-def configured_setup(monkeypatch) -> remote.LaminDBSetup:
+def configured_setup(monkeypatch) -> execution_setup.LaminDBSetup:
     monkeypatch.setenv("AIRFLOW__LAMINDB__SETUP_CLASS", f"{__name__}.ConfiguredSetup")
-    remote.configured_setup.cache_clear()
-    setup = remote.configured_setup()
+    execution_setup.configured_setup.cache_clear()
+    setup = execution_setup.configured_setup()
     assert type(setup).__name__ == "ConfiguredSetup"
     return setup
 
@@ -1160,14 +1172,16 @@ def test_the_configured_setup_prepares_every_lamindb_task(
     context = make_context()
     context["ti"].xcom_pull.return_value = None
 
-    with patch.object(remote, "dag_source", return_value="# dag source"):
+    with patch.object(lamindb_step, "dag_source", return_value="# dag source"):
         _, seen = _execute_connected(op, context)
 
     assert "SITE_CONFIGURED" in seen["source"]
     assert seen["env_vars"]["SITE_CONFIGURED_TOKEN"] == "configured"
     init = op.get_dag().get_task("lamindb_flow_init")
-    assert remote.setup_bootstrap_source(init.lamindb_setup).endswith("os.environ['SITE_CONFIGURED'] = '1'")
-    assert remote.configured_setup() is configured_setup  # loaded once per process
+    assert execution_setup.setup_bootstrap_source(init.lamindb_setup).endswith(
+        "os.environ['SITE_CONFIGURED'] = '1'"
+    )
+    assert execution_setup.configured_setup() is configured_setup  # loaded once per process
 
 
 def test_dags_and_tasks_override_the_configured_setup(configured_setup) -> None:
@@ -1179,11 +1193,11 @@ def test_dags_and_tasks_override_the_configured_setup(configured_setup) -> None:
             task.lamindb_virtualenv(load).partial(credentials="c", day="d").expand(user=["a"])
 
     built = overridden()
-    assert remote.resolve_setup(built.get_task("lamindb_flow_init").lamindb_setup) is site
+    assert execution_setup.resolve_setup(built.get_task("lamindb_flow_init").lamindb_setup) is site
 
-    opted_out = _single_task(task.lamindb_virtualenv(lamindb_setup=remote.LaminDBSetup()), step)
-    assert remote.setup_bootstrap_source(opted_out.lamindb_setup) == ""
-    assert remote.setup_execution_env(opted_out.lamindb_setup, {}) == {}
+    opted_out = _single_task(task.lamindb_virtualenv(lamindb_setup=execution_setup.LaminDBSetup()), step)
+    assert execution_setup.setup_bootstrap_source(opted_out.lamindb_setup) == ""
+    assert execution_setup.setup_execution_env(opted_out.lamindb_setup, {}) == {}
 
 
 def test_a_step_overriding_the_configured_setup_alone_fails_when_the_scope_closes(configured_setup) -> None:
@@ -1210,7 +1224,7 @@ def test_a_broken_setup_class_fails_when_the_dag_is_parsed(monkeypatch, path: st
     from airflow.providers.lamindb.operators.flow import LaminDBFlowInitOperator
 
     monkeypatch.setenv("AIRFLOW__LAMINDB__SETUP_CLASS", path)
-    remote.configured_setup.cache_clear()
+    execution_setup.configured_setup.cache_clear()
     with pytest.raises(AirflowException, match=error):
         _single_task(task.lamindb_virtualenv, step)
     with pytest.raises(AirflowException, match=error):
@@ -1226,7 +1240,7 @@ def test_equivalent_setups_are_the_same_setup() -> None:
     assert SiteSetup() == SiteSetup()
     assert hash(SiteSetup()) == hash(SiteSetup())
     assert SiteSetup() != ConfiguredSetup()
-    assert remote.LaminDBSetup() != SiteSetup()
+    assert execution_setup.LaminDBSetup() != SiteSetup()
 
     @dag
     def two_instances():
@@ -1260,7 +1274,7 @@ def test_mapped_steps_get_their_task_groups_setup() -> None:
 
     built = grouped()
     mapped = built.get_task("g.load")
-    assert remote.task_setting(mapped, "lamindb_setup") == SiteSetup()
+    assert lamindb_step.task_setting(mapped, "lamindb_setup") == SiteSetup()
     assert mapped.unmap({"op_kwargs": {"user": "a"}}).lamindb_setup == SiteSetup()  # what Airflow runs
     init, finish = built.get_task("lamindb_flow_init"), built.get_task("lamindb_flow_finish")
     assert init.lamindb_setup == finish.lamindb_setup == SiteSetup()
@@ -1271,13 +1285,15 @@ def test_a_single_step_may_opt_out_of_the_setup(configured_setup) -> None:
     def opted_out():
         with LaminDBFlow():
             task.lamindb_virtualenv(step)()
-            task.lamindb_virtualenv(lamindb_setup=remote.LaminDBSetup(), task_id="plain")(step)()
-            task.lamindb_virtualenv(lamindb_setup=remote.LaminDBSetup())(load).partial(
+            task.lamindb_virtualenv(lamindb_setup=execution_setup.LaminDBSetup(), task_id="plain")(step)()
+            task.lamindb_virtualenv(lamindb_setup=execution_setup.LaminDBSetup())(load).partial(
                 credentials="c", day="d"
             ).expand(user=["a"])
 
     built = opted_out()
-    assert remote.resolve_setup(built.get_task("lamindb_flow_init").lamindb_setup) is configured_setup
+    assert (
+        execution_setup.resolve_setup(built.get_task("lamindb_flow_init").lamindb_setup) is configured_setup
+    )
     assert built.get_task("lamindb_flow_init").downstream_task_ids == {
         "step",
         "plain",
@@ -1295,7 +1311,7 @@ def test_a_single_step_may_opt_out_of_the_setup(configured_setup) -> None:
 )
 def test_bootstrap_source_may_be_indented_or_use_future_imports(bootstrap: str, monkeypatch) -> None:
     monkeypatch.delenv("BOOTSTRAPPED", raising=False)
-    source = remote.build_remote_step_source(
+    source = execution_source.build_remote_step_source(
         user_source="def probe():\n    return 1\n",
         callable_name="probe",
         config={},
@@ -1308,7 +1324,7 @@ def test_bootstrap_source_may_be_indented_or_use_future_imports(bootstrap: str, 
 
 
 def test_execution_env_must_return_strings(fake_lamindb: MagicMock, make_context, lamindb_connection) -> None:
-    class NumberSetup(remote.LaminDBSetup):
+    class NumberSetup(execution_setup.LaminDBSetup):
         def execution_env(self, context) -> dict[str, str]:
             return {"RETRIES": 3, "NAME": "ok"}  # type: ignore[dict-item]
 
@@ -1325,7 +1341,7 @@ def test_flow_finish_closes_the_run_even_if_execution_env_fails(
 ):
     from airflow.providers.lamindb.operators.flow import LaminDBFlowFinishOperator, LaminDBFlowInitOperator
 
-    class BrokenSetup(remote.LaminDBSetup):
+    class BrokenSetup(execution_setup.LaminDBSetup):
         def execution_env(self, context) -> dict[str, str]:
             raise KeyError("site_token")
 
@@ -1348,7 +1364,7 @@ def test_flow_finish_closes_the_run_even_if_execution_env_fails(
 
 def test_a_broken_setup_class_fails_parsing_for_mapped_steps_too(monkeypatch) -> None:
     monkeypatch.setenv("AIRFLOW__LAMINDB__SETUP_CLASS", "no_such_module.Setup")
-    remote.configured_setup.cache_clear()
+    execution_setup.configured_setup.cache_clear()
 
     @dag
     def only_mapped():
@@ -1360,10 +1376,10 @@ def test_a_broken_setup_class_fails_parsing_for_mapped_steps_too(monkeypatch) ->
 
 def test_the_setup_class_option_is_read_once_per_process(monkeypatch) -> None:
     monkeypatch.setenv("AIRFLOW__LAMINDB__SETUP_CLASS", f"{__name__}.ConfiguredSetup")
-    remote.configured_setup.cache_clear()
-    first = remote.configured_setup()
+    execution_setup.configured_setup.cache_clear()
+    first = execution_setup.configured_setup()
     monkeypatch.setenv("AIRFLOW__LAMINDB__SETUP_CLASS", f"{__name__}.SiteSetup")
-    assert remote.configured_setup() is first
+    assert execution_setup.configured_setup() is first
 
 
 def test_lamindb_branch_is_templated_and_reaches_steps_and_flow_operators(

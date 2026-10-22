@@ -6,7 +6,7 @@ import pickle
 
 import pytest
 
-from airflow.providers.lamindb.utils.enums import (
+from airflow.providers.lamindb.client.enums import (
     REGISTRY_FIELDS,
     ArtifactField,
     ArtifactKind,

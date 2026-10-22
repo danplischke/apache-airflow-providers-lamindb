@@ -1,12 +1,12 @@
 # Filters
 
 Sensors, triggers and the hook select records with filters, for example "artifacts whose key starts
-with `raw/`". Build filters in Python with [`F`][airflow.providers.lamindb.utils.filters.F] and the
-enums in [`airflow.providers.lamindb.utils.filters`][airflow.providers.lamindb.utils.filters], so that
+with `raw/`". Build filters in Python with [`F`][airflow.providers.lamindb.client.filters.F] and the
+enums in [`airflow.providers.lamindb.client.filters`][airflow.providers.lamindb.client.filters], so that
 your IDE suggests the fields and operators and mistakes show up when the DAG is parsed:
 
 ```python
-from airflow.providers.lamindb.utils.filters import ArtifactField, ArtifactKind, F
+from airflow.providers.lamindb.client.filters import ArtifactField, ArtifactKind, F
 
 large_raw_datasets = (
     F(ArtifactField.KEY).startswith("raw/")
@@ -21,17 +21,24 @@ Pass the filter as `filter` to
 [`LaminDBRecordEventTrigger`][airflow.providers.lamindb.triggers.records.LaminDBRecordEventTrigger],
 [`LaminDBArtifactEventTrigger`][airflow.providers.lamindb.triggers.records.LaminDBArtifactEventTrigger]
 and to the hook's `query_records`. They convert it to the JSON form of the
-[LaminHub REST API](https://docs.lamin.ai/rest). You can also pass that JSON form directly:
+[LaminHub REST API](https://docs.lamin.ai/rest). Filters are always `FilterExpression`s; a plain
+dict raises a `TypeError`. To reuse a filter in the JSON form, for example from a config file, parse
+it with `FilterExpression.from_dict`, which validates it:
 
 ```python
-{
-    "and": [
-        {"key": {"startswith": "raw/"}},
-        {"kind": {"eq": "dataset"}},
-        {"size": {"gt": 1000000}},
-    ]
-}
+FilterExpression.from_dict(
+    {
+        "and": [
+            {"key": {"startswith": "raw/"}},
+            {"kind": {"eq": "dataset"}},
+            {"size": {"gt": 1000000}},
+        ]
+    }
+)
 ```
+
+`order_by` of `query_records` takes field names (`"-created_at"` sorts descending) or
+`RecordOrder(field=..., descending=...)`.
 
 ## Fields
 
@@ -86,7 +93,7 @@ Combine filters with `&` (and) and `|` (or), or with `And(...)` and `Or(...)`. P
 `&` and `|` before comparisons, so wrap comparisons in parentheses:
 
 ```python
-from airflow.providers.lamindb.utils.filters import And, ArtifactField, F, Or
+from airflow.providers.lamindb.client.filters import And, ArtifactField, F, Or
 
 csv_or_parquet = (F(ArtifactField.SUFFIX) == ".csv") | (F(ArtifactField.SUFFIX) == ".parquet")
 same = Or(F(ArtifactField.SUFFIX) == ".csv", F(ArtifactField.SUFFIX) == ".parquet")
@@ -104,6 +111,7 @@ LaminHub filters can't be negated; use `!=`, `not_in()` or `is_not_null()` inste
 `filter` is a template field of the sensors, so values can be Jinja templates:
 `F(ArtifactField.KEY) == "{{ params.key }}"`.
 
-Filters are validated when they are passed to a sensor, trigger or the hook, so that for example an
-unknown operator such as `{"key": {"equals": "a"}}` fails when the DAG is parsed and not only when
-the query runs.
+Filters are validated when they are built or passed to a sensor, trigger or the hook, so that for
+example an unknown operator such as `FilterExpression.from_dict({"key": {"equals": "a"}})` fails when
+the DAG is parsed and not only when the query runs. Templated values are validated again after
+rendering.

@@ -13,8 +13,13 @@ from collections.abc import Mapping
 from dataclasses import asdict, dataclass, fields
 from typing import TYPE_CHECKING, Any, ClassVar, Protocol
 
+from pydantic import ValidationError
+
+from airflow.providers.lamindb.client.branches import SPECIAL_BRANCH_IDS
+from airflow.providers.lamindb.client.enums import SpaceField
+from airflow.providers.lamindb.client.filters import And, F
 from airflow.providers.lamindb.exceptions import LaminDBApiError
-from airflow.providers.lamindb.utils.lamindb import resolve_branch_id, resolve_space_id
+from airflow.providers.lamindb.triggers.events import CursorValue
 
 if TYPE_CHECKING:
     from airflow.providers.lamindb.hooks.lamindb import LaminDBHook
@@ -146,18 +151,19 @@ class RecordCursorStore(CursorStore):
 
 
 def _cursor_value(cursor: int, instance_id: str) -> dict[str, Any]:
-    return {"dbwrite_id": cursor, "instance_id": instance_id}
+    return CursorValue(dbwrite_id=cursor, instance_id=instance_id).model_dump()
 
 
 def _parse_cursor(value: Any, instance_id: str) -> int | None:
     """The cursor in a stored value, or None if it is invalid or belongs to another instance."""
-    if (
-        isinstance(value, Mapping)
-        and value.get("instance_id") == instance_id
-        and isinstance(value.get("dbwrite_id"), int)
-    ):
-        return value["dbwrite_id"]
-    return None
+    if value is None:
+        return None
+    try:
+        parsed = CursorValue.model_validate(value)
+    except ValidationError:
+        log.warning("Ignoring invalid LaminDB trigger cursor; restarting from the current write-log position")
+        return None
+    return parsed.dbwrite_id if parsed.instance_id == instance_id else None
 
 
 def is_cursor_record(
@@ -210,8 +216,9 @@ class _AssetCursor:
         return min(cursors) if cursors else None
 
     async def save(self, cursor: int, instance_id: str) -> None:
+        value = _cursor_value(cursor, instance_id)
         for accessor in self._accessors:
-            await accessor.aset(self.key, _cursor_value(cursor, instance_id))
+            await accessor.aset(self.key, value.copy())
 
 
 class _RecordCursor:
@@ -249,7 +256,7 @@ class _RecordCursor:
         conditions = {"name": name, **self._marker(is_type=is_type), **await self._get_scope()}
         rows = await self.hook.aquery_records(
             self.settings.registry,
-            {"and": [{key: {"eq": value}} for key, value in conditions.items()]},
+            And(*(F(key).eq(value) for key, value in conditions.items())),
             order_by=["id"],
             limit=1,
         )
@@ -284,6 +291,7 @@ class _RecordCursor:
             try:
                 value = json.loads(value)
             except ValueError:
+                log.warning("Ignoring invalid JSON in the LaminDB trigger cursor record")
                 return None
         return _parse_cursor(value, instance_id)
 
@@ -311,3 +319,27 @@ class _RecordCursor:
         if self.settings.record_type is not None:
             record["type_id"] = await self._record_type_id(self.settings.record_type)
         self._uid = (await self._insert(record, is_type=False))["uid"]
+
+
+async def resolve_branch_id(hook: LaminDBHook, branch: str | int) -> int:
+    """Resolve a branch name (or id) to its id."""
+    if isinstance(branch, int):
+        return branch
+    if branch in SPECIAL_BRANCH_IDS:
+        return SPECIAL_BRANCH_IDS[branch]
+    record = await hook.aget_branch(branch)
+    if record is None:
+        raise ValueError(f"Branch {branch!r} does not exist on {hook.instance_slug or 'the instance'}")
+    if record.id is None:
+        raise LaminDBApiError(f"LaminHub returned branch {branch!r} without an id")
+    return record.id
+
+
+async def resolve_space_id(hook: LaminDBHook, space: str | int) -> int:
+    """Resolve a space name (or id) to its id."""
+    if isinstance(space, int):
+        return space
+    rows = await hook.aquery_records("core.space", F(SpaceField.NAME).eq(space), limit=1)
+    if not rows:
+        raise ValueError(f"Space {space!r} does not exist on {hook.instance_slug or 'the instance'}")
+    return int(rows[0]["id"])

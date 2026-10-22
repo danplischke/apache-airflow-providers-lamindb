@@ -247,9 +247,8 @@ The lineage operators and decorators accept these arguments, also through a DAG'
 `lamindb_version` (virtualenvs only)
 :   The lamindb version to install, 2.8.1 or newer. Defaults to the instance's version on LaminHub,
     so that the virtualenv speaks the instance's schema, else the latest. The virtualenvs install
-    `lamindb-core` and the few packages it needs here (`numpy`, `pandas`, `pandera`), about half the
-    size of the full `lamindb`; for lamindb before 2.10 with pandas below 3, as lamindb requires. List
-    `lamindb` in `requirements` if your steps need all of it, for example `bionty` or `anndata`.
+    `lamindb`. If you list `lamindb` or `lamindb-core` in `requirements` yourself, nothing is added;
+    a bare `lamindb-core` also needs `numpy`, `pandas` and `pandera` for lineage tracking.
 
     Templated: a mapped task can pin its own version, for example from an upstream task's XCom, and
     gets its own virtualenv (and cache entry) for it. A template is checked once rendered, before
@@ -339,7 +338,7 @@ Plain `track=False` runs the function unchanged, and lamindb is not added to `re
 
 Some deployments need to prepare the virtualenvs and pods beyond what the provider does, for example
 install a certificate bundle before lamindb connects, or pass more credentials. Subclass
-[`LaminDBSetup`][airflow.providers.lamindb.utils.remote.LaminDBSetup] in a module your Airflow
+[`LaminDBSetup`][airflow.providers.lamindb.execution.setup.LaminDBSetup] in a module your Airflow
 installation can import:
 
 ```python title="tests/system/lamindb/site_setup.py"

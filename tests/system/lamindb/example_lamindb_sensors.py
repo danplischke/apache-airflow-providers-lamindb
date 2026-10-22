@@ -4,16 +4,10 @@ from __future__ import annotations
 
 from airflow.sdk import Param, dag, task
 
+from airflow.providers.lamindb.client.filters import F, LaminDBRegistry, RunField, RunStatus, TransformField
 from airflow.providers.lamindb.hooks.lamindb import LaminDBHook
 from airflow.providers.lamindb.sensors.branches import LaminDBBranchStatusSensor
 from airflow.providers.lamindb.sensors.records import LaminDBArtifactSensor, LaminDBRecordSensor
-from airflow.providers.lamindb.utils.filters import (
-    F,
-    LaminDBRegistry,
-    RunField,
-    RunStatus,
-    TransformField,
-)
 
 
 @dag(

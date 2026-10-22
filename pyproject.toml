@@ -125,7 +125,7 @@ ignore = ["RUF012", "TC003"]
 "src/airflow/__init__.py" = ["I002"]
 "src/airflow/providers/__init__.py" = ["I002"]
 # shipped as source to virtualenvs and pods; only stdlib and lamindb imports allowed
-"src/airflow/providers/lamindb/utils/runtime.py" = ["I002"]
+"src/airflow/providers/lamindb/execution/runtime.py" = ["I002"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["airflow.providers.lamindb", "unit"]

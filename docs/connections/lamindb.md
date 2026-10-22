@@ -44,7 +44,7 @@ Cache directory (`cache_dir` extra, optional)
 ## Hook request and response validation
 
 The synchronous and asynchronous hook methods use the same
-[Pydantic wire models](../api.md#airflow.providers.lamindb.hooks.models) for request parameters
+[Pydantic wire models](../api.md#airflow.providers.lamindb.client.models) for request parameters
 and bodies, authentication responses, and instance settings. Their method signatures are unchanged:
 pass normal Python arguments and record dictionaries; the hook validates and serializes them.
 
@@ -54,7 +54,7 @@ limits and offsets must be non-negative integers, and `include_foreign_keys` mus
 not a string such as `"false"`. A limit of zero returns no records. The hook still splits larger
 limits into pages of at most 200 records.
 
-Record fields remain registry-specific JSON data, not a fixed provider schema. Explicit `None`
+Most record fields remain registry-specific JSON data, not a fixed provider schema. Explicit `None`
 values in inserts and updates are sent as JSON `null`, including inside nested fields.
 An explicitly empty `branch_ids=[]` scope is preserved; omitting the scope is different.
 
@@ -63,6 +63,45 @@ response values in the error message. Unknown response fields are ignored; datab
 returned by the settings endpoint are not retained. Missing or empty owner/name and regional API
 URL fields still fall back to the requested instance slug and configured LaminHub API URL.
 Response validation checks field types, not whether a returned instance ID belongs to a slug.
+
+Artifact, database-write, branch, branch-block and user query and write responses use partial models
+for the known fields.
+Fields may be absent in projections, and additional columns are preserved. Hook results remain
+dictionaries with the original payload, without injecting missing fields or rewriting JSON strings.
+Malformed known fields raise a sanitized `LaminDBApiError`.
+
+Instance schema responses validate module and registry envelopes before being cached. Field
+descriptions and additional schema metadata remain extensible; an omitted table name still falls
+back to the module/model table name.
+
+Artifact processing uses typed `kind` and upload metadata (`_aux.so`). Auxiliary metadata may be
+a JSON object or a JSON-encoded object; both `None` and the encoded string `"null"` mean no
+metadata. Invalid metadata is reported rather than silently treating an invalid flag as a completed
+upload. Database-write `data` remains dynamic previous record data, and unfamiliar event names are
+still ignored by event classification.
+
+Internal filters use the same `F`, `Condition`, `And` and `Or` builders exposed to DAG authors,
+with field enums where available. They are converted to REST dictionaries at query and serialization
+boundaries; the serialized filters and trigger identities are unchanged.
+
+## Event and execution envelopes
+
+[Trigger models](../api.md#airflow.providers.lamindb.triggers.events) validate built-in record,
+branch-status and branch-block events, actor/branch summaries, persisted cursors and sensor outcomes.
+Public event payloads remain dictionaries, including sparse projections and dynamic record data.
+Custom write-log trigger subclasses may use their own event names and additional fields.
+Malformed sensor outcomes raise a sanitized `AirflowException`; terminal branch failures still
+raise `AirflowFailException`.
+
+Persisted cursor positions must be non-negative integers (not booleans) bound to an instance ID.
+Malformed stored values are ignored with a warning, preserving the existing reset behavior.
+Valid cursors belonging to another instance are ignored.
+
+[Worker-side models](../api.md#airflow.providers.lamindb.execution.config) validate flow-run parameters
+and tracked, connected, flow-start and flow-finish execution configurations before remote execution.
+Airflow timing/run-type metadata is still stringified, and DAG configuration remains dynamic.
+Virtualenvs and pods receive plain dictionaries, not model instances: the shipped runtime still
+requires only the standard library and `lamindb`, not Airflow, this provider or Pydantic.
 
 ## Lineage operators and decorators
 
@@ -130,7 +169,7 @@ Anonymous access to a public instance, without a connection:
 
 ```python
 from airflow.providers.lamindb.hooks.lamindb import LaminDBHook
-from airflow.providers.lamindb.utils.filters import ArtifactField, F
+from airflow.providers.lamindb.client.filters import ArtifactField, F
 
 hook = LaminDBHook(lamindb_conn_id=None, instance="laminlabs/lamindata")
 hook.query_records("core.artifact", F(ArtifactField.SUFFIX) == ".csv", order_by=["-created_at"], limit=5)

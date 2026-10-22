@@ -6,7 +6,7 @@ import pickle
 
 import pytest
 
-from airflow.providers.lamindb.utils.filters import (
+from airflow.providers.lamindb.client.filters import (
     And,
     ArtifactField,
     ArtifactKind,
@@ -26,39 +26,45 @@ from airflow.providers.lamindb.utils.filters import (
     normalize_filter,
     normalize_order_by,
 )
+from airflow.providers.lamindb.client.models import RecordOrder
+
+DICT_HINT = r"FilterExpression\.from_dict"
 
 
 def test_combine_filters():
+    a, b = F("a") == 1, F("b") == 2
     assert combine_filters() is None
-    assert combine_filters(None, {}) is None
-    assert combine_filters({"a": {"eq": 1}}, None) == {"a": {"eq": 1}}
-    assert combine_filters({"a": {"eq": 1}}, {"b": {"eq": 2}}) == {
-        "and": [{"a": {"eq": 1}}, {"b": {"eq": 2}}]
-    }
-    assert combine_filters(F("a") == 1, None, {"b": {"eq": 2}}) == {
-        "and": [{"a": {"eq": 1}}, {"b": {"eq": 2}}]
-    }
+    assert combine_filters(None, None) is None
+    assert combine_filters(a, None) is a
+    combined = combine_filters(a, None, b)
+    assert isinstance(combined, And)
+    assert combined.to_dict() == {"and": [{"a": {"eq": 1}}, {"b": {"eq": 2}}]}
 
 
 def test_normalize_order_by():
-    assert normalize_order_by(None) == [{"field": "id", "descending": False}]
-    assert normalize_order_by(["-created_at", "key", {"field": "size", "descending": True}]) == [
-        {"field": "created_at", "descending": True},
-        {"field": "key", "descending": False},
-        {"field": "size", "descending": True},
+    assert normalize_order_by(None) == [RecordOrder(field="id")]
+    assert normalize_order_by(["-created_at", "key", RecordOrder(field="size", descending=True)]) == [
+        RecordOrder(field="created_at", descending=True),
+        RecordOrder(field="key"),
+        RecordOrder(field="size", descending=True),
     ]
-    assert normalize_order_by([ArtifactField.CREATED_AT, {"field": ArtifactField.SIZE}]) == [
-        {"field": "created_at", "descending": False},
-        {"field": "size", "descending": False},
-    ]
+    assert normalize_order_by([ArtifactField.CREATED_AT]) == [RecordOrder(field="created_at")]
+    assert type(normalize_order_by([ArtifactField.CREATED_AT])[0].field) is str
+
+
+def test_normalize_order_by_rejects_dicts():
+    with pytest.raises(TypeError, match=r"RecordOrder\(field='size', descending=True\)"):
+        normalize_order_by([{"field": "size", "descending": True}])  # type: ignore[list-item]
 
 
 def test_field_paths_and_locality():
-    node = {"and": [{"key": {"eq": "a"}}, {"or": [{"created_by.handle": {"eq": "x"}}, {"size": {"gt": 1}}]}]}
+    node = FilterExpression.from_dict(
+        {"and": [{"key": {"eq": "a"}}, {"or": [{"created_by.handle": {"eq": "x"}}, {"size": {"gt": 1}}]}]}
+    )
     assert filter_field_paths(node) == {"key", "created_by.handle", "size"}
     assert not is_local_filter(node)
-    assert not is_local_filter({'_aux["so"]': {"eq": 1}})
-    assert is_local_filter({"or": [{"key": {"isnull": True}}, {"kind": {"notin": ["x"]}}]})
+    assert not is_local_filter(F("_aux")["so"] == 1)
+    assert is_local_filter(F("key").is_null() | F("kind").not_in(["x"]))
     assert is_local_filter(None)
     assert is_local_filter(F(ArtifactField.RUN_ID) == 1)
     assert not is_local_filter(F(ArtifactField.CREATED_BY, UserField.HANDLE) == "x")
@@ -93,25 +99,22 @@ ROW = {"id": 1, "key": "raw/a.csv", "suffix": ".csv", "size": 10, "kind": None, 
     ],
 )
 def test_matches_filter(node, expected):
-    assert matches_filter(node, ROW) is expected
-    if node is not None:
-        assert matches_filter(FilterExpression.from_dict(node), ROW) is expected
+    expression = FilterExpression.from_dict(node) if node is not None else None
+    assert matches_filter(expression, ROW) is expected
 
 
 @pytest.mark.parametrize(
-    ("node", "message"),
+    ("expression", "message"),
     [
-        ({"created_by.handle": {"eq": "x"}}, "can't be evaluated locally"),
-        ({"missing": {"eq": 1}}, "not present"),
-        ({"key": {"eq": 1, "ne": 2}}, "exactly one operator"),
-        ({"key": {"eq": 1}, "size": {"eq": 1}}, "exactly one key"),
-        ({"size": {"count_gt": 1}}, "can't be evaluated locally"),
-        ({"size": {"in": "abc"}}, "require a list"),
+        (F("created_by.handle") == "x", "can't be evaluated locally"),
+        (F("missing") == 1, "not present"),
+        (F("size").count() > 1, "can't be evaluated locally"),
+        (F("size").is_in("{{ params.sizes }}"), "require a list"),
     ],
 )
-def test_matches_filter_errors(node, message):
+def test_matches_filter_errors(expression, message):
     with pytest.raises(ValueError, match=message):
-        matches_filter(node, ROW)
+        matches_filter(expression, ROW)
 
 
 @pytest.mark.parametrize(
@@ -185,7 +188,7 @@ def test_builder(expression, expected):
     assert expression.to_dict() == expected
     assert expression == expected
     assert normalize_filter(expression) == expected
-    assert normalize_filter(expected) == expected
+    assert FilterExpression.from_dict(expected) == expression
 
 
 def test_builder_paths_are_plain_strings():
@@ -210,9 +213,6 @@ def test_combining():
         "and": [{"or": [{"suffix": {"eq": ".csv"}}, {"key": {"startswith": "raw/"}}]}, {"size": {"gt": 100}}]
     }
     assert (csv & (raw | large)) == And(csv, Or(raw, large))
-    assert (csv & {"size": {"gt": 1}}).to_dict() == {"and": [{"suffix": {"eq": ".csv"}}, {"size": {"gt": 1}}]}
-    assert ({"size": {"gt": 1}} & csv).to_dict() == {"and": [{"size": {"gt": 1}}, {"suffix": {"eq": ".csv"}}]}
-    assert ({"size": {"gt": 1}} | csv).to_dict() == {"or": [{"size": {"gt": 1}}, {"suffix": {"eq": ".csv"}}]}
     assert And(csv).to_dict() == {"and": [{"suffix": {"eq": ".csv"}}]}
     assert And(And(csv, raw), large).to_dict() == {
         "and": [{"and": [csv.to_dict(), raw.to_dict()]}, large.to_dict()]
@@ -246,8 +246,13 @@ def test_expressions_can_be_pickled():
         ({"size": {"gt": "{{ params.size }}"}}, {"size": {"gt": "{{ params.size }}"}}),
     ],
 )
-def test_normalize_filter(node, expected):
-    assert normalize_filter(node) == expected
+def test_from_dict(node, expected):
+    if node is None or not node:
+        assert normalize_filter(None) is None
+        return
+    expression = FilterExpression.from_dict(node)
+    assert expression.to_dict() == expected
+    assert normalize_filter(expression) == expected
 
 
 @pytest.mark.parametrize(
@@ -282,9 +287,29 @@ def test_normalize_filter(node, expected):
         ({'params["a"]': {"count_gt": 1}}, ValueError, "Can't count JSON field"),
     ],
 )
-def test_normalize_filter_errors(node, error, message):
+def test_from_dict_errors(node, error, message):
     with pytest.raises(error, match=message):
-        normalize_filter(node)
+        FilterExpression.from_dict(node)
+
+
+@pytest.mark.parametrize(
+    "use",
+    [
+        lambda node: normalize_filter(node),
+        lambda node: combine_filters(F("a") == 1, node),
+        lambda node: And(F("a") == 1, node),
+        lambda node: Or(node),
+        lambda node: (F("a") == 1) & node,
+        lambda node: node & (F("a") == 1),
+        lambda node: (F("a") == 1) | node,
+        lambda node: node | (F("a") == 1),
+        lambda node: matches_filter(node, ROW),
+        lambda node: filter_field_paths(node),
+    ],
+)
+def test_dicts_are_not_filters(use):
+    with pytest.raises(TypeError, match=DICT_HINT):
+        use({"key": {"eq": "raw/a.csv"}})
 
 
 def test_normalize_filter_rejects_non_filters():

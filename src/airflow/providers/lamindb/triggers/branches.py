@@ -1,61 +1,74 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Iterable, Sequence
+from collections.abc import AsyncIterator, Iterable, Mapping, Sequence
 from fnmatch import fnmatchcase
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar, overload
 
+from airflow.providers.lamindb.client.branches import BLOCK_KINDS, branch_status, normalize_statuses
+from airflow.providers.lamindb.client.client import MAX_PAGE_SIZE, LaminDBInstance
+from airflow.providers.lamindb.client.dbwrite import previous_values, resolve_status_transitions
+from airflow.providers.lamindb.client.enums import LaminDBRegistry, normalize_str_list
+from airflow.providers.lamindb.client.filters import And, F
+from airflow.providers.lamindb.client.models import BranchRecordResponse
 from airflow.providers.lamindb.exceptions import LaminDBApiError
-from airflow.providers.lamindb.hooks.lamindb import MAX_PAGE_SIZE, LaminDBHook, LaminDBInstance
+from airflow.providers.lamindb.hooks.lamindb import LaminDBHook
 from airflow.providers.lamindb.triggers.base import LaminDBDbWriteEventTrigger
-from airflow.providers.lamindb.utils.dbwrite import previous_values, resolve_status_transitions
-from airflow.providers.lamindb.utils.lamindb import (
-    BLOCK_KINDS,
-    branch_status,
-    normalize_statuses,
-    normalize_str_list,
+from airflow.providers.lamindb.triggers.events import (
+    BranchSensorFailure,
+    BranchSensorSuccess,
+    BranchSummary,
+    SensorError,
 )
 from airflow.triggers.base import BaseTrigger, TriggerEvent
 
 if TYPE_CHECKING:
-    from airflow.providers.lamindb.utils.filters import Filter
+    from airflow.providers.lamindb.client.filters import Condition, FilterExpression
 
-BRANCH_TABLE = "lamindb_branch"
-BRANCH_BLOCK_TABLE = "lamindb_branchblock"
 _STATUS_FIELD = "_status_code"
 
 
-def branch_summary(branch: dict[str, Any] | None) -> dict[str, Any] | None:
+@overload
+def branch_summary(branch: BranchRecordResponse | Mapping[str, Any]) -> BranchSummary: ...
+@overload
+def branch_summary(branch: None) -> None: ...
+def branch_summary(branch: BranchRecordResponse | Mapping[str, Any] | None) -> BranchSummary | None:
     """The branch fields included in event payloads, with the status as a name."""
     if branch is None:
         return None
-    return {
-        "id": branch.get("id"),
-        "uid": branch.get("uid"),
-        "name": branch.get("name"),
-        "description": branch.get("description"),
-        "status": branch_status(branch.get(_STATUS_FIELD)),
-        "created_by_id": branch.get("created_by_id"),
-        "created_at": branch.get("created_at"),
-    }
+    parsed = BranchRecordResponse.model_validate(branch)
+    return BranchSummary(
+        id=parsed.id,
+        uid=parsed.uid,
+        name=parsed.name,
+        description=parsed.description,
+        status=branch_status(parsed.status_code),
+        created_by_id=parsed.created_by_id,
+        created_at=parsed.created_at,
+    )
 
 
-def matches_branch_name(branch: dict[str, Any] | None, patterns: Sequence[str] | None) -> bool:
+def matches_branch_name(
+    branch: BranchRecordResponse | Mapping[str, Any] | None, patterns: Sequence[str] | None
+) -> bool:
     """Whether a branch name matches any of the (case-sensitive, glob-style) patterns."""
     if not patterns:
         return True
-    if branch is None or branch.get("name") is None:
+    if branch is None:
         return False
-    return any(fnmatchcase(branch["name"], pattern) for pattern in patterns)
+    name = BranchRecordResponse.model_validate(branch).name
+    return name is not None and any(fnmatchcase(name, pattern) for pattern in patterns)
 
 
 def evaluate_branch_status(
-    branch: dict[str, Any] | None, target_status: Sequence[str], failure_status: Sequence[str]
+    branch: BranchRecordResponse | Mapping[str, Any] | None,
+    target_status: Sequence[str],
+    failure_status: Sequence[str],
 ) -> str | None:
     """Return ``"success"``/``"failure"`` if the branch reached a target/failure status, else ``None``."""
     if branch is None:
         return None
-    status = branch_status(branch.get(_STATUS_FIELD))
+    status = branch_status(BranchRecordResponse.model_validate(branch).status_code)
     if status in target_status:
         return "success"
     if status in failure_status:
@@ -63,7 +76,22 @@ def evaluate_branch_status(
     return None
 
 
-class LaminDBBranchStatusEventTrigger(LaminDBDbWriteEventTrigger):
+class _BranchDbWriteEventTrigger(LaminDBDbWriteEventTrigger):
+    """Watches the write log of one registry, whose table name the instance schema gives."""
+
+    _watched_registry: ClassVar[str]
+    _watched_table: str | None = None
+
+    async def _setup(self, hook: LaminDBHook) -> None:
+        self._watched_table = (await hook.aget_registry(self._watched_registry)).table_name
+
+    def _table_filter(self) -> Condition:
+        if self._watched_table is None:
+            raise RuntimeError("The trigger has not been set up yet")
+        return F("table_name").eq(self._watched_table)
+
+
+class LaminDBBranchStatusEventTrigger(_BranchDbWriteEventTrigger):
     """
     Fire an event whenever the status of a LaminDB branch changes.
 
@@ -76,6 +104,8 @@ class LaminDBBranchStatusEventTrigger(LaminDBDbWriteEventTrigger):
     :param branch_name: Only report branches whose name matches this glob pattern (or any of these
         patterns), e.g. ``"release-*"``.
     """
+
+    _watched_registry = LaminDBRegistry.BRANCH
 
     def __init__(
         self,
@@ -93,14 +123,15 @@ class LaminDBBranchStatusEventTrigger(LaminDBDbWriteEventTrigger):
     def _trigger_kwargs(self) -> dict[str, Any]:
         return {"to_status": self.to_status, "from_status": self.from_status, "branch_name": self.branch_name}
 
-    def _dbwrite_filter(self) -> Filter:
-        return {
-            "and": [
-                {"table_name": {"eq": BRANCH_TABLE}},
-                {"event_type": {"eq": "UPDATE"}},
-                {f'data["{_STATUS_FIELD}"]': {"isnull": False}},
-            ]
-        }
+    def _status_filter(self) -> And:
+        return And(
+            self._table_filter(),
+            F("event_type").eq("UPDATE"),
+            F("data")[_STATUS_FIELD].is_not_null(),
+        )
+
+    def _dbwrite_filter(self) -> FilterExpression:
+        return self._status_filter()
 
     async def _events_for(
         self, hook: LaminDBHook, instance: LaminDBInstance, writes: list[dict[str, Any]]
@@ -155,7 +186,10 @@ class LaminDBBranchStatusEventTrigger(LaminDBDbWriteEventTrigger):
         # only unresolved branches are queried, so every full page resolves at least one of them
         while unresolved:
             page = await hook.aquery_dbwrites(
-                {"and": [*self._dbwrite_filter()["and"], {"sqlrecord_id": {"in": sorted(unresolved)}}]},
+                And(
+                    *self._status_filter().filters,
+                    F("sqlrecord_id").is_in(sorted(unresolved)),
+                ),
                 after_id=after_id,
                 limit=MAX_PAGE_SIZE,
             )
@@ -169,7 +203,7 @@ class LaminDBBranchStatusEventTrigger(LaminDBDbWriteEventTrigger):
         return later_codes
 
 
-class LaminDBBranchBlockEventTrigger(LaminDBDbWriteEventTrigger):
+class LaminDBBranchBlockEventTrigger(_BranchDbWriteEventTrigger):
     """
     Fire an event whenever a comment or readme is added to a LaminDB branch.
 
@@ -181,6 +215,8 @@ class LaminDBBranchBlockEventTrigger(LaminDBDbWriteEventTrigger):
     :param branch_name: Only report blocks on branches whose name matches this glob pattern (or any
         of these patterns).
     """
+
+    _watched_registry = "core.branchblock"
 
     def __init__(
         self,
@@ -201,14 +237,16 @@ class LaminDBBranchBlockEventTrigger(LaminDBDbWriteEventTrigger):
     def _trigger_kwargs(self) -> dict[str, Any]:
         return {"kinds": self.kinds, "branch_name": self.branch_name}
 
-    def _dbwrite_filter(self) -> Filter:
-        return {"and": [{"table_name": {"eq": BRANCH_BLOCK_TABLE}}, {"event_type": {"eq": "INSERT"}}]}
+    def _dbwrite_filter(self) -> FilterExpression:
+        return And(self._table_filter(), F("event_type").eq("INSERT"))
 
     async def _events_for(
         self, hook: LaminDBHook, instance: LaminDBInstance, writes: list[dict[str, Any]]
     ) -> list[TriggerEvent]:
         blocks = await hook.aget_records_by_ids(
-            "core.branchblock", [w["sqlrecord_id"] for w in writes], filter={"kind": {"in": self.kinds}}
+            "core.branchblock",
+            [w["sqlrecord_id"] for w in writes],
+            filter=F("kind").is_in(self.kinds),
         )
         if not blocks:
             return []
@@ -298,19 +336,19 @@ class LaminDBBranchStatusSensorTrigger(BaseTrigger):
                     branch = await hook.aget_branch(self.branch)
                 except (LaminDBApiError, ValueError) as err:
                     if not (isinstance(err, LaminDBApiError) and err.transient):
-                        yield TriggerEvent({"status": "error", "message": str(err)})
+                        yield TriggerEvent(SensorError(message=str(err)).model_dump())
                         return
                     self.log.warning("LaminHub is unavailable, checking again later: %s", err)
                 else:
                     outcome = evaluate_branch_status(branch, self.target_status, self.failure_status)
-                    if outcome is not None:
-                        summary = branch_summary(branch)
+                    summary = branch_summary(branch)
+                    if outcome is not None and summary is not None:
+                        outcome_model = BranchSensorSuccess if outcome == "success" else BranchSensorFailure
                         yield TriggerEvent(
-                            {
-                                "status": outcome,
-                                "branch": summary,
-                                "message": f"Branch {self.branch!r} has status {summary['status']!r}",  # type: ignore[index]
-                            }
+                            outcome_model(
+                                branch=summary,
+                                message=f"Branch {self.branch!r} has status {summary.status!r}",
+                            ).model_dump()
                         )
                         return
                     self.log.info("Branch %r has not reached any of %s yet", self.branch, self.target_status)

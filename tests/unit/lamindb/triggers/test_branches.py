@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import copy
 from typing import Any
 
 import pytest
 
+from airflow.providers.lamindb.client.models import BranchRecordResponse, InstanceSchemaResponse
 from airflow.providers.lamindb.exceptions import LaminDBApiError
 from airflow.providers.lamindb.triggers.branches import (
     LaminDBBranchBlockEventTrigger,
@@ -13,7 +15,9 @@ from airflow.providers.lamindb.triggers.branches import (
     evaluate_branch_status,
     matches_branch_name,
 )
-from unit.lamindb.fakes import INSTANCE, FakeHook, dbwrite, evaluate
+from airflow.providers.lamindb.triggers.events import BranchSummary
+from unit.lamindb import fakes
+from unit.lamindb.fakes import INSTANCE, SCHEMA, FakeHook, dbwrite, evaluate
 
 BRANCH = "lamindb_branch"
 BLOCK = "lamindb_branchblock"
@@ -70,7 +74,7 @@ class TestBranchStatusEventTrigger:
             "instance": "owner/name",
             "instance_id": INSTANCE.id,
             "event": "status_changed",
-            "branch": branch_summary(branch(10, "release-1", -1)),
+            "branch": branch_summary(branch(10, "release-1", -1)).model_dump(),
             "from_status": "standalone",
             "to_status": "draft",
             "changed_by": {"id": 7, "handle": "alice", "name": "Alice"},
@@ -198,7 +202,7 @@ class TestBranchStatusSensorTrigger:
         assert events == [
             {
                 "status": "success",
-                "branch": branch_summary(branch(10, "release-1", -1)),
+                "branch": branch_summary(branch(10, "release-1", -1)).model_dump(),
                 "message": "Branch 'release-1' has status 'merged'",
             }
         ]
@@ -230,6 +234,12 @@ class TestBranchStatusSensorTrigger:
 
 def test_helpers():
     assert branch_summary(None) is None
+    summary = branch_summary(BranchRecordResponse.model_validate(branch(10, "release-1", -1)))
+    assert isinstance(summary, BranchSummary)
+    assert (summary.id, summary.name, summary.status) == (10, "release-1", "merged")
+    assert branch_summary(branch(10, "release-1", -1)) == summary
+    assert matches_branch_name(BranchRecordResponse(name="release-1"), ["release-*"])
+    assert evaluate_branch_status(BranchRecordResponse(_status_code=-1), ["merged"], []) == "success"
     assert matches_branch_name(None, None)
     assert not matches_branch_name(None, ["x"])
     assert matches_branch_name({"name": "release-1"}, ["release-*"])
@@ -238,3 +248,21 @@ def test_helpers():
     assert evaluate_branch_status({"_status_code": -1}, ["merged"], ["closed"]) == "success"
     assert evaluate_branch_status({"_status_code": -2}, ["merged"], ["closed"]) == "failure"
     assert evaluate_branch_status({"_status_code": 2}, ["merged"], ["closed"]) is None
+
+
+@pytest.mark.parametrize(
+    ("trigger", "registry"),
+    [(LaminDBBranchStatusEventTrigger(), "branch"), (LaminDBBranchBlockEventTrigger(), "branchblock")],
+)
+async def test_watched_table_comes_from_the_instance_schema(trigger, registry, monkeypatch):
+    schema = copy.deepcopy(SCHEMA)
+    schema["core"][registry]["table_name"] = "renamed_table"
+    monkeypatch.setattr(fakes, "SCHEMA_MODEL", InstanceSchemaResponse.model_validate(schema))
+    with pytest.raises(RuntimeError, match="not been set up"):
+        trigger._dbwrite_filter()
+    await trigger._setup(FakeHook())
+    event_type = "INSERT" if registry == "branchblock" else "UPDATE"
+    data = None if registry == "branchblock" else {"_status_code": 0}
+    for table, matches in [("renamed_table", True), (f"lamindb_{registry}", False)]:
+        write = dbwrite(1, event_type, table, 10, data=data, branch_id=None)
+        assert evaluate(trigger._dbwrite_filter(), write) is matches

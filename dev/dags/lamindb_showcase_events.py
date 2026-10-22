@@ -10,9 +10,9 @@ import os
 
 from airflow.sdk import Asset, AssetWatcher, dag, task
 
+from airflow.providers.lamindb.client.enums import LaminDBRegistry
 from airflow.providers.lamindb.hooks.lamindb import LaminDBHook
 from airflow.providers.lamindb.triggers.records import LaminDBArtifactEventTrigger
-from airflow.providers.lamindb.utils.enums import LaminDBRegistry
 
 if "AIRFLOW_CONN_LAMINDB_DEFAULT" in os.environ:
     tables = Asset(

@@ -6,13 +6,7 @@ from unittest import mock
 import pytest
 from airflow.sdk.exceptions import AirflowException, AirflowFailException, TaskDeferred
 
-from airflow.providers.lamindb.exceptions import LaminDBApiError
-from airflow.providers.lamindb.hooks.lamindb import LaminDBHook
-from airflow.providers.lamindb.sensors.branches import LaminDBBranchStatusSensor
-from airflow.providers.lamindb.sensors.records import LaminDBArtifactSensor, LaminDBRecordSensor
-from airflow.providers.lamindb.triggers.branches import LaminDBBranchStatusSensorTrigger
-from airflow.providers.lamindb.triggers.records import LaminDBRecordSensorTrigger
-from airflow.providers.lamindb.utils.filters import (
+from airflow.providers.lamindb.client.filters import (
     ArtifactField,
     ArtifactKind,
     F,
@@ -21,10 +15,38 @@ from airflow.providers.lamindb.utils.filters import (
     RunStatus,
     TransformField,
 )
+from airflow.providers.lamindb.client.models import BranchRecordResponse
+from airflow.providers.lamindb.exceptions import LaminDBApiError
+from airflow.providers.lamindb.hooks.lamindb import LaminDBHook
+from airflow.providers.lamindb.sensors.branches import LaminDBBranchStatusSensor
+from airflow.providers.lamindb.sensors.records import LaminDBArtifactSensor, LaminDBRecordSensor
+from airflow.providers.lamindb.triggers.branches import LaminDBBranchStatusSensorTrigger
+from airflow.providers.lamindb.triggers.records import LaminDBRecordSensorTrigger
 
 
-def branch(status_code: int) -> dict[str, Any]:
-    return {"id": 10, "uid": "b10", "name": "release-1", "_status_code": status_code, "created_by_id": 7}
+def branch(status_code: int) -> BranchRecordResponse:
+    return BranchRecordResponse(id=10, uid="b10", name="release-1", _status_code=status_code, created_by_id=7)
+
+
+@pytest.mark.parametrize(
+    ("sensor", "event"),
+    [
+        (LaminDBRecordSensor(task_id="records", registry="core.artifact"), {"status": "success"}),
+        (
+            LaminDBRecordSensor(task_id="records", registry="core.artifact"),
+            {"status": "success", "records": "secret-invalid-records"},
+        ),
+        (LaminDBBranchStatusSensor(task_id="branch", branch=10), {"status": "success"}),
+        (
+            LaminDBBranchStatusSensor(task_id="branch", branch=10),
+            {"status": "success", "branch": {"id": "secret-invalid-id"}},
+        ),
+    ],
+)
+def test_invalid_success_event_is_not_accepted(sensor, event):
+    with pytest.raises(AirflowException, match="Invalid LaminDB sensor event") as error:
+        sensor.execute_complete({}, event)
+    assert "secret-invalid" not in str(error.value)
 
 
 @pytest.fixture
@@ -124,7 +146,7 @@ class TestBranchStatusSensor:
 class TestRecordSensor:
     def test_poke(self, query_records):
         sensor = LaminDBRecordSensor(
-            task_id="wait", registry="core.run", filter={"name": {"eq": "x"}}, branch="feature", min_count=2
+            task_id="wait", registry="core.run", filter=F("name") == "x", branch="feature", min_count=2
         )
         query_records.return_value = [{"id": 2}]
         assert not sensor.poke({})
@@ -158,7 +180,7 @@ class TestRecordSensor:
         sensor = LaminDBRecordSensor(
             task_id="wait",
             registry="core.run",
-            filter={"name": {"eq": "x"}},
+            filter=F("name") == "x",
             deferrable=True,
             poke_interval=5,
         )
@@ -180,8 +202,17 @@ class TestRecordSensor:
     def test_validation(self):
         with pytest.raises(ValueError, match="min_count"):
             LaminDBRecordSensor(task_id="wait", registry="core.run", min_count=5, limit=2)
-        with pytest.raises(ValueError, match="Unknown filter operator 'equals' on 'name'"):
-            LaminDBRecordSensor(task_id="wait", registry="core.run", filter={"name": {"equals": "x"}})
+        with pytest.raises(TypeError, match=r"FilterExpression\.from_dict"):
+            LaminDBRecordSensor(task_id="wait", registry="core.run", filter={"name": {"eq": "x"}})  # type: ignore[arg-type]
+
+    def test_rendered_filter_is_validated(self, query_records):
+        sensor = LaminDBRecordSensor(
+            task_id="wait", registry="core.run", filter=F(RunField.NAME).is_in("{{ params.names }}")
+        )
+        sensor.render_template_fields({"params": {"names": "nightly"}})
+        with pytest.raises(TypeError, match="'in' on 'name' expects a list of values"):
+            sensor.poke({})
+        query_records.assert_not_called()
 
     def test_filter_builder_and_enums(self, query_records):
         query_records.return_value = [{"id": 1}]
@@ -251,4 +282,7 @@ class TestArtifactSensor:
         trigger = deferred.value.trigger
         assert trigger.registry == "core.artifact"
         assert trigger.wait_for_upload
-        assert trigger.filter["and"][:2] == [{"key": {"startswith": "raw/"}}, {"suffix": {"in": [".csv"]}}]
+        assert trigger.filter.to_dict()["and"][:2] == [
+            {"key": {"startswith": "raw/"}},
+            {"suffix": {"in": [".csv"]}},
+        ]

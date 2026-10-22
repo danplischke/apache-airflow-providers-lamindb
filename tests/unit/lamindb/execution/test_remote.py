@@ -1,25 +1,28 @@
 from __future__ import annotations
 
+import ast
+import inspect
 import json
 import os
 import re
+from datetime import datetime
 from unittest.mock import MagicMock, patch
 
 import pytest
 import respx
 from airflow.exceptions import AirflowNotFoundException
 
+from airflow.providers.lamindb.client.client import DEFAULT_HUB_API_URL
 from airflow.providers.lamindb.exceptions import LaminDBVersionError
-from airflow.providers.lamindb.hooks.lamindb import DEFAULT_HUB_API_URL, LaminDBHook
-from airflow.providers.lamindb.utils.remote import (
-    RemoteLaminDB,
+from airflow.providers.lamindb.execution import runtime
+from airflow.providers.lamindb.execution.environment import RemoteLaminDB, lamindb_virtualenv_env
+from airflow.providers.lamindb.execution.requirements import (
     add_lamindb_requirement,
-    build_remote_flow_source,
-    build_remote_step_source,
+    lamindb_requirement,
     lamindb_requirement_lines,
-    lamindb_requirements,
-    lamindb_virtualenv_env,
 )
+from airflow.providers.lamindb.execution.source import build_remote_flow_source, build_remote_step_source
+from airflow.providers.lamindb.hooks.lamindb import LaminDBHook
 
 CONFIG = {
     "flow_run_reference": "my_dag/run_1",
@@ -56,7 +59,7 @@ def test_remote_step_source_does_not_leak_runtime_names(fake_lamindb: MagicMock)
     )
     namespace: dict = {}
     exec(source, namespace)
-    assert not {"connect", "finish_run", "STATUS_COMPLETED"} & namespace.keys()
+    assert not {"connect", "finish_run", "MIN_LAMINDB_VERSION"} & namespace.keys()
 
 
 def test_remote_flow_source_calls_runtime_and_returns_run_uid(fake_lamindb: MagicMock) -> None:
@@ -73,36 +76,67 @@ def test_remote_flow_source_calls_runtime_and_returns_run_uid(fake_lamindb: Magi
     assert flow_run._status_code == 1
 
 
-CORE_COMPANIONS = ["numpy", "pandas>=2.0.0", "pandera>=0.24.0"]
-# lamindb before 2.10 requires pandas below 3
-PANDAS_2_COMPANIONS = ["numpy", "pandas>=2.0.0,<3", "pandera>=0.24.0"]
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"callable_name": "extract; import os"},
+        {"callable_name": "class"},
+        {"runtime_function": "run_step()"},
+    ],
+)
+def test_remote_step_source_rejects_names_that_are_not_identifiers(kwargs: dict[str, str]) -> None:
+    with pytest.raises(ValueError, match="not a Python identifier"):
+        build_remote_step_source(**{"user_source": "", "callable_name": "extract", "config": {}, **kwargs})
+
+
+def test_remote_flow_source_rejects_names_that_are_not_identifiers() -> None:
+    with pytest.raises(ValueError, match="not a Python identifier"):
+        build_remote_flow_source(function_name="flow fn", runtime_function="finish_flow_run")
+
+
+def test_remote_step_source_rejects_config_that_is_no_literal() -> None:
+    with pytest.raises(ValueError, match="cannot be embedded"):
+        build_remote_step_source(
+            user_source="def extract():\n    pass\n",
+            callable_name="extract",
+            config={"started": datetime(2026, 1, 1)},
+        )
+
+
+def test_remote_step_source_embeds_runtime_and_keeps_user_source() -> None:
+    user_source = "def extract():  # keeps comments\n    return 1\n"
+    source = build_remote_step_source(user_source=user_source, callable_name="extract", config=CONFIG)
+    assert source.startswith(user_source)
+    assert repr(inspect.getsource(runtime)) in source
+    ast.parse(source)
 
 
 @pytest.mark.parametrize(
     ("requirements", "expected"),
     [
-        (["scanpy"], ["scanpy", "lamindb-core==9.9", *CORE_COMPANIONS]),
-        (["pandas==2.2"], ["pandas==2.2", "lamindb-core==9.9", "numpy", "pandera>=0.24.0"]),
+        (["scanpy"], ["scanpy", "lamindb==9.9"]),
+        (["pandas==2.2"], ["pandas==2.2", "lamindb==9.9"]),
         (["lamindb"], ["lamindb"]),
         (["lamindb[bionty]>=1"], ["lamindb[bionty]>=1"]),
         (["LaminDB==1.0"], ["LaminDB==1.0"]),
-        (["lamindb-core==2.9.0"], ["lamindb-core==2.9.0", *PANDAS_2_COMPANIONS]),
-        (["lamindb-core == 2.10.0"], ["lamindb-core == 2.10.0", *CORE_COMPANIONS]),
-        (["lamindb-core>=2.8.1"], ["lamindb-core>=2.8.1", *CORE_COMPANIONS]),
-        (["lamindb_core", "Pandas"], ["lamindb_core", "Pandas", "numpy", "pandera>=0.24.0"]),
-        (["lamindb_setup"], ["lamindb_setup", "lamindb-core==9.9", *CORE_COMPANIONS]),
-        (
-            ["apache-airflow-providers-lamindb"],
-            ["apache-airflow-providers-lamindb", "lamindb-core==9.9", *CORE_COMPANIONS],
-        ),
+        # a listed lamindb-core is the user's choice; nothing is added to it
+        (["lamindb-core==2.9.0"], ["lamindb-core==2.9.0"]),
+        (["lamindb_core", "Pandas"], ["lamindb_core", "Pandas"]),
+        (["lamindb_setup"], ["lamindb_setup", "lamindb==9.9"]),
+        (["apache-airflow-providers-lamindb"], ["apache-airflow-providers-lamindb", "lamindb==9.9"]),
         # a rendered requirements file is one multi-line element
         (["pandas\nlamindb==1.3.0"], ["pandas\nlamindb==1.3.0"]),
         (["# comment\n\n  lamindb  # pinned below"], ["# comment\n\n  lamindb  # pinned below"]),
+        (["pandas\nlamindb-core==2.7.0"], ["pandas\nlamindb-core==2.7.0"]),
+        (["-r base.txt\npandas"], ["-r base.txt\npandas", "lamindb==9.9"]),
+        # names are compared normalized, as pip does; URLs and markers are part of a requirement
+        (["lamindb.core==2.9"], ["lamindb.core==2.9"]),
         (
-            ["pandas\nlamindb-core==2.7.0"],
-            ["pandas\nlamindb-core==2.7.0", "numpy", "pandera>=0.24.0"],
+            ["lamindb @ git+https://github.com/laminlabs/lamindb"],
+            ["lamindb @ git+https://github.com/laminlabs/lamindb"],
         ),
-        (["-r base.txt\npandas"], ["-r base.txt\npandas", "lamindb-core==9.9", "numpy", "pandera>=0.24.0"]),
+        (['lamindb; python_version >= "3.10"'], ['lamindb; python_version >= "3.10"']),
+        (["./lamindb"], ["./lamindb", "lamindb==9.9"]),
     ],
 )
 def test_add_lamindb_requirement(requirements: list[str], expected: list[str]) -> None:
@@ -118,28 +152,26 @@ def test_lamindb_requirement_lines() -> None:
 @pytest.mark.parametrize(
     ("version", "expected"),
     [
-        (None, ["lamindb-core>=2.8.1", *CORE_COMPANIONS]),
-        ("2.8.1", ["lamindb-core==2.8.1", *PANDAS_2_COMPANIONS]),
-        ("2.9.2", ["lamindb-core==2.9.2", *PANDAS_2_COMPANIONS]),
-        ("2.10.0", ["lamindb-core==2.10.0", *CORE_COMPANIONS]),
-        ("2.11.0", ["lamindb-core==2.11.0", *CORE_COMPANIONS]),
-        ("3.0.1", ["lamindb-core==3.0.1", *CORE_COMPANIONS]),
+        (None, "lamindb>=2.8.1"),
+        ("2.8.1", "lamindb==2.8.1"),
+        ("2.11.0", "lamindb==2.11.0"),
+        ("3.0.1", "lamindb==3.0.1"),
     ],
 )
-def test_lamindb_requirements(version: str | None, expected: list[str]) -> None:
-    assert lamindb_requirements(version) == expected
+def test_lamindb_requirement(version: str | None, expected: str) -> None:
+    assert lamindb_requirement(version) == expected
 
 
 @pytest.mark.parametrize("version", ["2.8.0", "2.6.0", "1.0"])
-def test_lamindb_requirements_reject_unsupported_versions(version: str) -> None:
+def test_lamindb_requirement_rejects_unsupported_versions(version: str) -> None:
     with pytest.raises(LaminDBVersionError, match=f"lamindb {version} is not supported"):
-        lamindb_requirements(version)
+        lamindb_requirement(version)
 
 
 @pytest.mark.parametrize("version", ["latest", "None", "2", ">=2.11"])
-def test_lamindb_requirements_reject_malformed_versions(version: str) -> None:
+def test_lamindb_requirement_rejects_malformed_versions(version: str) -> None:
     with pytest.raises(LaminDBVersionError, match=f"'{re.escape(version)}' is not a lamindb version"):
-        lamindb_requirements(version)
+        lamindb_requirement(version)
 
 
 @pytest.fixture

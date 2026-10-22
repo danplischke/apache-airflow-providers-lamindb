@@ -8,8 +8,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from airflow.providers.lamindb.operators import step as lamindb_step
 from airflow.providers.lamindb.operators.flow import LaminDBFlowInitOperator
-from airflow.providers.lamindb.utils import remote
 
 
 @pytest.fixture
@@ -63,7 +63,7 @@ def test_venv_operator_works_without_lamindb_on_worker(no_lamindb: None, make_co
 
     assert captured["op_kwargs"]["lamindb_airflow_config"]["instance"] == "owner/name"
     assert "def lamindb_airflow_flow_task(lamindb_airflow_config):" in captured["source"]
-    assert op.requirements[0] == "lamindb-core==2.11.0"
+    assert op.requirements[0] == "lamindb==2.11.0"
 
 
 def test_venv_step_works_without_lamindb_on_worker(no_lamindb: None, make_context) -> None:
@@ -79,8 +79,8 @@ def test_venv_step_works_without_lamindb_on_worker(no_lamindb: None, make_contex
 
     op = test_dag().get_task("step")
     with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(remote, "dag_source", MagicMock(return_value="# dag"))
+        mp.setattr(lamindb_step, "dag_source", MagicMock(return_value="# dag"))
         mp.setattr(type(op).__mro__[2], "execute", lambda self, context: self.get_python_source())
         source = op.execute(make_context())
     assert "'instance': None" in source
-    assert op.requirements[0] == "lamindb-core>=2.8.1"
+    assert op.requirements[0] == "lamindb>=2.8.1"

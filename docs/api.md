@@ -20,10 +20,10 @@
       members: [lamindb_kubernetes_task]
       toc_label: decorators.kubernetes
 
-::: airflow.providers.lamindb.utils.remote
+::: airflow.providers.lamindb.execution.setup
     options:
       members: [LaminDBSetup]
-      toc_label: utils.remote
+      toc_label: execution.setup
 
 ::: airflow.providers.lamindb.triggers.records
     options:
@@ -57,23 +57,43 @@
 
 ::: airflow.providers.lamindb.hooks.lamindb
     options:
-      members: [LaminDBHook, LaminDBInstance, Registry, DEFAULT_HUB_API_URL]
+      members: [LaminDBHook]
       toc_label: hooks.lamindb
 
-::: airflow.providers.lamindb.hooks.models
+::: airflow.providers.lamindb.client.client
     options:
-      members: [RecordQueryParams, RecordQueryBody, RecordOrder, RecordScope, RecordInsertBody, RecordUpdateBody, TokenRequest, TokenResponse, InstanceSettingsResponse]
-      toc_label: hooks.models
+      members: [LaminHubClient, LaminHubConfig, LaminDBInstance, DEFAULT_HUB_API_URL, MAX_PAGE_SIZE]
+      toc_label: client.client
 
-::: airflow.providers.lamindb.utils.filters
+::: airflow.providers.lamindb.client.registries
+    options:
+      members: [Registry, DBWRITE_REGISTRY, resolve_registry]
+      toc_label: client.registries
+
+::: airflow.providers.lamindb.client.models
+    options:
+      members: [RecordQueryParams, RecordQueryBody, RecordOrder, RecordScope, RecordInsertBody, RecordUpdateBody, TokenRequest, TokenResponse, InstanceSettingsResponse, ArtifactAux, ArtifactRecordResponse, DbWriteResponse, BranchRecordResponse, BranchBlockRecordResponse, UserRecordResponse, RegistrySchemaResponse, InstanceSchemaResponse]
+      toc_label: client.models
+
+::: airflow.providers.lamindb.triggers.events
+    options:
+      members: [CursorValue, BranchSummary, UserSummary, DbWriteEventPayload, RecordEventPayload, BranchStatusEventPayload, BranchBlockEventPayload, SensorError, RecordSensorSuccess, BranchSensorSuccess, BranchSensorFailure, RecordSensorOutcome, BranchSensorOutcome]
+      toc_label: triggers.events
+
+::: airflow.providers.lamindb.execution.config
+    options:
+      members: [FlowRunParameters, ConnectedStepConfig, TrackedStepConfig, FlowStartConfig, FlowFinishConfig]
+      toc_label: execution.config
+
+::: airflow.providers.lamindb.client.filters
     options:
       members: [F, Count, FilterExpression, Condition, And, Or]
-      toc_label: utils.filters
+      toc_label: client.filters
 
-::: airflow.providers.lamindb.utils.enums
+::: airflow.providers.lamindb.client.enums
     options:
       members: [LaminDBRegistry, FilterOperator, ArtifactKind, TransformKind, RunStatus, RegistryField, ArtifactField, CollectionField, RunField, TransformField, RecordField, ULabelField, FeatureField, SchemaField, ProjectField, ReferenceField, StorageField, BranchField, SpaceField, UserField]
-      toc_label: utils.enums
+      toc_label: client.enums
       show_if_no_docstring: true
 
 ::: airflow.providers.lamindb.exceptions

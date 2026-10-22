@@ -6,19 +6,18 @@ from unittest.mock import MagicMock, patch
 import pytest
 from airflow.exceptions import AirflowNotFoundException
 from airflow.providers.standard.operators.python import PythonVirtualenvOperator
+from pydantic import ValidationError
 
 from airflow.providers.lamindb.exceptions import LaminDBVersionError
+from airflow.providers.lamindb.execution.environment import RemoteLaminDB
 from airflow.providers.lamindb.operators.flow import (
     FLOW_INSTANCE_XCOM_KEY,
     LaminDBFlowFinishOperator,
     LaminDBFlowInitOperator,
 )
-from airflow.providers.lamindb.utils.remote import RemoteLaminDB
 
 # these tests build flow operators on their own, which warns that they group no tasks
 pytestmark = pytest.mark.filterwarnings("ignore::airflow.providers.lamindb.exceptions.LaminDBFlowWarning")
-
-CORE = ["lamindb-core==2.11.0", "numpy", "pandas>=2.0.0", "pandera>=0.24.0"]
 
 
 def test_flow_operators_are_setup_and_teardown() -> None:
@@ -38,6 +37,16 @@ def test_requirements_are_resolved_at_execute_time() -> None:
     op = LaminDBFlowInitOperator(requirements=["pandas"])
     assert op.requirements == ["pandas"]  # no lamindb lookup while parsing the DAG
     assert op.expect_airflow is False
+
+
+def test_flow_config_is_validated_before_shipping(
+    fake_lamindb, make_context, lamindb_connection, monkeypatch
+) -> None:
+    fake_lamindb.flow_run = MagicMock(uid="flowuid")
+    op = LaminDBFlowFinishOperator()
+    monkeypatch.setattr(op, "_runtime_kwargs", lambda context: {"reference": "d/r", "success": "false"})
+    with pytest.raises(ValidationError):
+        _run_in_fake_venv(op, make_context())
 
 
 def test_lamindb_arguments_are_templated(fake_lamindb: MagicMock, make_context, lamindb_connection) -> None:
@@ -96,7 +105,7 @@ def test_flow_init_uses_the_connection(fake_lamindb: MagicMock, make_context, la
     assert config["path"] == "/dags/my_dag.py"
     assert config["entrypoint"] == "my_dag"
     assert config["params"]["run_id"] == "run_1"
-    assert seen["requirements"] == CORE
+    assert seen["requirements"] == ["lamindb==2.11.0"]
     assert seen["env_vars"]["LAMIN_API_KEY"] == "api-key"
     assert seen["settings_dir_existed"]
     assert not os.path.exists(seen["env_vars"]["LAMIN_SETTINGS_DIR"])  # removed afterwards
@@ -211,7 +220,7 @@ def test_without_connection_lamindb_uses_its_own_configuration(fake_lamindb: Mag
     fake_lamindb.connect.assert_not_called()
     assert seen["env_vars"] == {}
     # nothing to ask LaminHub: any supported version
-    assert seen["requirements"] == ["lamindb-core>=2.8.1", *CORE[1:]]
+    assert seen["requirements"] == ["lamindb>=2.8.1"]
     context["ti"].xcom_push.assert_not_called()
 
 
@@ -224,10 +233,10 @@ def test_missing_connection_explains_how_to_opt_out(make_context, monkeypatch) -
 @pytest.mark.parametrize(
     ("kwargs", "expected", "looked_up"),
     [
-        ({}, ["lamindb-core==2.12.0", *CORE[1:]], True),
-        ({"lamindb_version": "2.11.2"}, ["lamindb-core==2.11.2", *CORE[1:]], False),
+        ({}, ["lamindb==2.12.0"], True),
+        ({"lamindb_version": "2.11.2"}, ["lamindb==2.11.2"], False),
         ({"requirements": ["lamindb>=2.11"]}, ["lamindb>=2.11"], False),
-        ({"requirements": ["lamindb-core==2.11.2"]}, ["lamindb-core==2.11.2", *CORE[1:]], False),
+        ({"requirements": ["lamindb-core==2.11.2"]}, ["lamindb-core==2.11.2"], False),
         ({"requirements": "pandas\nlamindb==2.11.2"}, ["pandas\nlamindb==2.11.2"], False),
     ],
 )

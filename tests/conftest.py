@@ -40,6 +40,17 @@ def make_context() -> Callable[..., dict[str, Any]]:
     return _make
 
 
+RUN_STATUS_TO_CODE = {
+    "scheduled": -3,
+    "restarted": -2,
+    "started": -1,
+    "completed": 0,
+    "errored": 1,
+    "aborted": 2,
+}
+"""``lamindb.base.types.RUN_STATUS_TO_CODE``; test_lamindb_contract checks it against lamindb."""
+
+
 class _FakeRunContext:
     """Mirrors ``ln.context``: ``run`` is a read-only view of ``_run``."""
 
@@ -73,5 +84,11 @@ def fake_lamindb(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
     fake.Transform.filter.return_value.order_by.return_value.first.return_value = None
     fake.setup.core._settings_store.dev_dir_containing.return_value = None
     fake.Run.filter.return_value.order_by.return_value.first.side_effect = lambda: fake.flow_run
+    fake.base.types.RUN_STATUS_TO_CODE = RUN_STATUS_TO_CODE
+    # hide submodules of a real lamindb imported earlier, such as lamindb.models
+    for name in [name for name in sys.modules if name.startswith("lamindb.")]:
+        monkeypatch.delitem(sys.modules, name)
     monkeypatch.setitem(sys.modules, "lamindb", fake)
+    monkeypatch.setitem(sys.modules, "lamindb.base", fake.base)
+    monkeypatch.setitem(sys.modules, "lamindb.base.types", fake.base.types)
     return fake

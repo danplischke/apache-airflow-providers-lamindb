@@ -29,7 +29,7 @@ state store that the event triggers use to resume after restarts.
 | `packaging` | `>=22` |
 
 The worker doesn't need the `lamindb` Python package. The triggers, sensors and hook talk to the
-[LaminHub REST API](https://docs.lamin.ai/rest), and the lineage operators install `lamindb-core` in a
+[LaminHub REST API](https://docs.lamin.ai/rest), and the lineage operators install `lamindb` in a
 virtualenv or use a Kubernetes pod's image. `@task.lamindb_kubernetes` needs
 `pip install "apache-airflow-providers-lamindb[k8s]"`.
 

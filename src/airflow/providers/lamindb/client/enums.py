@@ -2,12 +2,13 @@
 Enums for building LaminHub REST filters: registries, filter operators, registry fields and values.
 
 The field enums reflect the core registries of LaminDB 2.11. Use them with
-[`F`][airflow.providers.lamindb.utils.filters.F], for example ``F(ArtifactField.KEY) == "raw/a.csv"``.
+[`F`][airflow.providers.lamindb.client.filters.F], for example ``F(ArtifactField.KEY) == "raw/a.csv"``.
 Plain strings work for every field, including fields of other schema modules such as ``bionty``.
 """
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from enum import Enum, IntEnum
 from typing import Any
 
@@ -116,6 +117,10 @@ class ArtifactKind(_StrEnum):
     """Created by LaminDB for configurations."""
 
 
+INTERNAL_ARTIFACT_KINDS: tuple[str, ...] = (ArtifactKind.LAMINDB_RUN.value, ArtifactKind.LAMINDB_CONFIG.value)
+"""Artifact kinds LaminDB uses internally (run logs, environments, configs)."""
+
+
 class TransformKind(_StrEnum):
     """Values of [`TransformField.KIND`][]."""
 
@@ -141,7 +146,7 @@ class RegistryField(_StrEnum):
     Base class of the registry field enums.
 
     Members that are relations know the registry they point to ([`related`][]), so that
-    [`F`][airflow.providers.lamindb.utils.filters.F] can follow them, for example
+    [`F`][airflow.providers.lamindb.client.filters.F] can follow them, for example
     ``F(ArtifactField.CREATED_BY, UserField.HANDLE)``. Foreign keys (``..._ID`` members) hold the id of
     the related record and can be compared directly.
     """
@@ -714,3 +719,11 @@ REGISTRY_FIELDS: dict[LaminDBRegistry, type[RegistryField]] = {
     LaminDBRegistry.USER: UserField,
 }
 """The field enum of each registry."""
+
+
+def normalize_str_list(value: str | Iterable[str] | None) -> list[str] | None:
+    """Return a list of plain strings; enum members such as ``ArtifactKind.DATASET`` become their values."""
+    if value is None:
+        return None
+    values = [value] if isinstance(value, str) else list(value)
+    return [plain_value(item) for item in values]

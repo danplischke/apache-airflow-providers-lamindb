@@ -4,18 +4,10 @@ import asyncio
 from collections.abc import AsyncIterator, Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
-from airflow.providers.lamindb.exceptions import LaminDBApiError
-from airflow.providers.lamindb.hooks.lamindb import (
-    MAX_PAGE_SIZE,
-    LaminDBHook,
-    LaminDBInstance,
-    Registry,
-    chunk_ids,
-    normalize_registry_name,
-)
-from airflow.providers.lamindb.triggers.base import LaminDBDbWriteEventTrigger
-from airflow.providers.lamindb.triggers.cursors import RecordCursorStore, is_cursor_record
-from airflow.providers.lamindb.utils.dbwrite import (
+from airflow.providers.lamindb.client.artifacts import artifact_filter, is_internal_artifact, storage_ongoing
+from airflow.providers.lamindb.client.branches import SPECIAL_BRANCH_IDS
+from airflow.providers.lamindb.client.client import MAX_PAGE_SIZE, LaminDBInstance, chunk_ids
+from airflow.providers.lamindb.client.dbwrite import (
     RECORD_EVENTS,
     RecordEvent,
     changed_fields,
@@ -23,27 +15,33 @@ from airflow.providers.lamindb.utils.dbwrite import (
     is_upload_completion,
     previous_values,
 )
-from airflow.providers.lamindb.utils.enums import plain_value
-from airflow.providers.lamindb.utils.filters import (
+from airflow.providers.lamindb.client.enums import normalize_str_list, plain_value
+from airflow.providers.lamindb.client.filters import (
+    And,
+    BranchField,
+    F,
+    FilterExpression,
+    Or,
+    RecordField,
     combine_filters,
     is_local_filter,
     matches_filter,
     normalize_filter,
 )
-from airflow.providers.lamindb.utils.lamindb import (
-    SPECIAL_BRANCH_IDS,
-    artifact_filter,
-    is_internal_artifact,
-    normalize_str_list,
-    resolve_branch_id,
-    storage_ongoing,
-)
+from airflow.providers.lamindb.client.models import ArtifactRecordResponse
+from airflow.providers.lamindb.client.registries import Registry, normalize_registry_name
+from airflow.providers.lamindb.exceptions import LaminDBApiError
+from airflow.providers.lamindb.hooks.lamindb import LaminDBHook
+from airflow.providers.lamindb.triggers.base import LaminDBDbWriteEventTrigger
+from airflow.providers.lamindb.triggers.cursors import RecordCursorStore, is_cursor_record, resolve_branch_id
+from airflow.providers.lamindb.triggers.events import RecordSensorSuccess, SensorError
 from airflow.triggers.base import BaseTrigger, TriggerEvent
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
-    from airflow.providers.lamindb.utils.filters import Filter, FilterLike
+    from airflow.providers.lamindb.client.enums import LaminDBRegistry
+
 
 _Candidate = tuple[dict[str, Any], RecordEvent]
 
@@ -56,22 +54,32 @@ def _normalize_events(events: str | Iterable[str]) -> list[RecordEvent]:
     return [event for event in RECORD_EVENTS if event in values]
 
 
-def branch_scope_filter(branch: str | int | None) -> dict[str, Any] | None:
+def _restore_filter(filter: FilterExpression | Mapping[str, Any] | None) -> FilterExpression | None:
+    # Airflow can't serialize filter objects, so serialize() passes the JSON form back to __init__
+    if isinstance(filter, Mapping):
+        return FilterExpression.from_dict(filter)
+    normalize_filter(filter)
+    return filter
+
+
+def branch_scope_filter(branch: str | int | None) -> FilterExpression | None:
     """Filter restricting a record query to a branch given by name or id."""
     if branch is None:
         return None
     if isinstance(branch, int):
-        return {"branch_id": {"eq": branch}}
+        return F(RecordField.BRANCH_ID).eq(branch)
     if branch in SPECIAL_BRANCH_IDS:
-        return {"branch_id": {"eq": SPECIAL_BRANCH_IDS[branch]}}
-    return {"branch.name": {"eq": branch}}
+        return F(RecordField.BRANCH_ID).eq(SPECIAL_BRANCH_IDS[branch])
+    return F(RecordField.BRANCH, BranchField.NAME).eq(branch)
 
 
 def ready_records(records: Iterable[dict[str, Any]], *, wait_for_upload: bool) -> list[dict[str, Any]]:
     """Drop artifacts whose upload is still in progress (if ``wait_for_upload``)."""
     if not wait_for_upload:
         return list(records)
-    return [record for record in records if not storage_ongoing(record.get("_aux"))]
+    return [
+        record for record in records if not storage_ongoing(ArtifactRecordResponse.model_validate(record).aux)
+    ]
 
 
 class LaminDBRecordEventTrigger(LaminDBDbWriteEventTrigger):
@@ -94,10 +102,9 @@ class LaminDBRecordEventTrigger(LaminDBDbWriteEventTrigger):
     :param branch: Name or id of the branch to watch; ``None`` reports raw inserts, updates and
         deletes on all branches.
     :param filter: Filter the record must match, built with
-        [`F`][airflow.providers.lamindb.utils.filters.F], e.g.
-        ``F(ArtifactField.KEY).startswith("raw/")``, or a LaminHub REST filter such as
-        ``{"key": {"startswith": "raw/"}}``. It's evaluated against the current record; for hard
-        deletes against the deleted row, which only supports direct fields.
+        [`F`][airflow.providers.lamindb.client.filters.F], e.g.
+        ``F(ArtifactField.KEY).startswith("raw/")``. It's evaluated against the current record; for
+        hard deletes against the deleted row, which only supports direct fields.
     :param changed_fields: Only report updates that change at least one of these fields, e.g.
         ``[ArtifactField.KEY]``.
 
@@ -110,11 +117,11 @@ class LaminDBRecordEventTrigger(LaminDBDbWriteEventTrigger):
 
     def __init__(
         self,
-        registry: str,
+        registry: LaminDBRegistry | str,
         *,
         events: str | Sequence[str] = ("created",),
         branch: str | int | None = "main",
-        filter: FilterLike | None = None,
+        filter: FilterExpression | None = None,
         changed_fields: Sequence[str] | None = None,
         **kwargs: Any,
     ) -> None:
@@ -122,7 +129,7 @@ class LaminDBRecordEventTrigger(LaminDBDbWriteEventTrigger):
         self.registry: str = plain_value(registry)
         self.events = _normalize_events(events)
         self.branch = branch
-        self.filter = normalize_filter(filter)
+        self.filter = _restore_filter(filter)
         self.changed_fields = normalize_str_list(changed_fields) if changed_fields else None
         if "deleted" in self.events and not is_local_filter(self._record_filter()):
             raise ValueError(
@@ -152,11 +159,11 @@ class LaminDBRecordEventTrigger(LaminDBDbWriteEventTrigger):
             "registry": self.registry,
             "events": list(self.events),
             "branch": self.branch,
-            "filter": self.filter,
+            "filter": normalize_filter(self.filter),
             "changed_fields": self.changed_fields,
         }
 
-    def _record_filter(self) -> dict[str, Any] | None:
+    def _record_filter(self) -> FilterExpression | None:
         return self.filter
 
     @property
@@ -168,7 +175,8 @@ class LaminDBRecordEventTrigger(LaminDBDbWriteEventTrigger):
     async def _setup(self, hook: LaminDBHook) -> None:
         self._registry = await hook.aget_registry(self.registry)
         schema = await hook.aget_schema()
-        fields = schema.get(self._registry.module, {}).get(self._registry.model, {}).get("fields", {})
+        description = schema.root.get(self._registry.module, {}).get(self._registry.model)
+        fields = description.fields if description is not None else {}
         if self.branch is None:
             self._branch_id = None
         elif "branch" not in fields:
@@ -181,41 +189,35 @@ class LaminDBRecordEventTrigger(LaminDBDbWriteEventTrigger):
             self._cursor_settings.reference_type is not None and cursor_registry.name == self._registry.name
         )
 
-    def _created_update_conditions(self) -> list[dict[str, Any]]:
+    def _created_update_conditions(self) -> list[FilterExpression]:
         """Conditions on ``UPDATE`` writes that can turn into ``created`` events."""
         if self._branch_id is None:
             return []
-        return [{'data["branch_id"]': {"isnull": False}}]
+        return [F("data")["branch_id"].is_not_null()]
 
-    def _dbwrite_filter(self) -> Filter:
+    def _dbwrite_filter(self) -> FilterExpression:
         branch_id = self._branch_id
 
-        def on_branch(condition: dict[str, Any]) -> dict[str, Any]:
-            return combine_filters(
-                condition, {"branch_id": {"eq": branch_id}} if branch_id is not None else None
-            ) or dict(condition)
+        def on_branch(condition: FilterExpression) -> FilterExpression:
+            return And(condition, F("branch_id").eq(branch_id)) if branch_id is not None else condition
 
-        clauses: list[dict[str, Any]] = []
+        clauses: list[FilterExpression] = []
         if "created" in self.events:
-            clauses.append(on_branch({"event_type": {"eq": "INSERT"}}))
+            clauses.append(on_branch(F("event_type").eq("INSERT")))
             conditions = self._created_update_conditions()
             if conditions and "updated" not in self.events:
-                data_condition = conditions[0] if len(conditions) == 1 else {"or": conditions}
-                clauses.append(on_branch({"and": [{"event_type": {"eq": "UPDATE"}}, data_condition]}))
+                data_condition = conditions[0] if len(conditions) == 1 else Or(*conditions)
+                clauses.append(on_branch(And(F("event_type").eq("UPDATE"), data_condition)))
         if "updated" in self.events:
-            clauses.append(on_branch({"event_type": {"eq": "UPDATE"}}))
+            clauses.append(on_branch(F("event_type").eq("UPDATE")))
         if "deleted" in self.events:
-            clauses.append(on_branch({"event_type": {"eq": "DELETE"}}))
+            clauses.append(on_branch(F("event_type").eq("DELETE")))
             if branch_id is not None:
-                clauses.append(
-                    {"and": [{"event_type": {"eq": "UPDATE"}}, {'data["branch_id"]': {"eq": branch_id}}]}
-                )
-        return {
-            "and": [
-                {"table_name": {"eq": self._resolved_registry.table_name}},
-                clauses[0] if len(clauses) == 1 else {"or": clauses},
-            ]
-        }
+                clauses.append(And(F("event_type").eq("UPDATE"), F("data")["branch_id"].eq(branch_id)))
+        return And(
+            F("table_name").eq(self._resolved_registry.table_name),
+            clauses[0] if len(clauses) == 1 else Or(*clauses),
+        )
 
     def _classify(self, write: dict[str, Any]) -> RecordEvent | None:
         return classify_record_write(write, self._branch_id)
@@ -250,7 +252,7 @@ class LaminDBRecordEventTrigger(LaminDBDbWriteEventTrigger):
         cursor_records = await hook.aget_records_by_ids(
             self._resolved_registry,
             unknown,
-            filter={"reference_type": {"eq": self._cursor_settings.reference_type}},
+            filter=F(RecordField.REFERENCE_TYPE).eq(self._cursor_settings.reference_type),
         )
         self._cursor_record_ids |= cursor_records.keys()
         return bool(unknown - cursor_records.keys())
@@ -376,7 +378,7 @@ class LaminDBArtifactEventTrigger(LaminDBRecordEventTrigger):
             "wait_for_upload": self.wait_for_upload,
         }
 
-    def _record_filter(self) -> dict[str, Any] | None:
+    def _record_filter(self) -> FilterExpression | None:
         return artifact_filter(
             key=self.key,
             key_prefix=self.key_prefix,
@@ -386,10 +388,10 @@ class LaminDBArtifactEventTrigger(LaminDBRecordEventTrigger):
             extra=self.filter,
         )
 
-    def _created_update_conditions(self) -> list[dict[str, Any]]:
+    def _created_update_conditions(self) -> list[FilterExpression]:
         conditions = super()._created_update_conditions()
         if self.wait_for_upload:
-            conditions.append({'data["_aux"]': {"isnull": False}})
+            conditions.append(F("data")["_aux"].is_not_null())
         return conditions
 
     def _classify(self, write: dict[str, Any]) -> RecordEvent | None:
@@ -411,9 +413,10 @@ class LaminDBArtifactEventTrigger(LaminDBRecordEventTrigger):
         records: dict[int, dict[str, Any]],
     ) -> list[_Candidate]:
         refined: list[_Candidate] = []
+        metadata = {key: ArtifactRecordResponse.model_validate(row) for key, row in records.items()}
         completions = await self._upload_completions(hook, candidates) if self.wait_for_upload else {}
         for write, kind in candidates:
-            record = records.get(write["sqlrecord_id"])
+            record = metadata.get(write["sqlrecord_id"])
             if record is not None and not self.include_internal and is_internal_artifact(record):
                 continue
             refined_kind = (
@@ -427,12 +430,12 @@ class LaminDBArtifactEventTrigger(LaminDBRecordEventTrigger):
     def _refined_kind(
         write: dict[str, Any],
         kind: RecordEvent,
-        record: dict[str, Any] | None,
+        record: ArtifactRecordResponse | None,
         completions: Mapping[int, list[int]],
     ) -> RecordEvent | None:
         """Apply the upload semantics of ``wait_for_upload``; ``None`` drops the write."""
         record_completions = completions.get(write["sqlrecord_id"], [])
-        uploading = record is not None and storage_ongoing(record.get("_aux"))
+        uploading = record is not None and storage_ongoing(record.aux)
         if write["event_type"] == "DELETE":
             # artifacts whose upload failed are deleted again; they were never reported as created
             return None if storage_ongoing(previous_values(write).get("_aux")) else kind
@@ -455,14 +458,12 @@ class LaminDBArtifactEventTrigger(LaminDBRecordEventTrigger):
         ids = {w["sqlrecord_id"] for w, kind in candidates if kind == "created"}
         completions: dict[int, list[int]] = {}
         for chunk in chunk_ids(ids):
-            aux_filter = {
-                "and": [
-                    {"table_name": {"eq": self._resolved_registry.table_name}},
-                    {"event_type": {"eq": "UPDATE"}},
-                    {"sqlrecord_id": {"in": chunk}},
-                    {'data["_aux"]': {"isnull": False}},
-                ]
-            }
+            aux_filter = And(
+                F("table_name").eq(self._resolved_registry.table_name),
+                F("event_type").eq("UPDATE"),
+                F("sqlrecord_id").is_in(chunk),
+                F("data")["_aux"].is_not_null(),
+            )
             # every _aux update of the chunk: a capped page could miss another artifact's completion
             after_id = None
             while True:
@@ -485,8 +486,7 @@ class LaminDBRecordSensorTrigger(BaseTrigger):
     Yields ``{"status": "success", "records": [...]}`` or ``{"status": "error", "message": ...}``.
 
     :param registry: Registry to query, e.g. ``core.artifact``.
-    :param filter: Filter built with [`F`][airflow.providers.lamindb.utils.filters.F] or a
-        LaminHub REST filter.
+    :param filter: Filter built with [`F`][airflow.providers.lamindb.client.filters.F].
     :param branch: Only records on this branch (name or id); ``None`` for all branches.
     :param min_count: Number of matching records required.
     :param limit: Maximum number of records returned.
@@ -498,8 +498,8 @@ class LaminDBRecordSensorTrigger(BaseTrigger):
 
     def __init__(
         self,
-        registry: str,
-        filter: FilterLike | None = None,
+        registry: LaminDBRegistry | str,
+        filter: FilterExpression | None = None,
         *,
         branch: str | int | None = "main",
         min_count: int = 1,
@@ -511,7 +511,7 @@ class LaminDBRecordSensorTrigger(BaseTrigger):
     ) -> None:
         super().__init__()
         self.registry: str = plain_value(registry)
-        self.filter = normalize_filter(filter)
+        self.filter = _restore_filter(filter)
         self.branch = branch
         self.min_count = min_count
         self.limit = limit
@@ -525,7 +525,7 @@ class LaminDBRecordSensorTrigger(BaseTrigger):
             f"{type(self).__module__}.{type(self).__qualname__}",
             {
                 "registry": self.registry,
-                "filter": self.filter,
+                "filter": normalize_filter(self.filter),
                 "branch": self.branch,
                 "min_count": self.min_count,
                 "limit": self.limit,
@@ -550,13 +550,13 @@ class LaminDBRecordSensorTrigger(BaseTrigger):
                     )
                 except (LaminDBApiError, ValueError) as err:
                     if not (isinstance(err, LaminDBApiError) and err.transient):
-                        yield TriggerEvent({"status": "error", "message": str(err)})
+                        yield TriggerEvent(SensorError(message=str(err)).model_dump())
                         return
                     self.log.warning("LaminHub is unavailable, checking again later: %s", err)
                 else:
                     matching = ready_records(records, wait_for_upload=self.wait_for_upload)
                     if len(matching) >= self.min_count:
-                        yield TriggerEvent({"status": "success", "records": matching})
+                        yield TriggerEvent(RecordSensorSuccess(records=matching).model_dump())
                         return
                     self.log.info(
                         "Found %d of %d records in %s", len(matching), self.min_count, self.registry

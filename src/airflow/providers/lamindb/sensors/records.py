@@ -4,21 +4,24 @@ from collections.abc import Sequence
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any
 
+from pydantic import ValidationError
+
+from airflow.providers.lamindb.client.artifacts import artifact_filter
+from airflow.providers.lamindb.client.enums import normalize_str_list, plain_value
+from airflow.providers.lamindb.client.filters import FilterExpression, combine_filters, normalize_filter
 from airflow.providers.lamindb.exceptions import LaminDBApiError
 from airflow.providers.lamindb.hooks.lamindb import LaminDBHook
+from airflow.providers.lamindb.triggers.events import RECORD_SENSOR_OUTCOME
 from airflow.providers.lamindb.triggers.records import (
     LaminDBRecordSensorTrigger,
     branch_scope_filter,
     ready_records,
 )
-from airflow.providers.lamindb.utils.enums import plain_value
-from airflow.providers.lamindb.utils.filters import combine_filters, normalize_filter
-from airflow.providers.lamindb.utils.lamindb import artifact_filter, normalize_str_list
 from airflow.sdk import BaseSensorOperator, PokeReturnValue, conf
 from airflow.sdk.exceptions import AirflowException
 
 if TYPE_CHECKING:
-    from airflow.providers.lamindb.utils.filters import FilterLike
+    from airflow.providers.lamindb.client.enums import LaminDBRegistry
     from airflow.sdk import Context
 
 
@@ -34,9 +37,9 @@ class LaminDBRecordSensor(BaseSensorOperator):
 
     :param registry: Registry to query, e.g. ``LaminDBRegistry.RUN``, ``"core.artifact"`` or
         ``"bionty.celltype"``.
-    :param filter: Filter built with [`F`][airflow.providers.lamindb.utils.filters.F], e.g.
-        ``F(ArtifactField.KEY) == "raw/sample1.fastq.gz"``, or a LaminHub REST filter such as
-        ``{"key": {"eq": "raw/sample1.fastq.gz"}}``. It's validated when the DAG is parsed.
+    :param filter: Filter built with [`F`][airflow.providers.lamindb.client.filters.F], e.g.
+        ``F(ArtifactField.KEY) == "raw/sample1.fastq.gz"``. It's validated when the DAG is parsed,
+        and again with its templates rendered.
     :param branch: Only records on this branch (name or id); ``None`` for all branches and for
         registries without branches.
     :param min_count: Number of matching records to wait for.
@@ -53,8 +56,8 @@ class LaminDBRecordSensor(BaseSensorOperator):
     def __init__(
         self,
         *,
-        registry: str,
-        filter: FilterLike | None = None,
+        registry: LaminDBRegistry | str,
+        filter: FilterExpression | None = None,
         branch: str | int | None = "main",
         min_count: int = 1,
         limit: int = 100,
@@ -68,6 +71,7 @@ class LaminDBRecordSensor(BaseSensorOperator):
         if min_count < 1 or limit < min_count:
             raise ValueError("min_count must be at least 1 and not larger than limit")
         self.registry: str = plain_value(registry)
+        # the JSON form, so that Airflow renders templates in it and shows it as JSON
         self.filter = normalize_filter(filter)
         self.branch = branch
         self.min_count = min_count
@@ -87,8 +91,11 @@ class LaminDBRecordSensor(BaseSensorOperator):
             return self.wait_for_upload
         return self.registry.lower() in ("core.artifact", "artifact", "lamindb.artifact")
 
-    def _query(self) -> dict[str, Any] | None:
-        return combine_filters(self.filter, branch_scope_filter(self.branch))
+    def _user_filter(self) -> FilterExpression | None:
+        return FilterExpression.from_dict(self.filter) if self.filter else None
+
+    def _query(self) -> FilterExpression | None:
+        return combine_filters(self._user_filter(), branch_scope_filter(self.branch))
 
     def poke(self, context: Context) -> PokeReturnValue:
         hook = self.hook
@@ -132,9 +139,13 @@ class LaminDBRecordSensor(BaseSensorOperator):
         )
 
     def execute_complete(self, context: Context, event: dict[str, Any]) -> Any:
-        if event.get("status") == "success":
-            return event.get("records")
-        raise AirflowException(event.get("message", f"Unexpected trigger event {event!r}"))
+        try:
+            outcome = RECORD_SENSOR_OUTCOME.validate_python(event)
+        except ValidationError:
+            raise AirflowException("Invalid LaminDB sensor event.") from None
+        if outcome.status == "success":
+            return outcome.records
+        raise AirflowException(outcome.message)
 
 
 class LaminDBArtifactSensor(LaminDBRecordSensor):
@@ -176,7 +187,7 @@ class LaminDBArtifactSensor(LaminDBRecordSensor):
         self.kind = normalize_str_list(kind)
         self.include_internal = include_internal
 
-    def _query(self) -> dict[str, Any] | None:
+    def _query(self) -> FilterExpression | None:
         return combine_filters(
             artifact_filter(
                 key=self.key,
@@ -184,7 +195,7 @@ class LaminDBArtifactSensor(LaminDBRecordSensor):
                 suffix=self.suffix,
                 kind=self.kind,
                 include_internal=self.include_internal,
-                extra=self.filter,
+                extra=self._user_filter(),
             ),
             branch_scope_filter(self.branch),
         )

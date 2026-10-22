@@ -4,6 +4,16 @@ from typing import Any
 
 import pytest
 
+from airflow.providers.lamindb.client.filters import (
+    ArtifactField,
+    ArtifactKind,
+    F,
+    FilterExpression,
+    LaminDBRegistry,
+    RunField,
+    ULabelField,
+    UserField,
+)
 from airflow.providers.lamindb.exceptions import LaminDBApiError, LaminDBVersionError
 from airflow.providers.lamindb.triggers.records import (
     LaminDBArtifactEventTrigger,
@@ -11,15 +21,6 @@ from airflow.providers.lamindb.triggers.records import (
     LaminDBRecordSensorTrigger,
     branch_scope_filter,
     ready_records,
-)
-from airflow.providers.lamindb.utils.filters import (
-    ArtifactField,
-    ArtifactKind,
-    F,
-    LaminDBRegistry,
-    RunField,
-    ULabelField,
-    UserField,
 )
 from unit.lamindb.fakes import INSTANCE, FakeHook, dbwrite, evaluate
 
@@ -145,7 +146,7 @@ class TestRecordEventTrigger:
     async def test_deleted_record_without_local_fields(self):
         writes = [dbwrite(1, "DELETE", ULABEL, 1, data={"id": 1, "branch_id": MAIN})]
         hook = FakeHook(writes=writes)
-        trigger = LaminDBRecordEventTrigger("core.ulabel", events="deleted", filter={"name": {"eq": "x"}})
+        trigger = LaminDBRecordEventTrigger("core.ulabel", events="deleted", filter=F("name") == "x")
         assert await events_for(trigger, hook) == []
 
     async def test_changed_fields(self):
@@ -195,6 +196,27 @@ class TestRecordEventTrigger:
             dbwrite(6, "INSERT", "lamindb_artifact", 1),
         ]
         dbwrite_filter = trigger._dbwrite_filter()
+        assert dbwrite_filter == {
+            "and": [
+                {"table_name": {"eq": ULABEL}},
+                {
+                    "or": [
+                        {"and": [{"event_type": {"eq": "INSERT"}}, {"branch_id": {"eq": MAIN}}]},
+                        {
+                            "and": [
+                                {
+                                    "and": [
+                                        {"event_type": {"eq": "UPDATE"}},
+                                        {'data["branch_id"]': {"isnull": False}},
+                                    ]
+                                },
+                                {"branch_id": {"eq": MAIN}},
+                            ]
+                        },
+                    ]
+                },
+            ]
+        }
         assert [evaluate(dbwrite_filter, w) for w in accepted] == [True, True]
         assert [evaluate(dbwrite_filter, w) for w in rejected] == [False] * 4
 
@@ -231,6 +253,7 @@ class TestRecordEventTrigger:
             filter=F(ULabelField.NAME).startswith("a") & (F(ULabelField.CREATED_BY_ID) == 7),
             changed_fields=[ULabelField.NAME, "description"],
         )
+        # the JSON form is what the triggerer passes back after serialize()
         plain = LaminDBRecordEventTrigger(
             "core.ulabel",
             events="updated",
@@ -248,7 +271,7 @@ class TestRecordEventTrigger:
             "bionty.gene",
             events=["deleted", "created"],
             branch=None,
-            filter={"symbol": {"eq": "TP53"}},
+            filter=F("symbol") == "TP53",
             changed_fields=["symbol"],
             instance="a/b",
         )
@@ -256,7 +279,15 @@ class TestRecordEventTrigger:
         assert classpath == "airflow.providers.lamindb.triggers.records.LaminDBRecordEventTrigger"
         assert kwargs["events"] == ["created", "deleted"]
         assert kwargs["registry"] == "bionty.gene"
-        assert LaminDBRecordEventTrigger(**kwargs).serialize() == (classpath, kwargs)
+        assert kwargs["filter"] == {"symbol": {"eq": "TP53"}}
+        restored = LaminDBRecordEventTrigger(**kwargs)
+        assert isinstance(restored.filter, FilterExpression)
+        assert restored.filter == trigger.filter
+        assert restored.serialize() == (classpath, kwargs)
+
+    def test_restored_filter_is_validated(self):
+        with pytest.raises(ValueError, match="Unknown filter operator 'equals' on 'symbol'"):
+            LaminDBRecordEventTrigger("bionty.gene", filter={"symbol": {"equals": "TP53"}})
 
 
 class TestArtifactEventTrigger:
@@ -341,6 +372,21 @@ class TestArtifactEventTrigger:
         hook = FakeHook(writes=writes, records={"core.artifact": {1: artifact(1, aux={"so": 1})}})
         trigger = LaminDBArtifactEventTrigger(events=["updated", "deleted"])
         assert summary(await events_for(trigger, hook)) == [("deleted", 3, 3)]
+
+    async def test_malformed_aux_does_not_stop_the_trigger(self):
+        writes = [
+            dbwrite(
+                1,
+                "DELETE",
+                ARTIFACT,
+                1,
+                data={"id": 1, "kind": "dataset", "_aux": '{"so": "pending"}', "branch_id": 1},
+            ),
+            dbwrite(2, "UPDATE", ARTIFACT, 2, data={"_aux": "not json"}),
+        ]
+        hook = FakeHook(writes=writes, records={"core.artifact": {2: artifact(2)}})
+        trigger = LaminDBArtifactEventTrigger(events=["updated", "deleted"])
+        assert summary(await events_for(trigger, hook)) == [("deleted", 1, 1), ("updated", 2, 2)]
 
     async def test_without_wait_for_upload(self):
         writes = [

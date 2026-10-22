@@ -9,11 +9,10 @@ from pathlib import Path
 from typing import Any
 
 from airflow.exceptions import AirflowException
+from airflow.providers.lamindb.execution.config import FlowRunParameters
+from airflow.providers.lamindb.execution.runtime import MAX_REFERENCE_LENGTH
 
 FAILED_STATES = frozenset({"failed", "upstream_failed"})
-
-MAX_REFERENCE_LENGTH = 255
-"""The longest ``Run.reference`` lamindb stores; ``utils.runtime`` enforces it as well."""
 
 DEFAULT_SCOPE = ""
 """``lamindb_scope`` of the default ``LaminDBFlow``. ``None`` means no scope: a standalone step."""
@@ -93,15 +92,16 @@ def flow_run_params(context: Any) -> dict[str, Any]:
     """Parameters recorded on the flow run."""
     dag_id, run_id = dag_and_run_id(context)
     dag_run = context["dag_run"]
-    params: dict[str, Any] = {"dag_id": dag_id, "run_id": run_id}
-    for attr in ("run_type", "logical_date", "data_interval_start", "data_interval_end"):
-        value = getattr(dag_run, attr, None)
-        if value is not None:
-            params[attr] = str(value)
     conf = getattr(dag_run, "conf", None)
-    if conf:
-        params["conf"] = dict(conf)
-    return params
+    return FlowRunParameters(
+        dag_id=dag_id,
+        run_id=run_id,
+        run_type=getattr(dag_run, "run_type", None),
+        logical_date=getattr(dag_run, "logical_date", None),
+        data_interval_start=getattr(dag_run, "data_interval_start", None),
+        data_interval_end=getattr(dag_run, "data_interval_end", None),
+        conf=dict(conf) if conf else None,
+    ).model_dump(exclude_none=True)
 
 
 def dag_source(dag: Any) -> str:

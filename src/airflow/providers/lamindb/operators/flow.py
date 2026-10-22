@@ -12,8 +12,8 @@ from contextvars import ContextVar
 from typing import Any
 
 from airflow.providers.lamindb.exceptions import LaminDBFlowWarning
-from airflow.providers.lamindb.hooks.lamindb import LaminDBHook
-from airflow.providers.lamindb.utils.dag_run import (
+from airflow.providers.lamindb.execution.config import FlowFinishConfig, FlowStartConfig
+from airflow.providers.lamindb.execution.dag_run import (
     DEFAULT_SCOPE,
     context_flow_run_reference,
     dag_and_run_id,
@@ -21,18 +21,21 @@ from airflow.providers.lamindb.utils.dag_run import (
     flow_run_params,
     flow_task_ids,
 )
-from airflow.providers.lamindb.utils.remote import (
-    LaminDBSetup,
+from airflow.providers.lamindb.execution.environment import (
     RemoteLaminDB,
-    build_remote_flow_source,
-    check_lamindb_version,
     ensure_lamindb_requirement,
     lamindb_virtualenv_env,
+)
+from airflow.providers.lamindb.execution.parameters import space_name
+from airflow.providers.lamindb.execution.requirements import check_lamindb_version
+from airflow.providers.lamindb.execution.setup import (
+    LaminDBSetup,
     resolve_setup,
     setup_bootstrap_source,
     setup_execution_env,
-    space_name,
 )
+from airflow.providers.lamindb.execution.source import build_remote_flow_source
+from airflow.providers.lamindb.hooks.lamindb import LaminDBHook
 from airflow.providers.standard.operators.python import PythonVirtualenvOperator
 from airflow.sdk import TriggerRule
 
@@ -54,11 +57,11 @@ def lamindb_airflow_flow_task(lamindb_airflow_config: dict[str, Any]) -> str:
 
 
 class _LaminDBFlowOperator(PythonVirtualenvOperator):
-    """Run a ``airflow.providers.lamindb.utils.runtime`` function inside a virtualenv.
+    """Run a ``airflow.providers.lamindb.execution.runtime`` function inside a virtualenv.
 
     Accepts every ``PythonVirtualenvOperator`` argument except ``python_callable``,
-    ``op_args`` and ``op_kwargs``. ``lamindb-core`` is added to ``requirements`` (see
-    ``lamindb_version``) unless lamindb is listed.
+    ``op_args`` and ``op_kwargs``. ``lamindb`` is added to ``requirements`` (see
+    ``lamindb_version``) unless ``lamindb`` or ``lamindb-core`` is listed.
 
     :param lamindb_conn_id: Airflow connection of type ``lamindb`` with the Lamin API key
         and the instance. The virtualenv gets them instead of the worker's ``~/.lamin``.
@@ -76,7 +79,7 @@ class _LaminDBFlowOperator(PythonVirtualenvOperator):
         instance's version on LaminHub (with a connection), else the latest. Templated.
     :param lamindb_cache_dir: absolute path of a lamindb cache shared between tasks, set as
         ``LAMIN_CACHE_DIR``; overrides the connection's ``cache_dir`` extra. Templated.
-    :param lamindb_setup: a [`LaminDBSetup`][airflow.providers.lamindb.utils.remote.LaminDBSetup]
+    :param lamindb_setup: a [`LaminDBSetup`][airflow.providers.lamindb.execution.setup.LaminDBSetup]
         that prepares the virtualenv; the steps of the DAG must have the same one.
     :param lamindb_scope: the flow run to open or close: ``""`` (default) for the DAG run's, else the
         ``scope_id`` of a ``LaminDBFlow`` whose flow run it is. Tasks are children of the flow run of
@@ -144,9 +147,13 @@ class _LaminDBFlowOperator(PythonVirtualenvOperator):
         remote = RemoteLaminDB.resolve(self.lamindb_conn_id, self.lamindb_instance, self.lamindb_cache_dir)
         ensure_lamindb_requirement(self, remote, self.lamindb_version)
         # a single named argument: a **kwargs signature would make PythonOperator pass the whole context
-        self.op_kwargs = {
-            "lamindb_airflow_config": {"instance": remote.instance, **self._runtime_kwargs(context)}
+        config_models: dict[str, type[FlowStartConfig] | type[FlowFinishConfig]] = {
+            "start_flow_run": FlowStartConfig,
+            "finish_flow_run": FlowFinishConfig,
         }
+        config_model = config_models[self._runtime_function]
+        config = config_model.model_validate({"instance": remote.instance, **self._runtime_kwargs(context)})
+        self.op_kwargs = {"lamindb_airflow_config": config.model_dump(exclude_unset=True)}
         with lamindb_virtualenv_env(self, remote, self._setup_env(context)):
             result = super().execute(context)
         self._after_execute(context, remote)

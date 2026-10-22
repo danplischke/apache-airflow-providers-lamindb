@@ -91,7 +91,7 @@ def run_script(script: str, tmp_path, *, succeed: bool = True) -> subprocess.Com
 
 
 def start_flow_run_kwargs(dag_module, run_id: str) -> dict:
-    from airflow.providers.lamindb.utils.dag_run import flow_run_params
+    from airflow.providers.lamindb.execution.dag_run import flow_run_params
 
     return {
         "reference": f"integration_dag/{run_id}",
@@ -110,7 +110,7 @@ def step_script(
     bootstrap: str = "",
 ) -> str:
     """The step source a virtualenv/pod receives, then called by name like Airflow's template."""
-    from airflow.providers.lamindb.utils.remote import build_remote_step_source
+    from airflow.providers.lamindb.execution.source import build_remote_step_source
 
     script = build_remote_step_source(
         user_source=user_source,
@@ -125,7 +125,7 @@ def step_script(
 def test_start_flow_run_is_idempotent_per_dag_run(dag_module, run_id):
     import lamindb as ln
 
-    from airflow.providers.lamindb.utils import runtime
+    from airflow.providers.lamindb.execution import runtime
 
     kwargs = start_flow_run_kwargs(dag_module, run_id)
     flow_run = runtime.start_flow_run(**kwargs)
@@ -148,8 +148,8 @@ def test_start_flow_run_is_idempotent_per_dag_run(dag_module, run_id):
 
 
 def test_step_without_flow_run_raises(dag_module, run_id):
-    from airflow.providers.lamindb.utils import runtime
-    from airflow.providers.lamindb.utils.dag_run import dag_source
+    from airflow.providers.lamindb.execution import runtime
+    from airflow.providers.lamindb.execution.dag_run import dag_source
 
     with pytest.raises(LookupError, match="No LaminDB flow run"):
         runtime.run_step(dag_module.extract, (), {}, f"integration_dag/{run_id}", dag_source(dag_module.dag))
@@ -158,8 +158,8 @@ def test_step_without_flow_run_raises(dag_module, run_id):
 def test_failed_remote_step_marks_step_and_flow_errored(dag_module, run_id, instance, tmp_path):
     import lamindb as ln
 
-    from airflow.providers.lamindb.utils import runtime
-    from airflow.providers.lamindb.utils.dag_run import dag_source
+    from airflow.providers.lamindb.execution import runtime
+    from airflow.providers.lamindb.execution.dag_run import dag_source
 
     kwargs = start_flow_run_kwargs(dag_module, run_id)
     flow_run = runtime.start_flow_run(**kwargs)
@@ -188,8 +188,8 @@ def test_remote_sources_run_in_fresh_interpreter(dag_module, run_id, instance, t
     """The source shipped to a venv/pod must work with only lamindb installed."""
     import lamindb as ln
 
-    from airflow.providers.lamindb.utils.dag_run import dag_source
-    from airflow.providers.lamindb.utils.remote import build_remote_flow_source
+    from airflow.providers.lamindb.execution.dag_run import dag_source
+    from airflow.providers.lamindb.execution.source import build_remote_flow_source
 
     reference = f"integration_dag/{run_id}"
 
@@ -243,8 +243,8 @@ def test_step_records_only_params_lamindb_can_store(dag_module, run_id, caplog, 
     """Values lamindb would skip with a warning that shows them are left out beforehand."""
     import lamindb as ln
 
-    from airflow.providers.lamindb.utils import runtime
-    from airflow.providers.lamindb.utils.dag_run import dag_source
+    from airflow.providers.lamindb.execution import runtime
+    from airflow.providers.lamindb.execution.dag_run import dag_source
 
     class Client:
         def __repr__(self) -> str:
@@ -305,8 +305,8 @@ def lab_space():
 def test_flow_steps_and_their_records_are_created_in_the_space(dag_module, run_id, lab_space):
     import lamindb as ln
 
-    from airflow.providers.lamindb.utils import runtime
-    from airflow.providers.lamindb.utils.dag_run import dag_source
+    from airflow.providers.lamindb.execution import runtime
+    from airflow.providers.lamindb.execution.dag_run import dag_source
 
     def save_record(name: str) -> str:
         return ln.Record(name=name).save().uid
@@ -340,8 +340,8 @@ def test_flow_steps_and_their_records_are_created_in_the_space(dag_module, run_i
 def test_bootstrap_runs_before_lamindb_is_imported(dag_module, run_id, instance, tmp_path):
     import lamindb as ln
 
-    from airflow.providers.lamindb.utils import runtime
-    from airflow.providers.lamindb.utils.dag_run import dag_source
+    from airflow.providers.lamindb.execution import runtime
+    from airflow.providers.lamindb.execution.dag_run import dag_source
 
     kwargs = start_flow_run_kwargs(dag_module, run_id)
     flow_run = runtime.start_flow_run(**kwargs)
@@ -380,8 +380,8 @@ def feature_branch():
 def test_flow_steps_and_their_records_are_on_the_branch(dag_module, run_id, feature_branch):
     import lamindb as ln
 
-    from airflow.providers.lamindb.utils import runtime
-    from airflow.providers.lamindb.utils.dag_run import dag_source
+    from airflow.providers.lamindb.execution import runtime
+    from airflow.providers.lamindb.execution.dag_run import dag_source
 
     def save_record(name: str) -> str:
         return ln.Record(name=name).save().uid
@@ -429,8 +429,8 @@ def unique_dag_file(tmp_path, run_id):
 
 
 def standalone_step(dag, fn, *args, step_reference="http://airflow/ti", **kwargs):
-    from airflow.providers.lamindb.utils import runtime
-    from airflow.providers.lamindb.utils.dag_run import dag_source
+    from airflow.providers.lamindb.execution import runtime
+    from airflow.providers.lamindb.execution.dag_run import dag_source
 
     return runtime.run_step(
         fn, args, kwargs, None, dag_source(dag), step_reference=step_reference, fileloc=dag.fileloc
@@ -462,8 +462,8 @@ def test_standalone_step_is_recorded_without_a_parent(unique_dag_file):
 def test_standalone_steps_and_the_flow_run_share_the_dag_files_transform(dag_module, run_id, unique_dag_file):
     import lamindb as ln
 
-    from airflow.providers.lamindb.utils import runtime
-    from airflow.providers.lamindb.utils.dag_run import dag_source
+    from airflow.providers.lamindb.execution import runtime
+    from airflow.providers.lamindb.execution.dag_run import dag_source
 
     dag = unique_dag_file()
 
@@ -530,7 +530,7 @@ def test_standalone_step_of_a_renamed_file_never_asks_whether_it_was_renamed(uni
 def test_crlf_dag_files_hash_like_what_the_flow_init_stores(unique_dag_file, run_id):
     import lamindb as ln
 
-    from airflow.providers.lamindb.utils import runtime
+    from airflow.providers.lamindb.execution import runtime
 
     dag = unique_dag_file(newline=b"\r\n")
     flow_run = runtime.start_flow_run(
@@ -573,7 +573,7 @@ def test_standalone_step_in_a_fresh_interpreter(unique_dag_file, run_id, instanc
     """Through the shipped source: no flow run lookup, the DAG file's key and no leftover state."""
     import lamindb as ln
 
-    from airflow.providers.lamindb.utils.dag_run import dag_source
+    from airflow.providers.lamindb.execution.dag_run import dag_source
 
     dag = unique_dag_file()
     user_source = "def compute(x: int = 1) -> int:\n    return x * 3\n"
@@ -599,7 +599,7 @@ def test_parallel_standalone_steps_of_a_new_dag_share_one_transform(
     """The first run of a DAG starts all its standalone (mapped) steps at once."""
     import lamindb as ln
 
-    from airflow.providers.lamindb.utils.dag_run import dag_source
+    from airflow.providers.lamindb.execution.dag_run import dag_source
 
     dag = unique_dag_file()
     processes = []
@@ -636,8 +636,8 @@ def test_parallel_standalone_steps_of_a_new_dag_share_one_transform(
 def test_sibling_scopes_have_flow_runs_of_their_own(unique_dag_file, run_id):
     import lamindb as ln
 
-    from airflow.providers.lamindb.utils import runtime
-    from airflow.providers.lamindb.utils.dag_run import dag_source, flow_run_reference
+    from airflow.providers.lamindb.execution import runtime
+    from airflow.providers.lamindb.execution.dag_run import dag_source, flow_run_reference
 
     dag = unique_dag_file()
     default_ref = flow_run_reference(dag.dag_id, run_id)
@@ -668,8 +668,8 @@ def test_scoped_step_without_its_flow_run_does_not_fall_back_to_standalone(uniqu
     def never():
         raise AssertionError("must not run")
 
-    from airflow.providers.lamindb.utils import runtime
-    from airflow.providers.lamindb.utils.dag_run import dag_source
+    from airflow.providers.lamindb.execution import runtime
+    from airflow.providers.lamindb.execution.dag_run import dag_source
 
     runs_before = ln.Run.filter().count()
     with pytest.raises(LookupError, match="No LaminDB flow run found"):

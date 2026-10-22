@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 FLOW_RUN_REFERENCE_TYPE = "airflow_dag_run"
 STEP_RUN_REFERENCE_TYPE = "airflow_task_instance"
 MAX_REFERENCE_LENGTH = 255
+"""The longest ``Run.reference`` lamindb stores (``max_length`` of the field)."""
 
 # the oldest lamindb the provider supports, for the installed package here and for instances and
 # version pins on the worker; anything older fails deliberately
@@ -31,11 +32,6 @@ ALL_SPACE_ID = 1
 MAIN_BRANCH_ID = 1
 """Id of the ``main`` branch every instance has; ``archive`` is 0 and ``trash`` -1."""
 
-STATUS_STARTED = -1
-STATUS_RESTARTED = -2
-STATUS_COMPLETED = 0
-STATUS_ERRORED = 1
-
 
 def _release(version):
     import re
@@ -44,18 +40,19 @@ def _release(version):
     return (int(match[1]), int(match[2]), int(match[3] or 0)) if match else None
 
 
-def lamindb_version_at_least(version, minimum):
-    """Whether lamindb ``version``, such as ``"2.11.0"``, is ``minimum`` or newer.
+def lamindb_version_supported(version):
+    """Whether lamindb ``version``, such as ``"2.11.0"``, is ``MIN_LAMINDB_VERSION`` or newer.
 
     Compares major, minor and patch (a missing patch is 0); pre-releases count as their release.
     """
     release = _release(version)
-    return release is not None and release >= _release(minimum)
+    return release is not None and release >= _release(MIN_LAMINDB_VERSION)
 
 
-def lamindb_version_supported(version):
-    """Whether lamindb ``version`` is ``MIN_LAMINDB_VERSION`` or newer."""
-    return lamindb_version_at_least(version, MIN_LAMINDB_VERSION)
+def _run_status_code(status):
+    from lamindb.base.types import RUN_STATUS_TO_CODE
+
+    return RUN_STATUS_TO_CODE[status]
 
 
 def connect(instance=None):
@@ -105,7 +102,7 @@ def require_flow_run(reference):
 def finish_run(run, success):
     """Close a run the same way lamindb's own decorators do."""
     run.finished_at = datetime.now(timezone.utc)
-    run._status_code = STATUS_COMPLETED if success else STATUS_ERRORED
+    run._status_code = _run_status_code("completed" if success else "errored")
     run.save()
 
 
@@ -184,7 +181,7 @@ def start_flow_run(reference, path, entrypoint, params, instance=None, space=Non
             )
         existing.started_at = datetime.now(timezone.utc)
         existing.finished_at = None
-        existing._status_code = STATUS_RESTARTED
+        existing._status_code = _run_status_code("restarted")
         existing.save()
         return existing
 

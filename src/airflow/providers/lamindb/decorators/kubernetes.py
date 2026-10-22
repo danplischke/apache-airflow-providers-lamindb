@@ -3,17 +3,15 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
+from airflow.providers.lamindb.execution.setup import LaminDBSetup, resolve_setup
 from airflow.providers.lamindb.hooks.lamindb import LaminDBHook
-from airflow.providers.lamindb.utils.remote import (
-    ExcludeTemplated,
-    LaminDBSetup,
-    RemoteLaminDBStepMixin,
-    reject_auto_flow,
-    resolve_setup,
-)
+from airflow.providers.lamindb.operators.step import RemoteLaminDBStepMixin, reject_auto_flow
 from airflow.sdk.bases.decorator import task_decorator_factory
+
+if TYPE_CHECKING:
+    from airflow.providers.lamindb.execution.parameters import ExcludeTemplated
 
 
 def _lamindb_kubernetes_decorated_operator_class() -> type:

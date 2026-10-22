@@ -30,6 +30,21 @@ class MultiAssetStore:
 
 
 class TestAssetCursorStore:
+    @pytest.mark.parametrize("cursor", [True, -1])
+    async def test_invalid_numeric_cursor_is_ignored_with_warning(self, cursor, caplog):
+        cursor_store = asset_cursor(FakeStateStore({"k": stored(cursor)}))
+        assert await cursor_store.load(INSTANCE.id) is None
+        assert "invalid" in caplog.text.lower()
+
+    @pytest.mark.parametrize("cursor", [True, -1])
+    async def test_invalid_cursor_is_not_saved(self, cursor):
+        from pydantic import ValidationError
+
+        store = FakeStateStore()
+        with pytest.raises(ValidationError):
+            await asset_cursor(store).save(cursor, INSTANCE.id)
+        assert not store.data
+
     async def test_multiple_assets(self):
         first, second, third = (
             FakeStateStore({"k": stored(5)}),
@@ -40,6 +55,8 @@ class TestAssetCursorStore:
         assert await cursor_store.load(INSTANCE.id) == 3
         await cursor_store.save(9, INSTANCE.id)
         assert first.data["k"] == second.data["k"] == third.data["k"] == stored(9)
+        first.data["k"]["dbwrite_id"] = 99
+        assert second.data["k"] == third.data["k"] == stored(9)
 
     async def test_real_airflow_accessors_with_multiple_assets(self):
         from airflow.sdk import Asset

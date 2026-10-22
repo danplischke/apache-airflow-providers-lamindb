@@ -2,22 +2,16 @@ from __future__ import annotations
 
 import pytest
 
-from airflow.providers.lamindb.utils.dbwrite import (
+from airflow.providers.lamindb.client.branches import branch_status, normalize_statuses
+from airflow.providers.lamindb.client.dbwrite import (
     changed_fields,
     classify_record_write,
     dbwrite_summary,
     is_branch_move,
     is_upload_completion,
+    parse_json_value,
     previous_values,
     resolve_status_transitions,
-)
-from airflow.providers.lamindb.utils.lamindb import (
-    artifact_filter,
-    branch_status,
-    is_internal_artifact,
-    normalize_statuses,
-    parse_json_value,
-    storage_ongoing,
 )
 from unit.lamindb.fakes import dbwrite
 
@@ -143,27 +137,3 @@ class TestLamindbSemantics:
         assert parse_json_value('{"so": 1}') == {"so": 1}
         assert parse_json_value("not json") == "not json"
         assert parse_json_value(None) is None
-        assert storage_ongoing({"so": 1})
-        assert not storage_ongoing(None)
-
-    def test_is_internal_artifact(self):
-        assert is_internal_artifact({"kind": "__lamindb_run__"})
-        assert not is_internal_artifact({"kind": "dataset"})
-        assert not is_internal_artifact({"kind": None})
-
-    def test_artifact_filter(self):
-        assert artifact_filter(include_internal=True) is None
-        assert artifact_filter() == {
-            "or": [{"kind": {"isnull": True}}, {"kind": {"notin": ["__lamindb_run__", "__lamindb_config__"]}}]
-        }
-        assert artifact_filter(
-            key_prefix="raw/", suffix=".csv", kind="dataset", extra={"size": {"gt": 0}}
-        ) == {
-            "and": [
-                {"size": {"gt": 0}},
-                {"key": {"startswith": "raw/"}},
-                {"suffix": {"in": [".csv"]}},
-                {"kind": {"in": ["dataset"]}},
-            ]
-        }
-        assert artifact_filter(key="a.csv", include_internal=True) == {"key": {"eq": "a.csv"}}

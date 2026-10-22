@@ -237,7 +237,7 @@ def test_mapped_steps(dags, conf, dag_state, flow_status, steps):
 def test_the_configured_setup_prepares_steps_and_flow_tasks(dags, monkeypatch, request):
     import lamindb as ln
 
-    from airflow.providers.lamindb.utils.remote import configured_setup, resolve_setup
+    from airflow.providers.lamindb.execution.setup import configured_setup, resolve_setup
 
     monkeypatch.setenv("AIRFLOW__LAMINDB__SETUP_CLASS", "system.lamindb.site_setup.SiteSetup")
     configured_setup.cache_clear()  # read once per process, and the DAGs were parsed without it

@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from airflow.providers.lamindb.utils import runtime
+from airflow.providers.lamindb.execution import runtime
 
 
 def test_runtime_is_self_contained() -> None:
@@ -97,7 +97,7 @@ def test_start_flow_run_restarts_existing_run_on_retry(fake_lamindb: MagicMock) 
     fake_lamindb.flow_run = existing = MagicMock(finished_at="yesterday")
     assert runtime.start_flow_run("my_dag/run_1", "/dags/my_dag.py", "my_dag", {}) is existing
     fake_lamindb.track.assert_not_called()
-    assert existing._status_code == runtime.STATUS_RESTARTED
+    assert existing._status_code == -2
     assert existing.finished_at is None
     # on every branch but the archive and the trash, not only lamindb's current one
     fake_lamindb.Run.filter.assert_called_with(
@@ -111,9 +111,7 @@ def test_start_flow_run_refuses_to_clobber_global_run(fake_lamindb: MagicMock) -
         runtime.start_flow_run("my_dag/run_1", "/dags/my_dag.py", "my_dag", {})
 
 
-@pytest.mark.parametrize(
-    ("success", "status"), [(True, runtime.STATUS_COMPLETED), (False, runtime.STATUS_ERRORED)]
-)
+@pytest.mark.parametrize(("success", "status"), [(True, 0), (False, 1)])
 def test_finish_flow_run(fake_lamindb: MagicMock, success: bool, status: int) -> None:
     fake_lamindb.flow_run = flow_run = MagicMock(finished_at=None)
     assert runtime.finish_flow_run("my_dag/run_1", success) is flow_run
@@ -170,7 +168,7 @@ def test_run_step_records_reference_and_status(fake_lamindb: MagicMock) -> None:
 
     assert runs[0].reference == "http://ti"
     assert runs[0].reference_type == runtime.STEP_RUN_REFERENCE_TYPE
-    assert runs[0]._status_code == runtime.STATUS_COMPLETED
+    assert runs[0]._status_code == 0
     assert not isinstance(runs[1].reference, str)  # too long for Run.reference: left unset
 
 
@@ -197,7 +195,7 @@ def test_run_step_marks_run_errored_and_reraises(fake_lamindb: MagicMock) -> Non
 
     with pytest.raises(ValueError, match="x"):
         runtime.run_step(boom, (), {}, "my_dag/run_1", "")
-    assert runs[0]._status_code == runtime.STATUS_ERRORED
+    assert runs[0]._status_code == 1
     assert fake_lamindb.context.run is None
     assert fake_lamindb.context._space is None
 
@@ -272,7 +270,7 @@ def test_standalone_step_marks_run_errored_and_cleans_up(fake_lamindb: MagicMock
 
     with pytest.raises(ValueError, match="x"):
         runtime.run_step(boom, (), {}, None, "# dag", fileloc="/dags/my_dag.py")
-    assert runs[0]._status_code == runtime.STATUS_ERRORED
+    assert runs[0]._status_code == 1
     assert fake_lamindb.context.run is None
     assert fake_lamindb.context._transform is None
     assert fake_lamindb.context._uid is None  # the next attempt must not be pinned to this transform

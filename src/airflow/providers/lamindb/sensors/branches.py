@@ -4,6 +4,9 @@ from collections.abc import Sequence
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any
 
+from pydantic import ValidationError
+
+from airflow.providers.lamindb.client.branches import normalize_statuses
 from airflow.providers.lamindb.exceptions import LaminDBApiError
 from airflow.providers.lamindb.hooks.lamindb import LaminDBHook
 from airflow.providers.lamindb.triggers.branches import (
@@ -11,7 +14,7 @@ from airflow.providers.lamindb.triggers.branches import (
     branch_summary,
     evaluate_branch_status,
 )
-from airflow.providers.lamindb.utils.lamindb import normalize_statuses
+from airflow.providers.lamindb.triggers.events import BRANCH_SENSOR_OUTCOME
 from airflow.sdk import BaseSensorOperator, PokeReturnValue, conf
 from airflow.sdk.exceptions import AirflowException, AirflowFailException
 
@@ -86,10 +89,10 @@ class LaminDBBranchStatusSensor(BaseSensorOperator):
         summary = branch_summary(branch)
         outcome = evaluate_branch_status(branch, self.target_status, self.failure_status)
         if outcome == "failure":
-            raise AirflowFailException(f"Branch {self.branch!r} has status {summary['status']!r}")  # type: ignore[index]
+            raise AirflowFailException(f"Branch {self.branch!r} has status {summary.status!r}")
         if outcome == "success":
-            return PokeReturnValue(is_done=True, xcom_value=summary)
-        self.log.info("Branch %r has status %r", self.branch, summary["status"])  # type: ignore[index]
+            return PokeReturnValue(is_done=True, xcom_value=summary.model_dump())
+        self.log.info("Branch %r has status %r", self.branch, summary.status)
         return PokeReturnValue(is_done=False)
 
     def execute(self, context: Context) -> Any:
@@ -112,9 +115,12 @@ class LaminDBBranchStatusSensor(BaseSensorOperator):
         )
 
     def execute_complete(self, context: Context, event: dict[str, Any]) -> Any:
-        status = event.get("status")
-        if status == "success":
-            return event.get("branch")
-        if status == "failure":
-            raise AirflowFailException(event.get("message"))
-        raise AirflowException(event.get("message", f"Unexpected trigger event {event!r}"))
+        try:
+            outcome = BRANCH_SENSOR_OUTCOME.validate_python(event)
+        except ValidationError:
+            raise AirflowException("Invalid LaminDB sensor event.") from None
+        if outcome.status == "success":
+            return outcome.branch.model_dump(exclude_unset=True)
+        if outcome.status == "failure":
+            raise AirflowFailException(outcome.message)
+        raise AirflowException(outcome.message)

@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import textwrap
 
-from airflow.providers.lamindb.utils.remote import LaminDBSetup
+from airflow.providers.lamindb.execution.setup import LaminDBSetup
 
 
 # --8<-- [start:howto_lamindb_setup_class]

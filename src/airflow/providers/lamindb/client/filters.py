@@ -1,13 +1,14 @@
 """
 Build, validate and evaluate LaminHub REST filters.
 
-Filters select records by their fields. Build them with [`F`][] and the field enums, or write the
-JSON form of the [LaminHub REST API](https://docs.lamin.ai/rest) directly. These are equivalent:
+Filters select records by their fields. Build them with [`F`][] and the field enums:
 
 ```python
 F(ArtifactField.KEY).startswith("raw/") & (F(ArtifactField.SIZE) > 1_000_000)
-{"and": [{"key": {"startswith": "raw/"}}, {"size": {"gt": 1000000}}]}
 ```
+
+Filters in the JSON form of the [LaminHub REST API](https://docs.lamin.ai/rest), e.g.
+``{"key": {"startswith": "raw/"}}``, are converted with [`FilterExpression.from_dict`][].
 """
 
 from __future__ import annotations
@@ -16,7 +17,7 @@ import datetime
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from typing import Any, NoReturn
 
-from airflow.providers.lamindb.utils.enums import (
+from airflow.providers.lamindb.client.enums import (
     REGISTRY_FIELDS,
     ArtifactField,
     ArtifactKind,
@@ -40,6 +41,7 @@ from airflow.providers.lamindb.utils.enums import (
     UserField,
     plain_value,
 )
+from airflow.providers.lamindb.client.models import RecordOrder
 
 __all__ = [
     "REGISTRY_FIELDS",
@@ -52,9 +54,7 @@ __all__ = [
     "Count",
     "F",
     "FeatureField",
-    "Filter",
     "FilterExpression",
-    "FilterLike",
     "FilterOperator",
     "LaminDBRegistry",
     "Or",
@@ -79,9 +79,6 @@ __all__ = [
     "normalize_order_by",
 ]
 
-Filter = Mapping[str, Any]
-"""A LaminHub REST filter in its JSON form, e.g. ``{"key": {"eq": "raw/a.csv"}}``."""
-
 _BOOL_HINT = (
     "Filters can't be used as booleans: combine them with & and | instead of 'and' and 'or', and write "
     "ranges as (F(field) >= low) & (F(field) < high) instead of low <= F(field) < high."
@@ -89,6 +86,10 @@ _BOOL_HINT = (
 _PRECEDENCE_HINT = (
     "Fields can't be combined with & and |; wrap comparisons in parentheses first, "
     "e.g. (F('suffix') == '.csv') & (F('size') > 0)."
+)
+_DICT_HINT = (
+    "Filters are built with F(), e.g. F('key') == 'a.csv'; convert a LaminHub REST filter dict with "
+    "FilterExpression.from_dict({...})"
 )
 _NEGATION_HINT = "LaminHub filters can't be negated; use ne() (!=), not_in() or is_not_null() instead."
 
@@ -423,8 +424,8 @@ class FilterExpression:
     """
     Base class of filters built in Python: [`Condition`][], [`And`][] and [`Or`][].
 
-    Combine filters with ``&`` (and) and ``|`` (or); the other operand may also be a LaminHub REST
-    filter dict. [`to_dict`][] returns the JSON form that the LaminHub REST API expects.
+    Combine filters with ``&`` (and) and ``|`` (or). [`to_dict`][] returns the JSON form that the
+    LaminHub REST API expects, and [`from_dict`][] parses it.
     """
 
     __slots__ = ()
@@ -446,7 +447,7 @@ class FilterExpression:
             group = plain_value(key)
             if not isinstance(value, (list, tuple)) or not value:
                 raise ValueError(f"{group!r} expects a non-empty list of filters, got {value!r}")
-            return (And if group == "and" else Or)(*value)
+            return (And if group == "and" else Or)(*map(_child_from_dict, value))
         if not isinstance(value, Mapping) or len(value) != 1:
             raise ValueError(
                 f"The condition on {key!r} must have exactly one operator, e.g. {{'eq': ...}}, got {value!r}"
@@ -454,25 +455,26 @@ class FilterExpression:
         ((operator, operand),) = value.items()
         return Condition(key, operator, operand)
 
-    def __and__(self, other: FilterLike) -> And:
-        if not isinstance(other, (FilterExpression, Mapping)):
+    def __and__(self, other: FilterExpression) -> And:
+        if isinstance(other, Mapping):
+            raise TypeError(_DICT_HINT)
+        if not isinstance(other, FilterExpression):
             return NotImplemented
         return And(*_flatten(And, self), *_flatten(And, other))
 
-    def __rand__(self, other: FilterLike) -> And:
-        if not isinstance(other, Mapping):
-            return NotImplemented
-        return And(other, *_flatten(And, self))
+    def __rand__(self, other: object) -> And:
+        if isinstance(other, Mapping):
+            raise TypeError(_DICT_HINT)
+        return NotImplemented
 
-    def __or__(self, other: FilterLike) -> Or:
-        if not isinstance(other, (FilterExpression, Mapping)):
+    def __or__(self, other: FilterExpression) -> Or:
+        if isinstance(other, Mapping):
+            raise TypeError(_DICT_HINT)
+        if not isinstance(other, FilterExpression):
             return NotImplemented
         return Or(*_flatten(Or, self), *_flatten(Or, other))
 
-    def __ror__(self, other: FilterLike) -> Or:
-        if not isinstance(other, Mapping):
-            return NotImplemented
-        return Or(other, *_flatten(Or, self))
+    __ror__ = __rand__
 
     def __invert__(self) -> NoReturn:
         raise TypeError(_NEGATION_HINT)
@@ -493,11 +495,7 @@ class FilterExpression:
         return f"{type(self).__name__}({self.to_dict()!r})"
 
 
-FilterLike = Mapping[str, Any] | FilterExpression
-"""A filter built with [`F`][] or a LaminHub REST filter dict."""
-
-
-def _flatten(group: type[_Group], filter: FilterLike) -> tuple[FilterLike, ...]:
+def _flatten(group: type[_Group], filter: FilterExpression) -> tuple[FilterExpression, ...]:
     return filter.filters if isinstance(filter, group) else (filter,)
 
 
@@ -505,13 +503,19 @@ def _as_expression(filter: Any) -> FilterExpression:
     if isinstance(filter, FilterExpression):
         return filter
     if isinstance(filter, Mapping):
-        if not filter:
-            raise ValueError("Empty filters ({}) aren't allowed inside 'and' and 'or'")
-        return FilterExpression.from_dict(filter)
+        raise TypeError(_DICT_HINT)
     if isinstance(filter, (F, Count)):
         raise TypeError(f"{filter!r} is not a filter; compare it with a value, e.g. {filter!r} == value")
+    raise TypeError(f"Expected a filter such as F('key') == 'a.csv', got {filter!r}")
+
+
+def _child_from_dict(node: Any) -> FilterExpression:
+    if isinstance(node, Mapping):
+        if not node:
+            raise ValueError("Empty filters ({}) aren't allowed inside 'and' and 'or'")
+        return FilterExpression.from_dict(node)
     raise TypeError(
-        f"Expected a filter such as F('key') == 'a.csv' or {{'key': {{'eq': 'a.csv'}}}}, got {filter!r}"
+        f"Expected a filter such as {{'key': {{'eq': 'a.csv'}}}} inside 'and' and 'or', got {node!r}"
     )
 
 
@@ -557,7 +561,7 @@ class _Group(FilterExpression):
     __slots__ = ("filters",)
     _key = ""
 
-    def __init__(self, *filters: FilterLike) -> None:
+    def __init__(self, *filters: FilterExpression) -> None:
         if not filters:
             raise ValueError(f"{type(self).__name__}() needs at least one filter")
         self.filters: tuple[FilterExpression, ...] = tuple(_as_expression(f) for f in filters)
@@ -580,76 +584,62 @@ class Or(_Group):
     _key = "or"
 
 
-def normalize_filter(filter: FilterLike | None) -> dict[str, Any] | None:
+def normalize_filter(filter: FilterExpression | None) -> dict[str, Any] | None:
     """
-    Validate a filter and return its JSON form, or ``None`` for no filter.
+    Return the JSON form of a filter built with [`F`][], or ``None`` for no filter.
 
-    Accepts filters built with [`F`][] and LaminHub REST filter dicts, and raises ``ValueError`` or
-    ``TypeError`` for invalid filters, such as unknown operators.
+    Raises ``TypeError`` for anything else, including LaminHub REST filter dicts; convert those with
+    [`FilterExpression.from_dict`][].
     """
-    if filter is None or (isinstance(filter, Mapping) and not filter):
-        return None
-    return _as_expression(filter).to_dict()
+    return None if filter is None else _as_expression(filter).to_dict()
 
 
-def _json_form(filter: FilterLike | None) -> dict[str, Any] | None:
-    if isinstance(filter, FilterExpression):
-        return filter.to_dict()
-    return dict(filter) if filter else None
-
-
-def combine_filters(*filters: FilterLike | None) -> dict[str, Any] | None:
-    """
-    Combine LaminHub REST filter nodes with a logical ``and``.
-
-    Empty or ``None`` filters are skipped. Returns ``None`` if nothing is left.
-    """
-    parts = [part for part in map(_json_form, filters) if part]
+def combine_filters(*filters: FilterExpression | None) -> FilterExpression | None:
+    """Combine filters with a logical ``and``, skipping ``None``. Returns ``None`` if nothing is left."""
+    parts = [_as_expression(part) for part in filters if part is not None]
     if not parts:
         return None
-    if len(parts) == 1:
-        return parts[0]
-    return {"and": parts}
+    return parts[0] if len(parts) == 1 else And(*parts)
 
 
-def normalize_order_by(order_by: Sequence[str | Mapping[str, Any]] | None) -> list[dict[str, Any]]:
+def normalize_order_by(order_by: Sequence[str | RecordOrder] | None) -> list[RecordOrder]:
     """
     Normalize ``order_by`` to the LaminHub REST format.
 
-    Accepts ``{"field": "created_at", "descending": True}`` dicts or strings such as
-    ``"created_at"`` / ``"-created_at"`` (a leading ``-`` means descending). Defaults to ``id``.
+    Accepts [`RecordOrder`][airflow.providers.lamindb.client.models.RecordOrder] entries, field enum
+    members and strings such as ``"created_at"`` / ``"-created_at"`` (a leading ``-`` means
+    descending). Defaults to ``id``.
     """
     if not order_by:
-        return [{"field": "id", "descending": False}]
-    normalized: list[dict[str, Any]] = []
+        return [RecordOrder(field="id")]
+    normalized: list[RecordOrder] = []
     for item in order_by:
-        if isinstance(item, str):
+        if isinstance(item, RecordOrder):
+            normalized.append(item)
+        elif isinstance(item, str):
             item = plain_value(item)
-            descending = item.startswith("-")
-            normalized.append({"field": item.lstrip("-"), "descending": descending})
+            normalized.append(RecordOrder(field=item.lstrip("-"), descending=item.startswith("-")))
+        elif isinstance(item, Mapping):
+            fields = ", ".join(f"{name}={plain_value(value)!r}" for name, value in item.items())
+            raise TypeError(f"Sort entries are strings or RecordOrder({fields}), not dicts")
         else:
-            normalized.append(
-                {"field": plain_value(item["field"]), "descending": bool(item.get("descending", False))}
-            )
+            raise TypeError(f"Expected a field name or a RecordOrder, got {item!r}")
     return normalized
 
 
-def filter_field_paths(node: FilterLike | None) -> set[str]:
-    """Return all field paths referenced by a filter node."""
-    node = _json_form(node)
-    if not node:
-        return set()
-    paths: set[str] = set()
-    for key, value in node.items():
-        if key in ("and", "or"):
-            for child in value:
-                paths |= filter_field_paths(child)
-        else:
-            paths.add(key)
-    return paths
+def _paths(node: Mapping[str, Any]) -> set[str]:
+    ((key, value),) = node.items()
+    if key in ("and", "or"):
+        return set().union(*map(_paths, value))
+    return {key}
 
 
-def is_local_filter(node: FilterLike | None) -> bool:
+def filter_field_paths(node: FilterExpression | None) -> set[str]:
+    """Return all field paths referenced by a filter."""
+    return set() if node is None else _paths(_as_expression(node).to_dict())
+
+
+def is_local_filter(node: FilterExpression | None) -> bool:
     """Whether a filter only references direct (non-relation, non-JSON) fields of a record."""
     return all("." not in path and "[" not in path for path in filter_field_paths(node))
 
@@ -657,25 +647,24 @@ def is_local_filter(node: FilterLike | None) -> bool:
 _MISSING = object()
 
 
-def matches_filter(node: FilterLike | None, row: Mapping[str, Any]) -> bool:
+def matches_filter(node: FilterExpression | None, row: Mapping[str, Any]) -> bool:
     """
-    Evaluate a LaminHub REST filter against a plain record dict.
+    Evaluate a filter against a plain record dict.
 
     Only direct fields are supported (see [`is_local_filter`][]). Foreign keys can be
     referenced either by relation name (``run``) or by column (``run_id``). This is used for
     records that no longer exist on LaminHub (hard deletes), where the filter can't be
     evaluated server-side.
     """
-    node = _json_form(node)
-    if not node:
-        return True
-    if len(node) != 1:
-        raise ValueError(f"Filter nodes must have exactly one key, got {sorted(node)}")
+    return True if node is None else _matches(_as_expression(node).to_dict(), row)
+
+
+def _matches(node: Mapping[str, Any], row: Mapping[str, Any]) -> bool:
     ((key, value),) = node.items()
     if key == "and":
-        return all(matches_filter(child, row) for child in value)
+        return all(_matches(child, row) for child in value)
     if key == "or":
-        return any(matches_filter(child, row) for child in value)
+        return any(_matches(child, row) for child in value)
     if "." in key or "[" in key:
         raise ValueError(f"Filter path {key!r} can't be evaluated locally; only direct fields are supported")
     field_value = row.get(key, _MISSING)
@@ -683,8 +672,6 @@ def matches_filter(node: FilterLike | None, row: Mapping[str, Any]) -> bool:
         field_value = row.get(f"{key}_id", _MISSING)
     if field_value is _MISSING:
         raise ValueError(f"Field {key!r} is not present in the record")
-    if not isinstance(value, Mapping) or len(value) != 1:
-        raise ValueError(f"Field condition for {key!r} must have exactly one operator")
     ((operator, operand),) = value.items()
     return _apply_operator(operator, field_value, operand)
 

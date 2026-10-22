@@ -56,7 +56,7 @@ The docs in `docs/` are built with [Zensical](https://zensical.org) and publishe
 `main`. `just docs` serves them locally, and `just docs-build` builds them with the same strict
 settings as the CI. The navigation is in `zensical.toml`. The API reference in `docs/api.md` is
 generated from the docstrings: write them in Markdown, and link to other objects with
-``[`F`][airflow.providers.lamindb.utils.filters.F]``, or ``[`F`][]`` within the same module. The guides
+``[`F`][airflow.providers.lamindb.client.filters.F]``, or ``[`F`][]`` within the same module. The guides
 include sections of the example DAGs marked with `# --8<-- [start:name]` and `# --8<-- [end:name]`.
 
 ## Releasing
