@@ -18,6 +18,7 @@ from airflow.providers.lamindb.execution.requirements import (
     check_lamindb_version,
     lamindb_requirement_lines,
 )
+from airflow.providers.lamindb.execution.setup import LaminDBSetup, setup_requirements, setup_venv_cache_path
 from airflow.providers.lamindb.hooks.lamindb import LaminDBHook
 
 log = logging.getLogger(__name__)
@@ -110,6 +111,18 @@ def ensure_lamindb_requirement(
         lamindb_version = lamindb_version or remote.instance_lamindb_version()
     add_lamindb_requirement(requirements, lamindb_version)
     operator.requirements = requirements
+
+
+def prepare_virtualenv(
+    operator: Any, remote: RemoteLaminDB, lamindb_version: str | None, setup: LaminDBSetup | None
+) -> None:
+    """Give a virtualenv operator lamindb and its setup's requirements, and the setup's cache path.
+
+    The setup's ``venv_cache_path`` is used only if the operator's is ``None``.
+    """
+    ensure_lamindb_requirement(operator, remote, lamindb_version, setup_requirements(setup))
+    if operator.venv_cache_path is None:
+        operator.venv_cache_path = setup_venv_cache_path(setup)
 
 
 @contextmanager

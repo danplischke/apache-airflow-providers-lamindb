@@ -361,6 +361,10 @@ the DAGs when they are parsed.
   runs; a package the task lists itself is not added again, so a task can pin another version. They
   may not list lamindb: pin it with `lamindb_version`, or in the task's `requirements`. Pods don't
   install them: their image brings its packages.
+- `venv_cache_path()` returns the absolute path of a folder on each worker in which Airflow caches
+  the LaminDB virtualenvs, one per set of requirements and Python version, instead of building one for
+  every task run. It applies to tasks whose own `venv_cache_path` is `None`, the default; `""` opts a
+  task out. Airflow never removes cached virtualenvs, so prune the folder yourself. Pods don't use it.
 - `bootstrap_source()` returns Python source that runs in the virtualenv or pod before lamindb is
   imported. It runs as its own module, so it may be indented or start with `from __future__`, and its
   names don't leak into the task's script. In a virtualenv it runs before Airflow unpickles the

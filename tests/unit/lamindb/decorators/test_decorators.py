@@ -980,6 +980,66 @@ def test_lamindb_setup_requirements_must_be_strings(
         _execute_connected(op, make_context())
 
 
+class CachedSetup(execution_setup.LaminDBSetup):
+    def __init__(self, path="/opt/venv-cache") -> None:
+        self.path = path
+
+    def venv_cache_path(self):
+        return self.path
+
+
+@pytest.mark.parametrize(
+    ("task_path", "expected"),
+    [(None, "/opt/venv-cache"), ("/task/cache", "/task/cache"), ("", "")],  # "" opts out
+)
+def test_lamindb_setup_venv_cache_path_is_the_default_for_steps(
+    fake_lamindb: MagicMock, make_context, lamindb_connection, task_path, expected
+) -> None:
+    op = _single_task(task.lamindb_virtualenv(lamindb_setup=CachedSetup(), venv_cache_path=task_path), step)
+    seen: dict = {}
+
+    def fake_venv_execute(self, context):
+        seen["venv_cache_path"] = self.venv_cache_path
+        return 1
+
+    with (
+        patch.object(lamindb_step, "dag_source", return_value="# dag source"),
+        patch.object(type(op).__mro__[2], "execute", fake_venv_execute),
+    ):
+        op.execute(make_context())
+    assert seen["venv_cache_path"] == expected
+
+
+def test_lamindb_setup_venv_cache_path_reaches_the_flow_operators(make_context, lamindb_connection) -> None:
+    from airflow.providers.lamindb.operators.flow import LaminDBFlowInitOperator
+
+    init = LaminDBFlowInitOperator(task_id="init", lamindb_setup=CachedSetup())
+    seen = {}
+
+    def fake_venv_execute(self, context):
+        seen["venv_cache_path"] = self.venv_cache_path
+        return "flowuid"
+
+    with patch.object(type(init).__mro__[2], "execute", fake_venv_execute):
+        init.execute(make_context())
+    assert seen["venv_cache_path"] == "/opt/venv-cache"
+
+
+@pytest.mark.parametrize(
+    ("path", "error", "match"),
+    [("relative/cache", ValueError, "absolute path"), (42, TypeError, "a path or None")],
+)
+def test_lamindb_setup_venv_cache_path_must_be_an_absolute_path(path, error, match) -> None:
+    with pytest.raises(error, match=match):
+        execution_setup.setup_venv_cache_path(CachedSetup(path))
+
+
+def test_lamindb_setup_venv_cache_path_accepts_path_objects() -> None:
+    from pathlib import Path
+
+    assert execution_setup.setup_venv_cache_path(CachedSetup(Path("/opt/cache"))) == "/opt/cache"
+
+
 def test_lamindb_setup_reaches_the_flow_tasks_of_a_scope() -> None:
     setup = SiteSetup()
 

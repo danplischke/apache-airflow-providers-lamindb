@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import functools
+import os
 from typing import Any
 
 from airflow.exceptions import AirflowException
@@ -22,7 +23,8 @@ class LaminDBSetup:
 
     1. Airflow renders the templates.
     2. The worker resolves the lamindb connection and calls [`execution_env`][].
-    3. The virtualenv is built with lamindb and the setup's [`requirements`][], or the pod started.
+    3. The virtualenv is built with lamindb and the setup's [`requirements`][], in its
+       [`venv_cache_path`][] if any, or the pod started.
     4. In the virtualenv or pod, the [`bootstrap_source`][] runs, then lamindb connects, then the
        task's function runs.
 
@@ -79,6 +81,16 @@ class LaminDBSetup:
         """
         return []
 
+    def venv_cache_path(self) -> str | None:
+        """Absolute path of the folder Airflow caches LaminDB virtualenvs in, on each worker.
+
+        Used for tasks whose ``venv_cache_path`` is ``None``, the default; a task's own takes
+        precedence, and ``""`` builds a fresh virtualenv for that task. Airflow builds one virtualenv
+        per set of requirements and Python version below it and never removes them. ``None`` (default)
+        builds a fresh virtualenv for every task run. Pods don't use it.
+        """
+        return None
+
 
 @functools.cache
 def configured_setup() -> LaminDBSetup | None:
@@ -130,6 +142,21 @@ def setup_requirements(setup: LaminDBSetup | None) -> list[str]:
     if invalid:
         raise TypeError(f"{setup!r}.requirements() must return strings; {', '.join(invalid)} are not")
     return requirements
+
+
+def setup_venv_cache_path(setup: LaminDBSetup | None) -> str | None:
+    setup = resolve_setup(setup)
+    if setup is None:
+        return None
+    path = setup.venv_cache_path()
+    if path is None:
+        return None
+    if not isinstance(path, (str, os.PathLike)):
+        raise TypeError(f"{setup!r}.venv_cache_path() must return a path or None, not {path!r}")
+    path = os.fspath(path)
+    if not os.path.isabs(path):
+        raise ValueError(f"{setup!r}.venv_cache_path() must return an absolute path, not {path!r}")
+    return path
 
 
 def setup_bootstrap_source(setup: LaminDBSetup | None) -> str:
