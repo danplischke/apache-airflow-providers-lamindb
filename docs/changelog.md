@@ -74,6 +74,7 @@ longer completed with these packages. `execution.requirements.lamindb_requiremen
 
 Fixes:
 
+- The package requires Python `>=3.10,<3.15`. `!=3.15` excluded only 3.15.0, not later 3.15 releases.
 - The code generated for virtualenvs and pods is composed from `ast` nodes. A callable name that is
   not a Python identifier, or a step setting that is not a Python literal, now fails on the worker
   instead of in the virtualenv or pod.
