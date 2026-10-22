@@ -35,6 +35,12 @@ def test_is_internal_artifact_is_false_for_malformed_kind():
     assert is_internal_artifact({"kind": 5}) is False
 
 
+@pytest.mark.parametrize("aux", ['{"so": "pending"}', "[1]", "not json"])
+def test_is_internal_artifact_reads_only_the_kind(aux):
+    assert is_internal_artifact({"kind": INTERNAL_ARTIFACT_KINDS[0], "_aux": aux}) is True
+    assert is_internal_artifact({"kind": "dataset", "_aux": aux}) is False
+
+
 def test_internal_kinds_match_the_server_filter():
     # the local check and the server-side filter of artifact_filter must agree
     assert artifact_filter() == {
