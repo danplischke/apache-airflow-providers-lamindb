@@ -23,8 +23,6 @@ from airflow.providers.lamindb.client.filters import (
     normalize_order_by,
 )
 from airflow.providers.lamindb.client.models import (
-    ArtifactRecordResponse,
-    BranchBlockRecordResponse,
     BranchRecordResponse,
     DbWriteResponse,
     InstanceSchemaResponse,
@@ -44,8 +42,6 @@ from airflow.providers.lamindb.exceptions import LaminDBApiError, LaminDBVersion
 from airflow.providers.lamindb.execution.runtime import MIN_LAMINDB_VERSION, lamindb_version_supported
 
 if TYPE_CHECKING:
-    from pydantic import BaseModel
-
     from airflow.providers.lamindb.client.enums import LaminDBRegistry
 
 DEFAULT_HUB_API_URL = "https://aws.us-east-1.lamin.ai/api"
@@ -110,18 +106,30 @@ def _registry_url(instance: LaminDBInstance, registry: Registry) -> str:
     return f"{instance.api_url}/instances/{instance.id}/modules/{registry.module}/{registry.model}"
 
 
-def _validate_record_rows(rows: list[dict[str, Any]], registry: Registry) -> list[dict[str, Any]]:
-    models: dict[str, type[BaseModel]] = {
-        "core.artifact": ArtifactRecordResponse,
-        "core.branch": BranchRecordResponse,
-        "core.branchblock": BranchBlockRecordResponse,
-        "core.user": UserRecordResponse,
-        DBWRITE_REGISTRY.name: DbWriteResponse,
-    }
-    model = models.get(registry.name)
-    if model is not None:
+def _check_rows(rows: Any, registry: Registry, action: str) -> list[dict[str, Any]]:
+    """Check that a response is a list of records, and validate rows of the database write log.
+
+    Records of other registries stay unvalidated dicts: their columns depend on the registry and
+    ``select``, and one odd value, such as a malformed ``_aux``, must not fail every query that
+    returns its record. Callers parse the fields they use. The write log is LaminHub's own metadata,
+    and its ``id`` and ``sqlrecord_id`` drive trigger cursors, so its rows are validated.
+    """
+    if not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows):
+        raise LaminDBApiError(
+            f"Unexpected response when {action} {registry.name}: expected a list of records."
+        )
+    if registry == DBWRITE_REGISTRY:
         for row in rows:
-            model.model_validate(row)
+            try:
+                DbWriteResponse.model_validate(row)
+            except ValidationError as err:
+                # field names only: values may be record data
+                fields = ", ".join(sorted({".".join(map(str, e["loc"])) for e in err.errors()}))
+                write_id = row.get("id")
+                write = f"write {write_id}" if type(write_id) is int else "a write"
+                raise LaminDBApiError(
+                    f"Unexpected response when {action} {registry.name}: invalid {fields} in {write}."
+                ) from None
     return rows
 
 
@@ -133,13 +141,7 @@ def _written_rows(data: Any, registry: Registry) -> list[dict[str, Any]]:
     """The rows a write endpoint returns: a list of rows, a single row, or nothing."""
     if data is None:
         return []
-    rows = [data] if isinstance(data, dict) else data
-    if not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows):
-        raise LaminDBApiError(f"Unexpected response when writing {registry.name}.")
-    try:
-        return _validate_record_rows(rows, registry)
-    except ValidationError:
-        raise LaminDBApiError(f"Unexpected response when writing {registry.name}.") from None
+    return _check_rows([data] if isinstance(data, dict) else data, registry, "writing")
 
 
 def chunk_ids(ids: Iterable[int]) -> list[list[int]]:
@@ -257,7 +259,17 @@ class LaminHubClient:
             )
         if not response.content:
             return None
-        return response.json()
+        try:
+            return response.json()
+        except ValueError:
+            content_type = response.headers.get("content-type", "no content type")
+            # e.g. a proxy's HTML page or a truncated body; the next request may succeed
+            raise LaminDBApiError(
+                f"LaminHub API request {method} {url} returned a response that isn't JSON "
+                f"(status {response.status_code}, {content_type}).",
+                http_status_code=response.status_code,
+                transient=True,
+            ) from None
 
     def _send(
         self,
@@ -418,12 +430,7 @@ class LaminHubClient:
 
     @staticmethod
     def _check_page(page: Any, registry: Registry) -> list[dict[str, Any]]:
-        if not isinstance(page, list) or not all(isinstance(row, dict) for row in page):
-            raise LaminDBApiError(f"Unexpected response when querying {registry.name}.")
-        try:
-            return _validate_record_rows(page, registry)
-        except ValidationError:
-            raise LaminDBApiError(f"Unexpected response when querying {registry.name}.") from None
+        return _check_rows(page, registry, "querying")
 
     @staticmethod
     def _dbwrite_filter(filter: FilterExpression | None, after_id: int | None) -> FilterExpression | None:

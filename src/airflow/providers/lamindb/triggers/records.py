@@ -28,7 +28,6 @@ from airflow.providers.lamindb.client.filters import (
     matches_filter,
     normalize_filter,
 )
-from airflow.providers.lamindb.client.models import ArtifactRecordResponse
 from airflow.providers.lamindb.client.registries import Registry, normalize_registry_name
 from airflow.providers.lamindb.exceptions import LaminDBApiError
 from airflow.providers.lamindb.hooks.lamindb import LaminDBHook
@@ -77,9 +76,7 @@ def ready_records(records: Iterable[dict[str, Any]], *, wait_for_upload: bool) -
     """Drop artifacts whose upload is still in progress (if ``wait_for_upload``)."""
     if not wait_for_upload:
         return list(records)
-    return [
-        record for record in records if not storage_ongoing(ArtifactRecordResponse.model_validate(record).aux)
-    ]
+    return [record for record in records if not storage_ongoing(record.get("_aux"))]
 
 
 class LaminDBRecordEventTrigger(LaminDBDbWriteEventTrigger):
@@ -413,10 +410,9 @@ class LaminDBArtifactEventTrigger(LaminDBRecordEventTrigger):
         records: dict[int, dict[str, Any]],
     ) -> list[_Candidate]:
         refined: list[_Candidate] = []
-        metadata = {key: ArtifactRecordResponse.model_validate(row) for key, row in records.items()}
         completions = await self._upload_completions(hook, candidates) if self.wait_for_upload else {}
         for write, kind in candidates:
-            record = metadata.get(write["sqlrecord_id"])
+            record = records.get(write["sqlrecord_id"])
             if record is not None and not self.include_internal and is_internal_artifact(record):
                 continue
             refined_kind = (
@@ -430,12 +426,12 @@ class LaminDBArtifactEventTrigger(LaminDBRecordEventTrigger):
     def _refined_kind(
         write: dict[str, Any],
         kind: RecordEvent,
-        record: ArtifactRecordResponse | None,
+        record: Mapping[str, Any] | None,
         completions: Mapping[int, list[int]],
     ) -> RecordEvent | None:
         """Apply the upload semantics of ``wait_for_upload``; ``None`` drops the write."""
         record_completions = completions.get(write["sqlrecord_id"], [])
-        uploading = record is not None and storage_ongoing(record.aux)
+        uploading = record is not None and storage_ongoing(record.get("_aux"))
         if write["event_type"] == "DELETE":
             # artifacts whose upload failed are deleted again; they were never reported as created
             return None if storage_ongoing(previous_values(write).get("_aux")) else kind

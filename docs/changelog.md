@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.0.3
+
+Fixes:
+
+- One record with an unexpected value, such as a malformed `_aux`, no longer fails the queries that
+  return it. The artifact event trigger used to retry the same batch of writes forever, and the
+  record sensor failed. Records of registries stay unvalidated dicts; rows of the database write log
+  are still validated, and the error names the invalid fields. `is_internal_artifact` reads only
+  `kind`.
+- Inserts and updates that succeeded return the written rows unvalidated instead of raising, so a
+  retried task doesn't write them again.
+- A response that isn't JSON, such as a proxy's HTML page, raises a transient `LaminDBApiError`
+  instead of a `JSONDecodeError`, so sensors check again instead of failing.
+- The `LaminDBHook.query_records` docstring no longer says filters may be dicts.
+
 ## 0.0.2
 
 **Breaking:** the modules are reorganised by layer. Old import paths are removed; update imports as

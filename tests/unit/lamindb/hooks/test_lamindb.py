@@ -370,26 +370,85 @@ class TestQueries:
 
     @pytest.mark.parametrize("async_mode", [False, True])
     @pytest.mark.parametrize(
+        ("row", "fields"),
+        [
+            ({"id": 1, "event_type": ["UPDATE"]}, "event_type"),
+            ({"id": 1, "sqlrecord_id": "not-an-id"}, "sqlrecord_id"),
+            ({"id": 1, "data": ["not-an-object"]}, "data"),
+        ],
+        ids=["event_type", "sqlrecord_id", "data"],
+    )
+    async def test_write_log_rows_are_validated(self, hook, mock_api, async_mode, row, fields):
+        mock_api.post(f"{RECORDS_URL}/hubmodule/dbwrite").mock(return_value=httpx.Response(200, json=[row]))
+        try:
+            with pytest.raises(LaminDBApiError, match=f"invalid {fields} in write 1") as err:
+                await hook.aquery_dbwrites() if async_mode else hook.query_dbwrites()
+            assert "not-an" not in str(err.value)  # names the field, not its value
+        finally:
+            await hook.aclose()
+
+    async def test_an_invalid_write_id_is_not_shown(self, hook, mock_api):
+        mock_api.post(f"{RECORDS_URL}/hubmodule/dbwrite").mock(
+            return_value=httpx.Response(200, json=[{"id": "not-an-id"}])
+        )
+        try:
+            with pytest.raises(LaminDBApiError, match="invalid id in a write") as err:
+                hook.query_dbwrites()
+            assert "not-an-id" not in str(err.value)
+        finally:
+            await hook.aclose()
+
+    @pytest.mark.parametrize("async_mode", [False, True])
+    @pytest.mark.parametrize(
         ("registry", "row"),
         [
             ("core.artifact", {"id": 1, "kind": 123}),
-            ("core.artifact", {"id": 1, "_aux": '{"so": "yes"}'}),
-            ("hubmodule.dbwrite", {"id": 1, "event_type": ["UPDATE"]}),
-            ("hubmodule.dbwrite", {"id": 1, "sqlrecord_id": "not-an-id"}),
-            ("hubmodule.dbwrite", {"id": 1, "data": ["invalid"]}),
-            ("core.branch", {"id": 1, "_status_code": "not-a-code"}),
-            ("core.branch", {"id": 1, "name": ["invalid-name"]}),
-            ("core.branchblock", {"id": 1, "branch_id": "not-an-id"}),
-            ("core.user", {"id": 1, "handle": ["invalid-handle"]}),
+            ("core.artifact", {"id": 1, "_aux": '{"so": "pending"}'}),
+            ("core.artifact", {"id": 1, "_aux": "[1]"}),
+            ("core.artifact", {"id": 1, "_aux": '{"so": 1.0}'}),
+            ("core.branch", {"id": 1, "name": ["unexpected"]}),
+            ("core.user", {"id": 1, "handle": ["unexpected"]}),
         ],
     )
-    async def test_known_record_fields_are_validated(self, hook, mock_api, async_mode, registry, row):
+    async def test_odd_record_values_do_not_fail_the_query(self, hook, mock_api, async_mode, registry, row):
+        """Records stay dicts; one odd value must not fail every query that returns its record."""
         module, model = registry.split(".")
-        mock_api.post(f"{RECORDS_URL}/{module}/{model}").mock(return_value=httpx.Response(200, json=[row]))
+        mock_api.post(f"{RECORDS_URL}/{module}/{model}").mock(
+            return_value=httpx.Response(200, json=[row, {"id": 2}])
+        )
         try:
-            with pytest.raises(LaminDBApiError, match="Unexpected response when querying") as err:
-                await hook.aquery_records(registry) if async_mode else hook.query_records(registry)
-            assert "not-an-id" not in str(err.value)
+            method = hook.aget_records_by_ids if async_mode else hook.get_records_by_ids
+            result = method(registry, [1, 2])
+            assert (await result if async_mode else result) == {1: row, 2: {"id": 2}}
+        finally:
+            await hook.aclose()
+
+    @pytest.mark.parametrize("async_mode", [False, True])
+    @pytest.mark.parametrize("body", [{"id": 1}, "unexpected", [1, 2]])
+    async def test_responses_that_are_not_lists_of_records_fail(self, hook, mock_api, async_mode, body):
+        mock_api.post(f"{RECORDS_URL}/core/artifact").mock(return_value=httpx.Response(200, json=body))
+        try:
+            with pytest.raises(LaminDBApiError, match="expected a list of records"):
+                await hook.aquery_records("core.artifact") if async_mode else hook.query_records(
+                    "core.artifact"
+                )
+        finally:
+            await hook.aclose()
+
+    @pytest.mark.parametrize("async_mode", [False, True])
+    async def test_responses_that_are_not_json_are_transient_errors(self, hook, mock_api, async_mode):
+        mock_api.post(f"{RECORDS_URL}/core/artifact").mock(
+            return_value=httpx.Response(
+                200, text="<html>sign in</html>", headers={"content-type": "text/html"}
+            )
+        )
+        try:
+            with pytest.raises(LaminDBApiError, match=r"isn't JSON \(status 200, text/html\)") as err:
+                await hook.aquery_records("core.artifact") if async_mode else hook.query_records(
+                    "core.artifact"
+                )
+            assert err.value.transient
+            assert "sign in" not in str(err.value)
         finally:
             await hook.aclose()
 
@@ -548,24 +607,35 @@ class TestQueries:
 class TestWrites:
     @pytest.mark.parametrize("async_mode", [False, True])
     @pytest.mark.parametrize("operation", ["insert", "update"])
-    async def test_known_write_response_fields_are_validated(self, hook, mock_api, async_mode, operation):
+    async def test_written_rows_with_odd_values_are_returned(self, hook, mock_api, async_mode, operation):
+        """The write succeeded: raising would make a retried task write the record again."""
         mock_api.put(f"{RECORDS_URL}/core/artifact").mock(
-            return_value=httpx.Response(200, json=[{"id": "invalid-record-id"}])
+            return_value=httpx.Response(200, json=[{"id": 1, "_aux": "[1]"}])
         )
         mock_api.patch(f"{RECORDS_URL}/core/artifact/u1").mock(
-            return_value=httpx.Response(200, json={"kind": ["invalid-kind"]})
+            return_value=httpx.Response(200, json={"id": 1, "kind": 123})
         )
         if operation == "insert":
             method = hook.ainsert_records if async_mode else hook.insert_records
-            args = ("core.artifact", [{"key": "a.csv"}])
+            args, expected = ("core.artifact", [{"key": "a.csv"}]), [{"id": 1, "_aux": "[1]"}]
         else:
             method = hook.aupdate_record if async_mode else hook.update_record
-            args = ("core.artifact", "u1", {"key": "a.csv"})
+            args, expected = ("core.artifact", "u1", {"key": "a.csv"}), {"id": 1, "kind": 123}
         try:
-            with pytest.raises(LaminDBApiError, match="Unexpected response when writing") as err:
-                await method(*args) if async_mode else method(*args)
-            assert "invalid-record-id" not in str(err.value)
-            assert "invalid-kind" not in str(err.value)
+            result = method(*args)
+            assert (await result if async_mode else result) == expected
+        finally:
+            await hook.aclose()
+
+    @pytest.mark.parametrize("async_mode", [False, True])
+    async def test_write_responses_that_are_not_records_fail(self, hook, mock_api, async_mode):
+        mock_api.put(f"{RECORDS_URL}/core/artifact").mock(return_value=httpx.Response(200, json="unexpected"))
+        try:
+            method = hook.ainsert_records if async_mode else hook.insert_records
+            with pytest.raises(LaminDBApiError, match=r"Unexpected response when writing core\.artifact"):
+                await method("core.artifact", [{"key": "a.csv"}]) if async_mode else method(
+                    "core.artifact", [{"key": "a.csv"}]
+                )
         finally:
             await hook.aclose()
 
@@ -754,3 +824,32 @@ class TestAsync:
             await hook.aget_instance()
         assert err.value.transient  # a network error
         await hook.aclose()
+
+
+class TestTriggersWithTheClient:
+    """Triggers against the real client, whose response checks the triggers' fake hooks skip."""
+
+    async def test_an_odd_artifact_value_does_not_stop_the_artifact_trigger(self, hook, mock_api):
+        from airflow.providers.lamindb.triggers.records import LaminDBArtifactEventTrigger
+        from unit.lamindb.fakes import dbwrite
+
+        schema = {**SCHEMA, "core": {**SCHEMA["core"], "record": {"table_name": "lamindb_record"}}}
+        mock_api.get(f"{API}/instances/{INSTANCE_ID}/schema").mock(
+            return_value=httpx.Response(200, json=schema)
+        )
+        writes = [dbwrite(1, "UPDATE", "lamindb_artifact", 2, data={"key": "raw/old.csv"})]
+        mock_api.post(f"{RECORDS_URL}/hubmodule/dbwrite").mock(return_value=httpx.Response(200, json=writes))
+        mock_api.post(f"{RECORDS_URL}/core/user").mock(return_value=httpx.Response(200, json=[]))
+        # LaminDB sets _aux itself; an unexpected value used to fail the query, and the trigger then
+        # retried the same batch forever
+        odd = {"id": 2, "uid": "a2", "key": "raw/a.csv", "kind": "dataset", "_aux": '{"so": "pending"}'}
+        mock_api.post(f"{RECORDS_URL}/core/artifact").mock(return_value=httpx.Response(200, json=[odd]))
+        trigger = LaminDBArtifactEventTrigger(events=["updated"], lamindb_conn_id="lamindb_test")
+        try:
+            await trigger._setup(hook)
+            instance = await hook.aget_instance()
+            events = await trigger._events_for(hook, instance, await hook.aquery_dbwrites())
+        finally:
+            await hook.aclose()
+
+        assert [(e.payload["event"], e.payload["record_id"]) for e in events] == [("updated", 2)]
