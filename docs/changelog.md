@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.0.3
+
+- `LaminDBSetup.virtualenv_options()` returns `VirtualenvOptions`: default requirements, virtualenv
+  cache folder and package indexes for the virtualenvs of LaminDB steps and flow operators, for
+  tasks that don't set them. A task's own requirements take precedence for the same package; pod
+  steps don't use them.
+
 ## 0.0.2
 
 **Breaking:** the modules are reorganised by layer. Old import paths are removed; update imports as

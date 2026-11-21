@@ -3,9 +3,69 @@
 from __future__ import annotations
 
 import functools
+import os
+from collections.abc import Sequence
+from dataclasses import dataclass, fields
 from typing import Any
 
 from airflow.exceptions import AirflowException
+
+
+def _string_tuple(name: str, value: Any) -> tuple[str, ...]:
+    values = (value,) if isinstance(value, str) else tuple(value)
+    invalid = sorted(repr(v) for v in values if not isinstance(v, str))
+    if invalid:
+        raise TypeError(f"VirtualenvOptions.{name} must be strings; {', '.join(invalid)} are not")
+    return values
+
+
+@dataclass(frozen=True)
+class VirtualenvOptions:
+    """Defaults for the virtualenvs of LaminDB tasks, from [`LaminDBSetup.virtualenv_options`][].
+
+    Each applies to a task that doesn't set the ``PythonVirtualenvOperator`` argument of the same name;
+    a string is taken as a list of one.
+
+    :param requirements: packages installed besides lamindb, e.g. ``["bionty", "pandas>=2"]``, after the
+        task's own ``requirements``. A package the task lists itself is not added again, so a task can
+        pin another version. lamindb may not be listed: pin it with ``lamindb_version``, or in the
+        task's ``requirements``.
+    :param venv_cache_path: absolute path of a folder on each worker in which Airflow caches the
+        virtualenvs, one per set of requirements, indexes and Python version, instead of building one
+        for every task run. Airflow never removes them. For tasks whose ``venv_cache_path`` is ``None``;
+        ``""`` opts a task out.
+    :param index_urls: package index URLs; the first replaces PyPI, the others are extra indexes.
+    :param index_urls_from_connection_ids: ids of Airflow ``package_index`` connections whose URLs
+        (with their credentials) Airflow appends to ``index_urls``; use these for private indexes,
+        so that credentials stay out of code. The setup's indexes apply only to tasks that set
+        neither ``index_urls`` nor ``index_urls_from_connection_ids``: a task that sets one chooses
+        all its indexes.
+    """
+
+    requirements: Sequence[str] = ()
+    venv_cache_path: str | os.PathLike[str] | None = None
+    index_urls: Sequence[str] | None = None
+    index_urls_from_connection_ids: Sequence[str] | None = None
+
+    def __post_init__(self) -> None:
+        for field in fields(self):
+            value = getattr(self, field.name)
+            if field.name == "venv_cache_path":
+                value = _venv_cache_path(value)
+            elif value is not None:
+                value = _string_tuple(field.name, value)
+            object.__setattr__(self, field.name, value)
+
+
+def _venv_cache_path(path: Any) -> str | None:
+    if path is None:
+        return None
+    if not isinstance(path, (str, os.PathLike)):
+        raise TypeError(f"VirtualenvOptions.venv_cache_path must be a path or None, not {path!r}")
+    path = os.fspath(path)
+    if not os.path.isabs(path):
+        raise ValueError(f"VirtualenvOptions.venv_cache_path must be an absolute path, not {path!r}")
+    return path
 
 
 class LaminDBSetup:
@@ -22,7 +82,8 @@ class LaminDBSetup:
 
     1. Airflow renders the templates.
     2. The worker resolves the lamindb connection and calls [`execution_env`][].
-    3. The virtualenv is built and lamindb installed, or the pod started.
+    3. The virtualenv is built with lamindb and the setup's [`virtualenv_options`][], or the pod
+       started.
     4. In the virtualenv or pod, the [`bootstrap_source`][] runs, then lamindb connects, then the
        task's function runs.
 
@@ -68,6 +129,14 @@ class LaminDBSetup:
         """
         return {}
 
+    def virtualenv_options(self) -> VirtualenvOptions:
+        """Defaults for the virtualenvs of LaminDB tasks: requirements, cache folder, package indexes.
+
+        Called on the worker when a virtualenv step or flow operator runs; see [`VirtualenvOptions`][]
+        for how each applies. Pods don't use them: the image brings its packages.
+        """
+        return VirtualenvOptions()
+
 
 @functools.cache
 def configured_setup() -> LaminDBSetup | None:
@@ -108,6 +177,16 @@ def setup_execution_env(setup: LaminDBSetup | None, context: Any) -> dict[str, s
             f"{setup!r}.execution_env() must return strings; the values of {', '.join(invalid)} are not"
         )
     return env
+
+
+def setup_virtualenv_options(setup: LaminDBSetup | None) -> VirtualenvOptions:
+    setup = resolve_setup(setup)
+    if setup is None:
+        return VirtualenvOptions()
+    options = setup.virtualenv_options()
+    if not isinstance(options, VirtualenvOptions):
+        raise TypeError(f"{setup!r}.virtualenv_options() must return VirtualenvOptions, not {options!r}")
+    return options
 
 
 def setup_bootstrap_source(setup: LaminDBSetup | None) -> str:
